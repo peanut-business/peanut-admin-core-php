@@ -1,0 +1,20 @@
+{
+  "name": "peanut-admin/kernel",
+  "description": "Peanut Admin security and runtime kernel contracts",
+  "type": "library",
+  "license": "Apache-2.0",
+  "version": "0.1.0",
+  "require": {
+    "php": "^8.3"
+  },
+  "autoload": {
+    "psr-4": {
+      "PeanutAdmin\\Kernel\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "PeanutAdmin\\Kernel\\Tests\\": "tests/"
+    }
+  }
+}

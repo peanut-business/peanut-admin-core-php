@@ -1,0 +1,21 @@
+{
+  "name": "peanut-admin/data-permission",
+  "description": "Peanut Admin data authorization contracts",
+  "type": "library",
+  "license": "Apache-2.0",
+  "version": "0.1.0",
+  "require": {
+    "peanut-admin/kernel": "^0.1.0",
+    "php": "^8.3"
+  },
+  "autoload": {
+    "psr-4": {
+      "PeanutAdmin\\DataPermission\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "PeanutAdmin\\DataPermission\\Tests\\": "tests/"
+    }
+  }
+}

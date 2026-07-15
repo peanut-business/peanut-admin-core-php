@@ -1,0 +1,23 @@
+{
+  "name": "peanut-admin/testing",
+  "description": "Peanut Admin reusable PHP test support",
+  "type": "library",
+  "license": "Apache-2.0",
+  "version": "0.1.0",
+  "require": {
+    "peanut-admin/data-permission": "^0.1.0",
+    "peanut-admin/kernel": "^0.1.0",
+    "php": "^8.3",
+    "phpunit/phpunit": "^12.5.31"
+  },
+  "autoload": {
+    "psr-4": {
+      "PeanutAdmin\\Testing\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "PeanutAdmin\\Testing\\Tests\\": "tests/"
+    }
+  }
+}
