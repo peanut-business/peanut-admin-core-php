@@ -25,6 +25,16 @@ final class TokenIssuer
         return $this->opaque('pa_trt_');
     }
 
+    public function platformAccess(): RawToken
+    {
+        return $this->opaque('pa_pat_');
+    }
+
+    public function platformRefresh(): RawToken
+    {
+        return $this->opaque('pa_prt_');
+    }
+
     public function key(DateTimeImmutable $time): string
     {
         $milliseconds = ((int) $time->format('U')) * 1000 + (int) $time->format('v');
