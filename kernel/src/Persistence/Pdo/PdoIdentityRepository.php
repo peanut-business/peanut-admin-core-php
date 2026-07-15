@@ -129,19 +129,23 @@ SQL, [
 
         $now = $this->now();
         $this->execute(<<<'SQL'
-UPDATE pa_credential
-SET status = :status,
-    revision = revision + 1,
-    locked_until = CASE WHEN :status_unlock = 'active' THEN NULL ELSE locked_until END,
-    revoked_at = CASE WHEN :status_revoke = 'revoked' THEN :revoked_at ELSE revoked_at END,
-    updated_at = :updated_at
-WHERE id = :id AND revision = :expected_revision
+UPDATE pa_credential c
+JOIN pa_account a ON a.id = c.account_id
+SET c.status = :status,
+    c.revision = c.revision + 1,
+    c.locked_until = CASE WHEN :status_unlock = 'active' THEN NULL ELSE c.locked_until END,
+    c.revoked_at = CASE WHEN :status_revoke = 'revoked' THEN :revoked_at ELSE c.revoked_at END,
+    c.updated_at = :credential_updated_at,
+    a.security_revision = a.security_revision + 1,
+    a.updated_at = :account_updated_at
+WHERE c.id = :id AND c.revision = :expected_revision
 SQL, [
             'status' => $next->value,
             'status_unlock' => $next->value,
             'status_revoke' => $next->value,
             'revoked_at' => $now,
-            'updated_at' => $now,
+            'credential_updated_at' => $now,
+            'account_updated_at' => $now,
             'id' => $credentialId,
             'expected_revision' => $current->revision,
         ]);
