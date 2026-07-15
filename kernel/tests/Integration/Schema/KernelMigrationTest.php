@@ -31,6 +31,13 @@ final class KernelMigrationTest extends DatabaseTestCase
         'pa_platform_session',
         'pa_platform_session_token',
         'pa_auth_security_event',
+        'pa_protected_resource',
+        'pa_target_type',
+        'pa_resource_operation',
+        'pa_resource_operation_target_type',
+        'pa_resource_operation_permission',
+        'pa_data_condition_definition',
+        'pa_resource_operation_condition',
     ];
 
     public function testEmptyInstallUpgradeCopyAndRepeatInstall(): void
@@ -50,7 +57,7 @@ final class KernelMigrationTest extends DatabaseTestCase
         $migrationCount = $this
             ->query('SELECT COUNT(*) FROM `pa_kernel_migration`')
             ->fetchColumn();
-        self::assertSame(23, (int) $migrationCount);
+        self::assertSame(30, (int) $migrationCount);
     }
 
     public function testControlledRollbackRemovesOnlyKernelSchema(): void
