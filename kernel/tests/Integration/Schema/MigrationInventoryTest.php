@@ -13,6 +13,6 @@ final class MigrationInventoryTest extends TestCase
         $files = glob(dirname(__DIR__, 3) . '/database/migrations/*.php');
 
         self::assertIsArray($files);
-        self::assertCount(33, $files);
+        self::assertCount(35, $files);
     }
 }
