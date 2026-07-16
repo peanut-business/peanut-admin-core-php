@@ -20,5 +20,6 @@ final readonly class MenuDefinition
         public ?string $requiredPermission,
         public array $clientKeys,
         public int $sortOrder = 0,
+        public ?string $icon = null,
     ) {}
 }
