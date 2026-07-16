@@ -22,6 +22,9 @@ final class TargetCardinalityValidatorTest extends TestCase
         yield 'one requires one' => ['one_required', 1, true];
         yield 'one rejects zero' => ['one_required', 0, false];
         yield 'one rejects two' => ['one_required', 2, false];
+        yield 'optional one accepts zero' => ['zero_or_one', 0, true];
+        yield 'optional one accepts one' => ['zero_or_one', 1, true];
+        yield 'optional one rejects two' => ['zero_or_one', 2, false];
         yield 'many read accepts zero' => ['many_readable', 0, true];
         yield 'bulk write is disabled' => ['bulk_write', 1, false];
     }

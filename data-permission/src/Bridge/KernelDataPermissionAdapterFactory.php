@@ -60,6 +60,7 @@ final class KernelDataPermissionAdapterFactory
             static fn(RequestedTargetSet $target): TypedResourceTargetSet => new TypedResourceTargetSet(
                 $target->targetResourceKey,
                 $target->targetIds,
+                $target->targetRole,
             ),
             $targets,
         ));

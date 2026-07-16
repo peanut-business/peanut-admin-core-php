@@ -20,11 +20,12 @@ final readonly class TypedTargetInput
         }
         $resourceKey = $target['target_resource_key'] ?? null;
         $targetId = $target['target_id'] ?? null;
-        if (!is_string($resourceKey) || !is_string($targetId)) {
+        $targetRole = $target['target_role'] ?? 'primary';
+        if (!is_string($resourceKey) || !is_string($targetId) || !is_string($targetRole) || $targetRole === '') {
             throw self::invalid('/target', 'TARGET_ONE_REQUIRED', 'A typed target is required.');
         }
 
-        return new self([new RequestedTargetSet($resourceKey, [$targetId])]);
+        return new self([new RequestedTargetSet($resourceKey, [$targetId], $targetRole)]);
     }
 
     /** @param list<array<string, mixed>> $targets */
@@ -35,17 +36,26 @@ final readonly class TypedTargetInput
         foreach ($targets as $index => $target) {
             $resourceKey = $target['target_resource_key'] ?? null;
             $targetIds = $target['target_ids'] ?? null;
-            if (!is_string($resourceKey) || !is_array($targetIds) || $targetIds === []) {
+            $targetRole = $target['target_role'] ?? 'primary';
+            if (
+                !is_string($resourceKey)
+                || !is_array($targetIds)
+                || $targetIds === []
+                || !is_string($targetRole)
+                || $targetRole === ''
+            ) {
                 throw self::invalid("/targets/{$index}", 'AUTHZ_TARGET_TYPE_MISMATCH', 'Each target set requires one type and IDs.');
             }
             try {
-                if (isset($seen[$resourceKey])) {
-                    throw self::invalid('/targets', 'AUTHZ_TARGET_TYPE_MISMATCH', 'A target type cannot be repeated.');
+                $relationKey = $targetRole . ':' . $resourceKey;
+                if (isset($seen[$relationKey])) {
+                    throw self::invalid('/targets', 'AUTHZ_TARGET_TYPE_MISMATCH', 'A target role and type cannot be repeated.');
                 }
-                $seen[$resourceKey] = true;
+                $seen[$relationKey] = true;
                 $sets[] = new RequestedTargetSet(
                     $resourceKey,
                     array_values(array_map('strval', $targetIds)),
+                    $targetRole,
                 );
             } catch (Throwable) {
                 throw self::invalid("/targets/{$index}", 'AUTHZ_TARGET_TYPE_MISMATCH', 'Target set is invalid.');

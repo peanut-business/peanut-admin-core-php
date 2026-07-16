@@ -112,8 +112,15 @@ final readonly class TrustedEnvelopeCodec
                 throw new AuthException('CONTEXT_SYSTEM_ACTOR_INVALID', 403);
             }
             $resourceKey = $rawSet['target_resource_key'] ?? null;
+            $targetRole = $rawSet['target_role'] ?? 'primary';
             $targetIds = $rawSet['target_ids'] ?? null;
-            if (!is_string($resourceKey) || !is_array($targetIds) || $targetIds === []) {
+            if (
+                !is_string($resourceKey)
+                || !is_string($targetRole)
+                || $targetRole === ''
+                || !is_array($targetIds)
+                || $targetIds === []
+            ) {
                 throw new AuthException('CONTEXT_SYSTEM_ACTOR_INVALID', 403);
             }
             $stringIds = [];
@@ -123,7 +130,7 @@ final readonly class TrustedEnvelopeCodec
                 }
                 $stringIds[] = $targetId;
             }
-            $sets[] = new RequestedTargetSet($resourceKey, $stringIds);
+            $sets[] = new RequestedTargetSet($resourceKey, $stringIds, $targetRole);
         }
 
         return $sets;

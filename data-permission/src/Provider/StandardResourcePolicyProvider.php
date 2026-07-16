@@ -231,9 +231,13 @@ final readonly class StandardResourcePolicyProvider implements
         EffectiveConditionGroup $group,
         TypedResourceTargetCollection $targets,
     ): bool {
+        $uncovered = [];
+        foreach ($targets->sets as $targetSet) {
+            $uncovered[$targetSet->targetRole . ':' . $targetSet->targetResourceKey] = true;
+        }
         foreach ($group->conditions as $condition) {
             if ($condition->key === 'core.tenant_all') {
-                continue;
+                return true;
             }
             if (!in_array($condition->key, ['core.specified_departments', 'core.specified_objects'], true)) {
                 return false;
@@ -241,9 +245,14 @@ final readonly class StandardResourcePolicyProvider implements
             if (!$this->conditionContainsTargets($context, $condition, $targets)) {
                 return false;
             }
+            foreach ($targets->sets as $targetSet) {
+                if ($targetSet->targetResourceKey === $condition->targetResourceKey) {
+                    unset($uncovered[$targetSet->targetRole . ':' . $targetSet->targetResourceKey]);
+                }
+            }
         }
 
-        return true;
+        return $uncovered === [];
     }
 
     private function conditionContainsTargets(

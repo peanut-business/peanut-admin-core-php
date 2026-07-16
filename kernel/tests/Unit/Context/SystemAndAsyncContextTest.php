@@ -74,7 +74,7 @@ final class SystemAndAsyncContextTest extends TestCase
     public function testSignedEnvelopeIsRevalidatedAndCannotTrustTamperedTenantOrTargets(): void
     {
         $tenantContext = $this->tenantContext();
-        $targets = [new RequestedTargetSet('example.project', ['project-b', 'project-a'])];
+        $targets = [new RequestedTargetSet('example.project', ['project-b', 'project-a'], 'destination')];
         $authorized = AuthorizedOperationContext::fromDecision(AuthorizationDecision::allow(
             $tenantContext,
             'example.work-item',
@@ -84,6 +84,7 @@ final class SystemAndAsyncContextTest extends TestCase
         ));
         $codec = new TrustedEnvelopeCodec('test-envelope-signing-key-at-least-32-bytes');
         $encoded = $codec->issue($authorized, 'operation-queue', 'trace-http-to-worker');
+        self::assertSame('destination', $codec->verify($encoded)->requestedTargets[0]->targetRole);
 
         $allowed = true;
         $revalidator = new class ($tenantContext, $allowed) implements AsyncAuthorizationRevalidator {

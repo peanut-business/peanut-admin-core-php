@@ -32,14 +32,17 @@ final class ApiContractTest extends TestCase
         $one = TypedTargetInput::one([
             'target_resource_key' => 'example.project',
             'target_id' => '9001',
+            'target_role' => 'destination',
         ]);
         $many = TypedTargetInput::many([
-            ['target_resource_key' => 'example.project', 'target_ids' => ['9001', '9002']],
-            ['target_resource_key' => 'example.queue', 'target_ids' => ['9001']],
+            ['target_resource_key' => 'example.project', 'target_ids' => ['9001'], 'target_role' => 'source'],
+            ['target_resource_key' => 'example.project', 'target_ids' => ['9002'], 'target_role' => 'destination'],
         ]);
 
         self::assertSame(['9001'], $one->sets[0]->targetIds);
+        self::assertSame('destination', $one->sets[0]->targetRole);
         self::assertCount(2, $many->sets);
+        self::assertSame(['source', 'destination'], array_column($many->sets, 'targetRole'));
 
         $this->expectException(ApiException::class);
         TypedTargetInput::one([

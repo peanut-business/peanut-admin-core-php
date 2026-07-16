@@ -134,6 +134,53 @@ final class ModuleRegistryCompilerTest extends TestCase
         });
     }
 
+    public function testCompilerRequiresStructuredOperationTargetRelations(): void
+    {
+        $target = [[
+            'key' => 'example.project',
+            'name' => 'Project',
+            'resolver' => 'resolver.project',
+            'catalog_provider' => 'catalog.project',
+        ]];
+        $resource = static fn(array $targetTypes): array => [
+            'key' => 'example.work-item',
+            'ownership' => 'business_target_owned',
+            'provider' => 'query.work-item',
+            'operations' => [[
+                'key' => 'transfer',
+                'target_cardinality' => 'one_required',
+                'target_types' => $targetTypes,
+            ]],
+        ];
+
+        $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($target, $resource): void {
+            $this->compiler()->compile([
+                $this->manifest('example.target', targetTypes: $target),
+                $this->manifest(
+                    'example.work-item',
+                    ['example.target'],
+                    protectedResources: [$resource(['example.project'])],
+                ),
+            ]);
+        });
+
+        $registry = $this->compiler()->compile([
+            $this->manifest('example.target', targetTypes: $target),
+            $this->manifest(
+                'example.work-item',
+                ['example.target'],
+                protectedResources: [$resource([[
+                    'target_resource_key' => 'example.project',
+                    'target_role' => 'destination',
+                    'input_mode' => 'explicit',
+                    'policy_selection_permission' => 'example.target.manage',
+                ]])],
+            ),
+        ]);
+
+        self::assertSame(['example.target', 'example.work-item'], $registry->moduleKeys());
+    }
+
     public function testCompilerRejectsUnknownFrontendComponentAndProviderNamespace(): void
     {
         $this->expectModuleCode('MODULE_CONTRACT_MISSING', function (): void {

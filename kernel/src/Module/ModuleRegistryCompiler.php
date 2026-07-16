@@ -180,10 +180,35 @@ final readonly class ModuleRegistryCompiler
             if (!is_array($targetTypes) || !array_is_list($targetTypes)) {
                 throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target types are missing in {$moduleKey}.");
             }
+            $relations = [];
             foreach ($targetTypes as $targetType) {
-                if (!is_string($targetType) || !isset($targetOwners[$targetType])) {
+                if (!is_array($targetType)) {
+                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target relation must be structured in {$moduleKey}.");
+                }
+                $targetResourceKey = $this->arrayString($targetType, 'target_resource_key', $moduleKey);
+                $targetRole = $this->arrayString($targetType, 'target_role', $moduleKey);
+                $inputMode = $this->arrayString($targetType, 'input_mode', $moduleKey);
+                if (!isset($targetOwners[$targetResourceKey])) {
                     throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation references unknown target type in {$moduleKey}.");
                 }
+                if (!in_array($inputMode, ['explicit', 'derived', 'either'], true)) {
+                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target input mode is invalid in {$moduleKey}.");
+                }
+                $selectionPermission = $targetType['policy_selection_permission'] ?? null;
+                if ($selectionPermission !== null && (!is_string($selectionPermission) || $selectionPermission === '')) {
+                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Policy selection permission is invalid in {$moduleKey}.");
+                }
+                $relationKey = $targetRole . ':' . $targetResourceKey;
+                if (isset($relations[$relationKey])) {
+                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target relation is duplicated in {$moduleKey}.");
+                }
+                $relations[$relationKey] = true;
+            }
+            if ($cardinality === 'none' && $targetTypes !== []) {
+                throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Target-free operation declares target relations in {$moduleKey}.");
+            }
+            if ($cardinality !== 'none' && $targetTypes === []) {
+                throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Targeted operation has no target relations in {$moduleKey}.");
             }
         }
     }

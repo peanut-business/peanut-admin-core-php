@@ -145,7 +145,21 @@
                     "target_cardinality": {
                       "enum": ["none", "one_required", "zero_or_one", "many_readable", "aggregate_read", "policy_publish", "bulk_write"]
                     },
-                    "target_types": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+                    "target_types": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["target_resource_key", "target_role", "input_mode"],
+                        "properties": {
+                          "target_resource_key": { "type": "string", "minLength": 1, "maxLength": 160 },
+                          "target_role": { "type": "string", "minLength": 1, "maxLength": 64 },
+                          "input_mode": { "enum": ["explicit", "derived", "either"] },
+                          "policy_selection_permission": { "type": ["string", "null"], "minLength": 1, "maxLength": 160 }
+                        }
+                      }
+                    }
                   }
                 }
               }

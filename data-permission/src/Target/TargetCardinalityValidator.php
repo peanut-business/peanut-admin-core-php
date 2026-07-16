@@ -15,6 +15,7 @@ final class TargetCardinalityValidator
         $valid = match ($operation->targetCardinality) {
             'none' => $targets->sets === [],
             'one_required' => $primaryCount === 1,
+            'zero_or_one' => $primaryCount <= 1,
             'many_readable', 'aggregate_read' => true,
             'policy_publish' => $primaryCount >= 1,
             'bulk_write' => false,
