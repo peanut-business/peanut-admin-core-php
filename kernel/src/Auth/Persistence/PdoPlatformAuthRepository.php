@@ -19,6 +19,40 @@ use PeanutAdmin\Kernel\Platform\PlatformOperatorStatus;
 
 final class PdoPlatformAuthRepository extends PdoRepository implements PlatformAuthRepository
 {
+    public function failedLoginCountByIp(string $ipAddress, DateTimeImmutable $since): int
+    {
+        $row = $this->fetchOne(<<<'SQL'
+SELECT COUNT(*) AS aggregate
+FROM pa_auth_security_event
+WHERE event_type = 'login_failed'
+  AND outcome = 'denied'
+  AND ip_address = :ip_address
+  AND occurred_at >= :since_at
+SQL, [
+            'ip_address' => $ipAddress,
+            'since_at' => $this->format($since),
+        ]);
+
+        return $row === null ? 0 : (int) $row['aggregate'];
+    }
+
+    public function failedLoginCountByIdentifier(string $identifierHmac, DateTimeImmutable $since): int
+    {
+        $row = $this->fetchOne(<<<'SQL'
+SELECT COUNT(*) AS aggregate
+FROM pa_auth_security_event
+WHERE event_type = 'login_failed'
+  AND outcome = 'denied'
+  AND identifier_hmac = :identifier_hmac
+  AND occurred_at >= :since_at
+SQL, [
+            'identifier_hmac' => $identifierHmac,
+            'since_at' => $this->format($since),
+        ]);
+
+        return $row === null ? 0 : (int) $row['aggregate'];
+    }
+
     public function principalByEmail(EmailAddress $email, bool $forUpdate = false): ?PlatformAuthPrincipal
     {
         $row = $this->fetchOne(
@@ -28,6 +62,9 @@ SELECT
     c.account_id,
     c.secret_hash,
     c.status AS credential_status,
+    c.failed_attempts,
+    c.locked_until,
+    c.expires_at,
     a.status AS account_status,
     a.security_revision AS account_security_revision,
     po.id AS operator_id,
@@ -49,12 +86,122 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''),
             (int) $row['account_id'],
             (string) $row['secret_hash'],
             CredentialStatus::from((string) $row['credential_status']),
+            (int) $row['failed_attempts'],
+            $this->nullableDate($row['locked_until']),
+            $this->nullableDate($row['expires_at']),
             AccountStatus::from((string) $row['account_status']),
             (int) $row['account_security_revision'],
             (int) $row['operator_id'],
             PlatformOperatorStatus::from((string) $row['operator_status']),
             (int) $row['operator_security_revision'],
         );
+    }
+
+    public function registerFailedLogin(
+        ?PlatformAuthPrincipal $principal,
+        string $identifierHmac,
+        string $ipAddress,
+        ?string $userAgentHash,
+        string $requestId,
+        DateTimeImmutable $now,
+    ): void {
+        $credentialLocked = false;
+        if ($principal !== null) {
+            $lockIsActive = $principal->credentialStatus === CredentialStatus::Locked
+                && $principal->lockedUntil !== null
+                && $now < $principal->lockedUntil;
+            if (!$lockIsActive) {
+                $attempts = $principal->credentialStatus === CredentialStatus::Locked
+                    ? 1
+                    : $principal->failedAttempts + 1;
+                $lockedUntil = $attempts >= 5 ? $now->modify('+15 minutes') : null;
+                $credentialLocked = $lockedUntil !== null;
+                $this->execute(<<<'SQL'
+UPDATE pa_credential
+SET failed_attempts = :failed_attempts,
+    status = CASE WHEN :lock_status = 1 THEN 'locked' ELSE 'active' END,
+    locked_until = :locked_until,
+    revision = revision + 1,
+    updated_at = :updated_at
+WHERE id = :credential_id
+SQL, [
+                    'failed_attempts' => $attempts,
+                    'lock_status' => $lockedUntil === null ? 0 : 1,
+                    'locked_until' => $lockedUntil === null ? null : $this->format($lockedUntil),
+                    'updated_at' => $this->format($now),
+                    'credential_id' => $principal->credentialId,
+                ]);
+                if ($credentialLocked) {
+                    $this->execute(<<<'SQL'
+UPDATE pa_account
+SET security_revision = security_revision + 1, updated_at = :updated_at
+WHERE id = :account_id
+SQL, [
+                        'updated_at' => $this->format($now),
+                        'account_id' => $principal->accountId,
+                    ]);
+                }
+            }
+        }
+
+        $this->recordEvent(
+            'login_failed',
+            'denied',
+            'invalid_credentials',
+            $principal?->accountId,
+            $principal?->credentialId,
+            null,
+            $identifierHmac,
+            $requestId,
+            $ipAddress,
+            $userAgentHash,
+            $now,
+        );
+        if ($credentialLocked && $principal !== null) {
+            $this->recordEvent(
+                'credential_locked',
+                'denied',
+                'failed_attempt_limit',
+                $principal->accountId,
+                $principal->credentialId,
+                null,
+                $identifierHmac,
+                $requestId,
+                $ipAddress,
+                $userAgentHash,
+                $now,
+            );
+        }
+    }
+
+    public function registerSuccessfulLogin(
+        PlatformAuthPrincipal $principal,
+        ?string $replacementSecretHash,
+        DateTimeImmutable $now,
+    ): void {
+        $this->execute(<<<'SQL'
+UPDATE pa_credential
+SET status = 'active', failed_attempts = 0, locked_until = NULL,
+    secret_hash = COALESCE(:secret_hash, secret_hash),
+    secret_changed_at = CASE WHEN :secret_changed = 1 THEN :secret_changed_at ELSE secret_changed_at END,
+    revision = revision + 1,
+    last_used_at = :last_used_at, updated_at = :updated_at
+WHERE id = :credential_id
+SQL, [
+            'secret_hash' => $replacementSecretHash,
+            'secret_changed' => $replacementSecretHash === null ? 0 : 1,
+            'secret_changed_at' => $this->format($now),
+            'last_used_at' => $this->format($now),
+            'updated_at' => $this->format($now),
+            'credential_id' => $principal->credentialId,
+        ]);
+        $this->execute(<<<'SQL'
+UPDATE pa_account SET last_login_at = :last_login_at, updated_at = :updated_at WHERE id = :account_id
+SQL, [
+            'last_login_at' => $this->format($now),
+            'updated_at' => $this->format($now),
+            'account_id' => $principal->accountId,
+        ]);
     }
 
     public function createSession(
@@ -241,6 +388,7 @@ SQL, ['revoked_at' => $this->format($now), 'session_id' => $sessionId]);
         ?int $accountId,
         ?int $credentialId,
         ?string $sessionKey,
+        ?string $identifierHmac,
         string $requestId,
         string $ipAddress,
         ?string $userAgentHash,
@@ -249,11 +397,11 @@ SQL, ['revoked_at' => $this->format($now), 'session_id' => $sessionId]);
         $this->execute(<<<'SQL'
 INSERT INTO pa_auth_security_event (
     audience, event_type, outcome, reason_code,
-    account_id, credential_id, session_key,
+    account_id, credential_id, session_key, identifier_hmac,
     request_id, ip_address, user_agent_hash, occurred_at
 ) VALUES (
     'platform', :event_type, :outcome, :reason_code,
-    :account_id, :credential_id, :session_key,
+    :account_id, :credential_id, :session_key, :identifier_hmac,
     :request_id, :ip_address, :user_agent_hash, :occurred_at
 )
 SQL, [
@@ -263,6 +411,7 @@ SQL, [
             'account_id' => $accountId,
             'credential_id' => $credentialId,
             'session_key' => $sessionKey,
+            'identifier_hmac' => $identifierHmac,
             'request_id' => $requestId,
             'ip_address' => $ipAddress,
             'user_agent_hash' => $userAgentHash,
@@ -304,5 +453,10 @@ SQL, [
     private function date(string $value): DateTimeImmutable
     {
         return new DateTimeImmutable($value, new DateTimeZone('UTC'));
+    }
+
+    private function nullableDate(mixed $value): ?DateTimeImmutable
+    {
+        return is_string($value) ? $this->date($value) : null;
     }
 }

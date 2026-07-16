@@ -66,6 +66,7 @@ final class PlatformAuthServiceIntegrationTest extends DatabaseTestCase
             $passwords,
             $this->clock,
             $tokens,
+            'test-platform-audience-hmac-key-32-bytes',
         );
         $this->tenantAuth = new TenantAuthService(
             $transactions,
@@ -110,6 +111,110 @@ final class PlatformAuthServiceIntegrationTest extends DatabaseTestCase
                 'request-tenant-to-platform',
             ))->errorCode,
         );
+    }
+
+    public function testPlatformCredentialLockInvalidatesExistingSessions(): void
+    {
+        $existing = $this->login();
+        for ($attempt = 1; $attempt <= 5; ++$attempt) {
+            $this->authError(fn() => $this->platformAuth->login(
+                'platform@example.com',
+                'wrong platform password',
+                '10.40.0.1',
+                'Test Agent',
+                "request-platform-failure-{$attempt}",
+            ));
+        }
+
+        $credential = $this->query(<<<'SQL'
+SELECT status, failed_attempts, locked_until FROM pa_credential WHERE account_id = 1
+SQL)->fetch();
+        self::assertIsArray($credential);
+        self::assertSame('locked', $credential['status']);
+        self::assertSame(5, (int) $credential['failed_attempts']);
+        self::assertNotNull($credential['locked_until']);
+        self::assertSame(
+            'AUTH_ACCOUNT_UNAVAILABLE',
+            $this->authError(fn() => $this->platformAuth->context(
+                $existing->tokens->access->expose(),
+                'request-platform-session-after-lock',
+            ))->errorCode,
+        );
+
+        $this->clock->advance('+15 minutes');
+        self::assertSame(1, $this->login()->context->operatorId);
+    }
+
+    public function testPlatformLoginAppliesIndependentIpAndIdentifierRateWindows(): void
+    {
+        $identifierHmac = hash_hmac(
+            'sha256',
+            'platform@example.com',
+            'test-platform-audience-hmac-key-32-bytes',
+        );
+        $statement = $this->database->prepare(<<<'SQL'
+INSERT INTO pa_auth_security_event (
+    audience, event_type, outcome, reason_code, identifier_hmac,
+    request_id, ip_address, occurred_at
+) VALUES (
+    'tenant', 'login_failed', 'denied', 'invalid_credentials', :identifier_hmac,
+    :request_id, :ip_address, '2026-07-16 03:00:00.000'
+)
+SQL);
+        self::assertNotFalse($statement);
+        for ($attempt = 1; $attempt <= 20; ++$attempt) {
+            $statement->execute([
+                'identifier_hmac' => hash('sha256', "spray-identifier-{$attempt}"),
+                'request_id' => "request-platform-ip-rate-{$attempt}",
+                'ip_address' => '10.50.0.1',
+            ]);
+        }
+        self::assertSame(
+            'AUTH_RATE_LIMITED',
+            $this->authError(fn() => $this->platformAuth->login(
+                'platform@example.com',
+                'platform correct horse password',
+                '10.50.0.1',
+                null,
+                'request-platform-ip-rate-limited',
+            ))->errorCode,
+        );
+
+        $this->database->exec('TRUNCATE TABLE pa_auth_security_event');
+        for ($attempt = 1; $attempt <= 20; ++$attempt) {
+            $statement->execute([
+                'identifier_hmac' => $identifierHmac,
+                'request_id' => "request-platform-identifier-rate-{$attempt}",
+                'ip_address' => "10.60.0.{$attempt}",
+            ]);
+        }
+        self::assertSame(
+            'AUTH_RATE_LIMITED',
+            $this->authError(fn() => $this->platformAuth->login(
+                'platform@example.com',
+                'platform correct horse password',
+                '10.70.0.1',
+                null,
+                'request-platform-identifier-rate-limited',
+            ))->errorCode,
+        );
+    }
+
+    public function testPlatformLoginUpgradesAnOutdatedPasswordHash(): void
+    {
+        $legacyHash = password_hash('platform correct horse password', PASSWORD_BCRYPT);
+        $statement = $this->database->prepare(
+            'UPDATE pa_credential SET secret_hash = :secret_hash WHERE account_id = 1',
+        );
+        self::assertNotFalse($statement);
+        $statement->execute(['secret_hash' => $legacyHash]);
+
+        self::assertSame(1, $this->login()->context->operatorId);
+
+        $storedHash = $this->query('SELECT secret_hash FROM pa_credential WHERE account_id = 1')->fetchColumn();
+        self::assertIsString($storedHash);
+        self::assertSame('argon2id', password_get_info($storedHash)['algoName']);
+        self::assertTrue(password_verify('platform correct horse password', $storedHash));
     }
 
     public function testPlatformRefreshRotatesAndOperatorRevisionInvalidates(): void

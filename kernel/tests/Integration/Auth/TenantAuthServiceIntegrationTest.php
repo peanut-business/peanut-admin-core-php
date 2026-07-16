@@ -170,6 +170,8 @@ SQL)->fetchAll();
 
     public function testFiveFailuresLockCredentialTemporarily(): void
     {
+        $existingSession = $this->selectAlpha($this->login());
+
         for ($attempt = 1; $attempt <= 5; ++$attempt) {
             $this->captureAuthError(fn() => $this->auth->login(
                 self::EMAIL,
@@ -188,6 +190,13 @@ SQL)->fetch();
         self::assertSame('locked', $row['status']);
         self::assertSame(5, (int) $row['failed_attempts']);
         self::assertNotNull($row['locked_until']);
+        self::assertSame(
+            'AUTH_ACCOUNT_UNAVAILABLE',
+            $this->captureAuthError(fn() => $this->auth->context(
+                $existingSession->tokens->access->expose(),
+                'request-before-lock-session',
+            ))->errorCode,
+        );
 
         $error = $this->captureAuthError(fn() => $this->auth->login(
             self::EMAIL,
@@ -203,14 +212,9 @@ SQL)->fetch();
         self::assertInstanceOf(TenantSelectionRequired::class, $this->login());
     }
 
-    public function testIpAndIdentifierWindowIsRateLimited(): void
+    public function testIpWindowIsRateLimitedAcrossDifferentIdentifiers(): void
     {
         $repository = new PdoTenantAuthRepository($this->database);
-        $identifierHmac = hash_hmac(
-            'sha256',
-            self::EMAIL,
-            'test-identifier-hmac-secret-at-least-32-bytes',
-        );
         for ($attempt = 1; $attempt <= 20; ++$attempt) {
             $repository->recordSecurityEvent(
                 'login_failed',
@@ -219,7 +223,7 @@ SQL)->fetch();
                 $this->accountId,
                 null,
                 null,
-                $identifierHmac,
+                hash('sha256', "different-identifier-{$attempt}"),
                 "request-rate-fixture-{$attempt}",
                 '10.10.0.1',
                 null,
@@ -237,6 +241,61 @@ SQL)->fetch();
         ));
         self::assertSame('AUTH_RATE_LIMITED', $error->errorCode);
         self::assertSame(429, $error->httpStatus);
+    }
+
+    public function testIdentifierWindowIsRateLimitedAcrossDifferentIpAddresses(): void
+    {
+        $repository = new PdoTenantAuthRepository($this->database);
+        $identifierHmac = hash_hmac(
+            'sha256',
+            self::EMAIL,
+            'test-identifier-hmac-secret-at-least-32-bytes',
+        );
+        for ($attempt = 1; $attempt <= 20; ++$attempt) {
+            $repository->recordSecurityEvent(
+                'login_failed',
+                'denied',
+                'invalid_credentials',
+                $this->accountId,
+                null,
+                null,
+                $identifierHmac,
+                "request-identifier-rate-fixture-{$attempt}",
+                "10.20.0.{$attempt}",
+                null,
+                $this->clock->now(),
+            );
+        }
+
+        $error = $this->captureAuthError(fn() => $this->auth->login(
+            self::EMAIL,
+            self::PASSWORD,
+            null,
+            '10.30.0.1',
+            null,
+            'request-identifier-rate-limited',
+        ));
+        self::assertSame('AUTH_RATE_LIMITED', $error->errorCode);
+        self::assertSame(429, $error->httpStatus);
+    }
+
+    public function testSuccessfulLoginUpgradesAnOutdatedPasswordHash(): void
+    {
+        $legacyHash = password_hash(self::PASSWORD, PASSWORD_BCRYPT);
+        $statement = $this->database->prepare(
+            'UPDATE pa_credential SET secret_hash = :secret_hash WHERE account_id = :account_id',
+        );
+        self::assertNotFalse($statement);
+        $statement->execute(['secret_hash' => $legacyHash, 'account_id' => $this->accountId]);
+
+        self::assertInstanceOf(TenantSelectionRequired::class, $this->login());
+
+        $storedHash = $this->query(
+            'SELECT secret_hash FROM pa_credential WHERE account_id = ' . $this->accountId,
+        )->fetchColumn();
+        self::assertIsString($storedHash);
+        self::assertSame('argon2id', password_get_info($storedHash)['algoName']);
+        self::assertTrue(password_verify(self::PASSWORD, $storedHash));
     }
 
     public function testSelectionCreatesHashedTokensAndFixedRefreshCookie(): void
@@ -290,6 +349,42 @@ SQL)->fetchAll();
             'request-replay',
         ));
         self::assertSame('AUTH_CHALLENGE_USED', $error->errorCode);
+    }
+
+    public function testChallengeRejectsChangedIpOrUserAgentWithoutBeingConsumed(): void
+    {
+        $selection = $this->login();
+        self::assertInstanceOf(TenantSelectionRequired::class, $selection);
+
+        self::assertSame(
+            'AUTH_CHALLENGE_INVALID',
+            $this->captureAuthError(fn() => $this->auth->selectTenant(
+                $selection->challenge->expose(),
+                $this->alphaTenantId,
+                '127.0.0.2',
+                'Test Agent',
+                'request-challenge-changed-ip',
+            ))->errorCode,
+        );
+        self::assertSame(
+            'AUTH_CHALLENGE_INVALID',
+            $this->captureAuthError(fn() => $this->auth->selectTenant(
+                $selection->challenge->expose(),
+                $this->alphaTenantId,
+                '127.0.0.1',
+                'Changed Agent',
+                'request-challenge-changed-agent',
+            ))->errorCode,
+        );
+
+        self::assertSame(
+            $this->alphaTenantId,
+            $this->selectAlpha($selection)->context->tenantId,
+        );
+        self::assertSame(2, (int) $this->query(<<<'SQL'
+SELECT COUNT(*) FROM pa_auth_security_event
+WHERE event_type = 'challenge_denied' AND reason_code = 'challenge_risk_context_changed'
+SQL)->fetchColumn());
     }
 
     public function testAccessAndRefreshExpireAtTheExactServerBoundary(): void

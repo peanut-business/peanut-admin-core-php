@@ -9,7 +9,26 @@ use PeanutAdmin\Kernel\Identity\EmailAddress;
 
 interface PlatformAuthRepository
 {
+    public function failedLoginCountByIp(string $ipAddress, DateTimeImmutable $since): int;
+
+    public function failedLoginCountByIdentifier(string $identifierHmac, DateTimeImmutable $since): int;
+
     public function principalByEmail(EmailAddress $email, bool $forUpdate = false): ?PlatformAuthPrincipal;
+
+    public function registerFailedLogin(
+        ?PlatformAuthPrincipal $principal,
+        string $identifierHmac,
+        string $ipAddress,
+        ?string $userAgentHash,
+        string $requestId,
+        DateTimeImmutable $now,
+    ): void;
+
+    public function registerSuccessfulLogin(
+        PlatformAuthPrincipal $principal,
+        ?string $replacementSecretHash,
+        DateTimeImmutable $now,
+    ): void;
 
     public function createSession(
         PlatformAuthPrincipal $principal,
@@ -41,6 +60,7 @@ interface PlatformAuthRepository
         ?int $accountId,
         ?int $credentialId,
         ?string $sessionKey,
+        ?string $identifierHmac,
         string $requestId,
         string $ipAddress,
         ?string $userAgentHash,

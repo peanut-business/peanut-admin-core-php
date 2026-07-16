@@ -9,11 +9,9 @@ use PeanutAdmin\Kernel\Identity\EmailAddress;
 
 interface TenantAuthRepository
 {
-    public function failedLoginCount(
-        string $ipAddress,
-        string $identifierHmac,
-        DateTimeImmutable $since,
-    ): int;
+    public function failedLoginCountByIp(string $ipAddress, DateTimeImmutable $since): int;
+
+    public function failedLoginCountByIdentifier(string $identifierHmac, DateTimeImmutable $since): int;
 
     public function credentialByEmail(EmailAddress $email, bool $forUpdate = false): ?AuthCredential;
 
@@ -21,11 +19,16 @@ interface TenantAuthRepository
         ?AuthCredential $credential,
         string $identifierHmac,
         string $ipAddress,
+        ?string $userAgentHash,
         string $requestId,
         DateTimeImmutable $now,
     ): void;
 
-    public function registerSuccessfulLogin(AuthCredential $credential, DateTimeImmutable $now): void;
+    public function registerSuccessfulLogin(
+        AuthCredential $credential,
+        ?string $replacementSecretHash,
+        DateTimeImmutable $now,
+    ): void;
 
     /** @return list<TenantChoice> */
     public function availableTenants(int $accountId, ?string $tenantCode = null): array;

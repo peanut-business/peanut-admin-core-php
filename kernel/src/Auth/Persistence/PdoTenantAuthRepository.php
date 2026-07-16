@@ -23,22 +23,33 @@ use PeanutAdmin\Kernel\Tenancy\TenantStatus;
 
 final class PdoTenantAuthRepository extends PdoRepository implements TenantAuthRepository
 {
-    public function failedLoginCount(
-        string $ipAddress,
-        string $identifierHmac,
-        DateTimeImmutable $since,
-    ): int {
+    public function failedLoginCountByIp(string $ipAddress, DateTimeImmutable $since): int
+    {
         $row = $this->fetchOne(<<<'SQL'
 SELECT COUNT(*) AS aggregate
 FROM pa_auth_security_event
-WHERE audience = 'tenant'
-  AND event_type = 'login_failed'
+WHERE event_type = 'login_failed'
   AND outcome = 'denied'
   AND ip_address = :ip_address
-  AND identifier_hmac = :identifier_hmac
   AND occurred_at >= :since_at
 SQL, [
             'ip_address' => $ipAddress,
+            'since_at' => $this->format($since),
+        ]);
+
+        return $row === null ? 0 : (int) $row['aggregate'];
+    }
+
+    public function failedLoginCountByIdentifier(string $identifierHmac, DateTimeImmutable $since): int
+    {
+        $row = $this->fetchOne(<<<'SQL'
+SELECT COUNT(*) AS aggregate
+FROM pa_auth_security_event
+WHERE event_type = 'login_failed'
+  AND outcome = 'denied'
+  AND identifier_hmac = :identifier_hmac
+  AND occurred_at >= :since_at
+SQL, [
             'identifier_hmac' => $identifierHmac,
             'since_at' => $this->format($since),
         ]);
@@ -73,53 +84,102 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''),
         ?AuthCredential $credential,
         string $identifierHmac,
         string $ipAddress,
+        ?string $userAgentHash,
         string $requestId,
         DateTimeImmutable $now,
     ): void {
+        $credentialLocked = false;
         if ($credential !== null) {
-            $attempts = $credential->failedAttempts + 1;
+            $lockIsActive = $credential->credentialStatus === CredentialStatus::Locked
+                && $credential->lockedUntil !== null
+                && $now < $credential->lockedUntil;
+            if ($lockIsActive) {
+                $this->recordFailedLoginEvent(
+                    $credential,
+                    $identifierHmac,
+                    $ipAddress,
+                    $userAgentHash,
+                    $requestId,
+                    $now,
+                );
+
+                return;
+            }
+
+            $attempts = $credential->credentialStatus === CredentialStatus::Locked
+                ? 1
+                : $credential->failedAttempts + 1;
             $lockedUntil = $attempts >= 5 ? $now->modify('+15 minutes') : null;
+            $credentialLocked = $lockedUntil !== null;
             $this->execute(<<<'SQL'
 UPDATE pa_credential
 SET failed_attempts = :failed_attempts,
-    status = CASE WHEN :lock_status = 1 THEN 'locked' ELSE status END,
-    locked_until = CASE WHEN :lock_time = 1 THEN :locked_until ELSE locked_until END,
+    status = CASE WHEN :lock_status = 1 THEN 'locked' ELSE 'active' END,
+    locked_until = :locked_until,
     revision = revision + 1,
     updated_at = :updated_at
 WHERE id = :credential_id
 SQL, [
                 'failed_attempts' => $attempts,
                 'lock_status' => $lockedUntil === null ? 0 : 1,
-                'lock_time' => $lockedUntil === null ? 0 : 1,
                 'locked_until' => $lockedUntil === null ? null : $this->format($lockedUntil),
                 'updated_at' => $this->format($now),
                 'credential_id' => $credential->credentialId,
             ]);
+            if ($credentialLocked) {
+                $this->execute(<<<'SQL'
+UPDATE pa_account
+SET security_revision = security_revision + 1, updated_at = :updated_at
+WHERE id = :account_id
+SQL, [
+                    'updated_at' => $this->format($now),
+                    'account_id' => $credential->accountId,
+                ]);
+            }
         }
 
-        $this->recordSecurityEvent(
-            'login_failed',
-            'denied',
-            'invalid_credentials',
-            $credential?->accountId,
-            $credential?->credentialId,
-            null,
+        $this->recordFailedLoginEvent(
+            $credential,
             $identifierHmac,
-            $requestId,
             $ipAddress,
-            null,
+            $userAgentHash,
+            $requestId,
             $now,
         );
+        if ($credentialLocked && $credential !== null) {
+            $this->recordSecurityEvent(
+                'credential_locked',
+                'denied',
+                'failed_attempt_limit',
+                $credential->accountId,
+                $credential->credentialId,
+                null,
+                $identifierHmac,
+                $requestId,
+                $ipAddress,
+                $userAgentHash,
+                $now,
+            );
+        }
     }
 
-    public function registerSuccessfulLogin(AuthCredential $credential, DateTimeImmutable $now): void
-    {
+    public function registerSuccessfulLogin(
+        AuthCredential $credential,
+        ?string $replacementSecretHash,
+        DateTimeImmutable $now,
+    ): void {
         $this->execute(<<<'SQL'
 UPDATE pa_credential
 SET status = 'active', failed_attempts = 0, locked_until = NULL,
+    secret_hash = COALESCE(:secret_hash, secret_hash),
+    secret_changed_at = CASE WHEN :secret_changed = 1 THEN :secret_changed_at ELSE secret_changed_at END,
+    revision = revision + 1,
     last_used_at = :last_used_at, updated_at = :updated_at
 WHERE id = :credential_id
 SQL, [
+            'secret_hash' => $replacementSecretHash,
+            'secret_changed' => $replacementSecretHash === null ? 0 : 1,
+            'secret_changed_at' => $this->format($now),
             'last_used_at' => $this->format($now),
             'updated_at' => $this->format($now),
             'credential_id' => $credential->credentialId,
@@ -215,7 +275,7 @@ SQL, [
     public function challengeByHash(string $tokenHash, bool $forUpdate = false): ?LoginChallengeRecord
     {
         $row = $this->fetchOne(
-            'SELECT id, account_id, purpose, status, source_session_key, expires_at'
+            'SELECT id, account_id, purpose, status, source_session_key, ip_address, user_agent_hash, expires_at'
             . ' FROM pa_login_challenge WHERE token_hash = :token_hash'
             . ($forUpdate ? ' FOR UPDATE' : ''),
             ['token_hash' => $tokenHash],
@@ -230,6 +290,8 @@ SQL, [
             (string) $row['purpose'],
             (string) $row['status'],
             is_string($row['source_session_key']) ? $row['source_session_key'] : null,
+            is_string($row['ip_address']) ? $row['ip_address'] : null,
+            is_string($row['user_agent_hash']) ? $row['user_agent_hash'] : null,
             $this->date((string) $row['expires_at']),
         );
     }
@@ -490,6 +552,29 @@ SQL, [
             'user_agent_hash' => $userAgentHash,
             'occurred_at' => $this->format($now),
         ]);
+    }
+
+    private function recordFailedLoginEvent(
+        ?AuthCredential $credential,
+        string $identifierHmac,
+        string $ipAddress,
+        ?string $userAgentHash,
+        string $requestId,
+        DateTimeImmutable $now,
+    ): void {
+        $this->recordSecurityEvent(
+            'login_failed',
+            'denied',
+            'invalid_credentials',
+            $credential?->accountId,
+            $credential?->credentialId,
+            null,
+            $identifierHmac,
+            $requestId,
+            $ipAddress,
+            $userAgentHash,
+            $now,
+        );
     }
 
     private function insertToken(

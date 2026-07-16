@@ -52,11 +52,14 @@ final class TenantAuthService
             $this->identifierHmacKey,
         );
         $now = $this->clock->now();
-        if ($this->repository->failedLoginCount(
-            $ipAddress,
-            $identifierHmac,
-            $now->modify(self::RATE_WINDOW),
-        ) >= self::RATE_LIMIT) {
+        $rateWindowStart = $now->modify(self::RATE_WINDOW);
+        if (
+            $this->repository->failedLoginCountByIp($ipAddress, $rateWindowStart) >= self::RATE_LIMIT
+            || $this->repository->failedLoginCountByIdentifier(
+                $identifierHmac,
+                $rateWindowStart,
+            ) >= self::RATE_LIMIT
+        ) {
             $this->repository->recordSecurityEvent(
                 'login_rate_limited',
                 'denied',
@@ -92,6 +95,7 @@ final class TenantAuthService
                     $credential,
                     $identifierHmac,
                     $ipAddress,
+                    $this->userAgentHash($userAgent),
                     $requestId,
                     $now,
                 );
@@ -99,7 +103,25 @@ final class TenantAuthService
                 return new AuthException('AUTH_INVALID_CREDENTIALS', 401);
             }
 
-            $this->repository->registerSuccessfulLogin($credential, $now);
+            $replacementSecretHash = $this->passwords->needsRehash($credential->secretHash)
+                ? $this->passwords->hash($plainPassword)
+                : null;
+            $this->repository->registerSuccessfulLogin($credential, $replacementSecretHash, $now);
+            if ($replacementSecretHash !== null) {
+                $this->repository->recordSecurityEvent(
+                    'credential_rehashed',
+                    'success',
+                    null,
+                    $credential->accountId,
+                    $credential->credentialId,
+                    null,
+                    $identifierHmac,
+                    $requestId,
+                    $ipAddress,
+                    $this->userAgentHash($userAgent),
+                    $now,
+                );
+            }
             $choices = $this->repository->availableTenants($credential->accountId, $tenantCode);
             if ($choices === []) {
                 $this->repository->recordSecurityEvent(
@@ -183,16 +205,79 @@ final class TenantAuthService
         ): TenantAuthentication|AuthException {
             $challenge = $this->repository->challengeByHash(hash('sha256', $challengeToken), true);
             if ($challenge === null) {
+                $this->recordChallengeDenied(
+                    null,
+                    'challenge_not_found',
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+
                 return new AuthException('AUTH_CHALLENGE_INVALID', 401);
             }
             if ($challenge->status === 'used') {
+                $this->recordChallengeDenied(
+                    $challenge,
+                    'challenge_reused',
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+
                 return new AuthException('AUTH_CHALLENGE_USED', 401);
             }
             if ($challenge->status !== 'active') {
+                $this->recordChallengeDenied(
+                    $challenge,
+                    'challenge_inactive',
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+
                 return new AuthException('AUTH_CHALLENGE_INVALID', 401);
             }
             if ($now >= $challenge->expiresAt) {
+                $this->recordChallengeDenied(
+                    $challenge,
+                    'challenge_expired',
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+
                 return new AuthException('AUTH_CHALLENGE_EXPIRED', 401);
+            }
+            if (!in_array($challenge->purpose, ['tenant_login', 'tenant_switch'], true)) {
+                $this->recordChallengeDenied(
+                    $challenge,
+                    'challenge_purpose_invalid',
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+
+                return new AuthException('AUTH_CHALLENGE_INVALID', 401);
+            }
+            if (
+                $challenge->ipAddress !== $ipAddress
+                || $challenge->userAgentHash !== $this->userAgentHash($userAgent)
+            ) {
+                $this->recordChallengeDenied(
+                    $challenge,
+                    'challenge_risk_context_changed',
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+
+                return new AuthException('AUTH_CHALLENGE_INVALID', 401);
             }
 
             $choice = null;
@@ -221,6 +306,19 @@ final class TenantAuthService
                     $now,
                 );
             }
+            $this->repository->recordSecurityEvent(
+                'challenge_consumed',
+                'success',
+                null,
+                $challenge->accountId,
+                null,
+                $authentication->context->sessionKey,
+                null,
+                $requestId,
+                $ipAddress,
+                $this->userAgentHash($userAgent),
+                $now,
+            );
 
             return $authentication;
         });
@@ -556,6 +654,29 @@ final class TenantAuthService
         return new TenantAuthentication(
             $tokens,
             TenantContext::fromValidatedSession($session, $requestId),
+        );
+    }
+
+    private function recordChallengeDenied(
+        ?LoginChallengeRecord $challenge,
+        string $reasonCode,
+        string $requestId,
+        string $ipAddress,
+        ?string $userAgent,
+        DateTimeImmutable $now,
+    ): void {
+        $this->repository->recordSecurityEvent(
+            'challenge_denied',
+            'denied',
+            $reasonCode,
+            $challenge?->accountId,
+            null,
+            $challenge?->sourceSessionKey,
+            null,
+            $requestId,
+            $ipAddress,
+            $this->userAgentHash($userAgent),
+            $now,
         );
     }
 

@@ -14,6 +14,8 @@ final readonly class LoginChallengeRecord
         public string $purpose,
         public string $status,
         public ?string $sourceSessionKey,
+        public ?string $ipAddress,
+        public ?string $userAgentHash,
         public DateTimeImmutable $expiresAt,
     ) {}
 }

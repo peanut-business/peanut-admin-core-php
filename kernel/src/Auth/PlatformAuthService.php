@@ -16,6 +16,9 @@ use SensitiveParameter;
 
 final class PlatformAuthService
 {
+    private const RATE_WINDOW = '-15 minutes';
+    private const RATE_LIMIT = 20;
+
     private readonly string $dummyPasswordHash;
 
     public function __construct(
@@ -24,6 +27,7 @@ final class PlatformAuthService
         private readonly PasswordHasher $passwords,
         private readonly Clock $clock,
         private readonly TokenIssuer $tokens,
+        private readonly string $identifierHmacKey,
     ) {
         $this->dummyPasswordHash = $passwords->hash('peanut-admin-platform-invalid-pad');
     }
@@ -37,10 +41,39 @@ final class PlatformAuthService
         string $requestId,
     ): PlatformAuthentication {
         $normalizedEmail = EmailAddress::fromString($email);
+        $identifierHmac = hash_hmac(
+            'sha256',
+            $normalizedEmail->value(),
+            $this->identifierHmacKey,
+        );
         $now = $this->clock->now();
+        $rateWindowStart = $now->modify(self::RATE_WINDOW);
+        if (
+            $this->repository->failedLoginCountByIp($ipAddress, $rateWindowStart) >= self::RATE_LIMIT
+            || $this->repository->failedLoginCountByIdentifier(
+                $identifierHmac,
+                $rateWindowStart,
+            ) >= self::RATE_LIMIT
+        ) {
+            $this->repository->recordEvent(
+                'login_rate_limited',
+                'denied',
+                'rate_limited',
+                null,
+                null,
+                null,
+                $identifierHmac,
+                $requestId,
+                $ipAddress,
+                $this->userAgentHash($userAgent),
+                $now,
+            );
+            throw new AuthException('AUTH_RATE_LIMITED', 429);
+        }
         $result = $this->transactions->run(function () use (
             $normalizedEmail,
             $plainPassword,
+            $identifierHmac,
             $ipAddress,
             $userAgent,
             $requestId,
@@ -51,24 +84,39 @@ final class PlatformAuthService
             if (
                 !$this->passwords->verify($plainPassword, $hash)
                 || $principal === null
-                || !$this->principalIsActive($principal)
+                || !$this->principalIsActive($principal, $now)
             ) {
-                $this->repository->recordEvent(
-                    'login_failed',
-                    'denied',
-                    'invalid_credentials',
-                    $principal?->accountId,
-                    $principal?->credentialId,
-                    null,
-                    $requestId,
+                $this->repository->registerFailedLogin(
+                    $principal,
+                    $identifierHmac,
                     $ipAddress,
                     $this->userAgentHash($userAgent),
+                    $requestId,
                     $now,
                 );
 
                 return new AuthException('AUTH_INVALID_CREDENTIALS', 401);
             }
 
+            $replacementSecretHash = $this->passwords->needsRehash($principal->secretHash)
+                ? $this->passwords->hash($plainPassword)
+                : null;
+            $this->repository->registerSuccessfulLogin($principal, $replacementSecretHash, $now);
+            if ($replacementSecretHash !== null) {
+                $this->repository->recordEvent(
+                    'credential_rehashed',
+                    'success',
+                    null,
+                    $principal->accountId,
+                    $principal->credentialId,
+                    null,
+                    $identifierHmac,
+                    $requestId,
+                    $ipAddress,
+                    $this->userAgentHash($userAgent),
+                    $now,
+                );
+            }
             $tokens = $this->issuePair($now, $now->modify('+14 days'));
             $session = $this->repository->createSession(
                 $principal,
@@ -85,6 +133,7 @@ final class PlatformAuthService
                 $principal->accountId,
                 $principal->credentialId,
                 $session->sessionKey,
+                $identifierHmac,
                 $requestId,
                 $ipAddress,
                 $this->userAgentHash($userAgent),
@@ -161,6 +210,7 @@ final class PlatformAuthService
                 $record->accountId,
                 null,
                 $record->sessionKey,
+                null,
                 $requestId,
                 $ipAddress,
                 $this->userAgentHash($userAgent),
@@ -223,10 +273,22 @@ final class PlatformAuthService
         return $result;
     }
 
-    private function principalIsActive(PlatformAuthPrincipal $principal): bool
+    private function principalIsActive(PlatformAuthPrincipal $principal, DateTimeImmutable $now): bool
     {
-        return $principal->credentialStatus === CredentialStatus::Active
-            && $principal->accountStatus === AccountStatus::Active
+        if ($principal->accountStatus !== AccountStatus::Active) {
+            return false;
+        }
+        if ($principal->expiresAt !== null && $now >= $principal->expiresAt) {
+            return false;
+        }
+        $credentialIsAvailable = match ($principal->credentialStatus) {
+            CredentialStatus::Active => true,
+            CredentialStatus::Locked => $principal->lockedUntil !== null
+                && $now >= $principal->lockedUntil,
+            CredentialStatus::Revoked => false,
+        };
+
+        return $credentialIsAvailable
             && $principal->operatorStatus === PlatformOperatorStatus::Active;
     }
 
