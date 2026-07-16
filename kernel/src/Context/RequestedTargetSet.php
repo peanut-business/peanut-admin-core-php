@@ -19,9 +19,9 @@ final readonly class RequestedTargetSet
         if ($targetResourceKey === '' || $targetIds === []) {
             throw new InvalidArgumentException('Typed target set cannot be empty.');
         }
-        $normalized = array_values(array_unique($targetIds));
+        $normalized = array_values(array_unique(array_map('strval', $targetIds), SORT_STRING));
         sort($normalized, SORT_STRING);
-        $this->targetIds = $normalized;
+        $this->targetIds = array_map('strval', $normalized);
     }
 
     /** @return array{target_resource_key: string, target_ids: non-empty-list<string>} */
