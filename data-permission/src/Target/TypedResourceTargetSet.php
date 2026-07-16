@@ -26,8 +26,8 @@ final readonly class TypedResourceTargetSet
             if ($targetId === '') {
                 throw new InvalidArgumentException('Target IDs cannot be empty.');
             }
-            $normalized[$targetId] = true;
+            $normalized[] = $targetId;
         }
-        $this->targetIds = array_keys($normalized);
+        $this->targetIds = array_values(array_unique($normalized, SORT_STRING));
     }
 }
