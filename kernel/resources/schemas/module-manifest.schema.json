@@ -139,12 +139,16 @@
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["key", "target_cardinality", "target_types"],
+                  "required": ["key", "access_mode", "target_cardinality", "permission_match", "audit_level", "permissions", "target_types", "conditions"],
                   "properties": {
                     "key": { "type": "string", "minLength": 1, "maxLength": 96 },
+                    "access_mode": { "enum": ["tenant_wide", "rule_filtered", "explicit_targets", "global_reference_read", "system_internal"] },
                     "target_cardinality": {
                       "enum": ["none", "one_required", "zero_or_one", "many_readable", "aggregate_read", "policy_publish", "bulk_write"]
                     },
+                    "permission_match": { "enum": ["all", "any"] },
+                    "audit_level": { "enum": ["deny", "write", "deny_and_write", "all"] },
+                    "permissions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 160 } },
                     "target_types": {
                       "type": "array",
                       "uniqueItems": true,
@@ -157,6 +161,19 @@
                           "target_role": { "type": "string", "minLength": 1, "maxLength": 64 },
                           "input_mode": { "enum": ["explicit", "derived", "either"] },
                           "policy_selection_permission": { "type": ["string", "null"], "minLength": 1, "maxLength": 160 }
+                        }
+                      }
+                    },
+                    "conditions": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["key", "selector_resource_key"],
+                        "properties": {
+                          "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+                          "selector_resource_key": { "type": ["string", "null"], "minLength": 1, "maxLength": 160 }
                         }
                       }
                     }
@@ -188,8 +205,34 @@
             }
           }
         },
-        "permissions": { "type": "array", "items": { "type": "object" } },
-        "data_conditions": { "type": "array", "items": { "type": "object" } },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "type", "name", "risk_level"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "type": { "enum": ["menu", "api", "action"] },
+              "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "risk_level": { "enum": ["normal", "sensitive", "critical"] }
+            }
+          }
+        },
+        "data_conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "category", "target_mode"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "target_mode": { "enum": ["none", "department", "resource"] },
+              "config_schema": { "type": ["object", "null"] }
+            }
+          }
+        },
         "system_actors": { "type": "array", "items": { "type": "object" } }
       }
     }

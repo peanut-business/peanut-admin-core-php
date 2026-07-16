@@ -12,6 +12,8 @@ interface AuthorizationCatalogRepository
 
     public function syncTargetType(TargetTypeDefinition $definition): int;
 
+    public function syncDataCondition(DataConditionDefinition $definition): int;
+
     public function syncResourceOperation(ResourceOperationDefinition $definition): int;
 
     public function bindOperationPermission(int $operationId, int $permissionId, int $sortOrder = 0): void;
@@ -23,6 +25,20 @@ interface AuthorizationCatalogRepository
         string $inputMode,
         ?int $policySelectionPermissionId,
     ): void;
+
+    public function bindOperationCondition(
+        int $operationId,
+        int $conditionDefinitionId,
+        ?string $selectorResourceKey,
+    ): void;
+
+    public function resetOperationRelations(int $operationId): void;
+
+    public function permissionId(string $key): int;
+
+    public function targetTypeId(string $key): int;
+
+    public function dataConditionId(string $key): int;
 
     public function registryRevision(): string;
 }

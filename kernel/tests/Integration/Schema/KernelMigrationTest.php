@@ -62,7 +62,7 @@ final class KernelMigrationTest extends DatabaseTestCase
         $migrationCount = $this
             ->query('SELECT COUNT(*) FROM `pa_kernel_migration`')
             ->fetchColumn();
-        self::assertSame(36, (int) $migrationCount);
+        self::assertSame(37, (int) $migrationCount);
 
         $authEventIndexes = $this
             ->query("SHOW INDEX FROM `pa_auth_security_event` WHERE Key_name = 'idx_auth_event_ip'")

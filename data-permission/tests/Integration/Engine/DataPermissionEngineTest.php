@@ -559,25 +559,15 @@ SQL);
 
     private function conditionDefinitions(): void
     {
-        $definitions = [
-            'core.tenant_all' => ['tenant', 'none'],
-            'core.self' => ['self', 'none'],
-            'core.own_department' => ['department', 'none'],
-            'core.department_tree' => ['department', 'none'],
-            'core.specified_departments' => ['selected', 'department'],
-            'core.specified_objects' => ['selected', 'resource'],
-        ];
-        foreach ($definitions as $key => [$category, $targetMode]) {
-            $this->conditionIds[$key] = $this->insert('pa_data_condition_definition', [
-                'key' => $key,
-                'module_key' => 'core',
-                'category' => $category,
-                'target_mode' => $targetMode,
-                'manifest_version' => '1.0.0',
-                'manifest_digest' => hash('sha256', $key),
-                'created_at' => self::NOW,
-                'updated_at' => self::NOW,
-            ]);
+        foreach ([
+            'core.tenant_all',
+            'core.self',
+            'core.own_department',
+            'core.department_tree',
+            'core.specified_departments',
+            'core.specified_objects',
+        ] as $key) {
+            $this->conditionIds[$key] = $this->authorizationCatalog->dataConditionId($key);
         }
     }
 

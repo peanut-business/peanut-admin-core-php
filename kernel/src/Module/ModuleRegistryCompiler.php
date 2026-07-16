@@ -4,8 +4,19 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Module;
 
+use PeanutAdmin\Kernel\Authorization\CorePermissionCatalog;
+
 final readonly class ModuleRegistryCompiler
 {
+    private const CORE_CONDITIONS = [
+        'core.tenant_all',
+        'core.self',
+        'core.own_department',
+        'core.department_tree',
+        'core.specified_departments',
+        'core.specified_objects',
+    ];
+
     /** @param list<string> $frontendComponents */
     public function __construct(
         private ManifestSchemaValidator $schemaValidator,
@@ -43,22 +54,32 @@ final readonly class ModuleRegistryCompiler
         $ordered = $this->topologicalOrder($byKey);
         $targetOwners = [];
         $tableOwners = [];
+        $permissionOwners = array_fill_keys(
+            [...CorePermissionCatalog::TENANT, ...CorePermissionCatalog::PLATFORM],
+            'core',
+        );
+        $conditionOwners = array_fill_keys(self::CORE_CONDITIONS, 'core');
+        $dependencyKeys = [];
         $menus = [];
         foreach ($ordered as $document) {
             $key = $this->string($document, 'key');
+            $dependencyKeys[$key] = $this->dependencyKeys($document);
             $catalog = $this->catalog($document);
             foreach ($catalog['target_types'] ?? [] as $target) {
                 $targetKey = $this->arrayString($target, 'key', $key);
                 $this->claim($targetOwners, $targetKey, $key, 'target type');
-                $this->assertContract($this->arrayString($target, 'resolver', $key), 'TargetResolver');
-                $this->assertContract($this->arrayString($target, 'catalog_provider', $key), 'TargetCatalogProvider');
+                $this->assertOwnedContract($this->arrayString($target, 'resolver', $key), 'TargetResolver', $key);
+                $this->assertOwnedContract(
+                    $this->arrayString($target, 'catalog_provider', $key),
+                    'TargetCatalogProvider',
+                    $key,
+                );
             }
-            foreach ($catalog['protected_resources'] ?? [] as $resource) {
-                $this->validateProtectedResource($resource, $key, $targetOwners);
+            foreach ($catalog['permissions'] ?? [] as $permission) {
+                $this->claim($permissionOwners, $this->arrayString($permission, 'key', $key), $key, 'permission');
             }
-            foreach ($catalog['menus'] ?? [] as $menu) {
-                $menuKey = $this->arrayString($menu, 'key', $key);
-                $this->claimMenu($menus, $menuKey, $key, $menu);
+            foreach ($catalog['data_conditions'] ?? [] as $condition) {
+                $this->claim($conditionOwners, $this->arrayString($condition, 'key', $key), $key, 'data condition');
             }
             $database = is_array($document->data['database'] ?? null) ? $document->data['database'] : [];
             foreach ($database['owned_tables'] ?? [] as $table) {
@@ -72,6 +93,32 @@ final readonly class ModuleRegistryCompiler
                 if (!is_string($contract) || !$this->contractInspector->classExists($contract)) {
                     throw new ModuleException('MODULE_CONTRACT_MISSING', "Missing exported contract in {$key}.");
                 }
+            }
+        }
+
+        foreach ($ordered as $document) {
+            $key = $this->string($document, 'key');
+            $catalog = $this->catalog($document);
+            foreach ($catalog['protected_resources'] ?? [] as $resource) {
+                $this->validateProtectedResource(
+                    $resource,
+                    $key,
+                    $dependencyKeys[$key],
+                    $targetOwners,
+                    $permissionOwners,
+                    $conditionOwners,
+                );
+            }
+            foreach ($catalog['menus'] ?? [] as $menu) {
+                $menuKey = $this->arrayString($menu, 'key', $key);
+                $this->claimMenu(
+                    $menus,
+                    $menuKey,
+                    $key,
+                    $menu,
+                    $dependencyKeys[$key],
+                    $permissionOwners,
+                );
             }
         }
 
@@ -140,6 +187,17 @@ final readonly class ModuleRegistryCompiler
         return is_array($dependencies) && array_is_list($dependencies) ? $dependencies : [];
     }
 
+    /** @return array<string, true> */
+    private function dependencyKeys(ManifestDocument $document): array
+    {
+        $keys = [];
+        foreach ($this->dependencies($document) as $dependency) {
+            $keys[$this->arrayString($dependency, 'module_key', $this->string($document, 'key'))] = true;
+        }
+
+        return $keys;
+    }
+
     /** @return array<string, list<array<string, mixed>>> */
     private function catalog(ManifestDocument $document): array
     {
@@ -149,18 +207,31 @@ final readonly class ModuleRegistryCompiler
 
     /**
      * @param array<string, mixed> $resource
+     * @param array<string, true> $dependencies
      * @param array<string, string> $targetOwners
+     * @param array<string, string> $permissionOwners
+     * @param array<string, string> $conditionOwners
      */
-    private function validateProtectedResource(array $resource, string $moduleKey, array $targetOwners): void
-    {
+    private function validateProtectedResource(
+        array $resource,
+        string $moduleKey,
+        array $dependencies,
+        array $targetOwners,
+        array $permissionOwners,
+        array $conditionOwners,
+    ): void {
         $ownership = $this->arrayString($resource, 'ownership', $moduleKey);
-        $this->assertContract($this->arrayString($resource, 'provider', $moduleKey), 'ResourceQueryPolicyProvider');
+        $this->assertOwnedContract(
+            $this->arrayString($resource, 'provider', $moduleKey),
+            'ResourceQueryPolicyProvider',
+            $moduleKey,
+        );
         if ($ownership === 'shared_master') {
             $scopeProvider = $resource['scope_provider'] ?? null;
             if (!is_string($scopeProvider) || $scopeProvider === '') {
                 throw new ModuleException('MODULE_CONTRACT_MISSING', "shared_master in {$moduleKey} requires a scope provider.");
             }
-            $this->assertContract($scopeProvider, 'SharedMasterScopeProvider');
+            $this->assertOwnedContract($scopeProvider, 'SharedMasterScopeProvider', $moduleKey);
         }
         $operations = $resource['operations'] ?? [];
         if (!is_array($operations) || !array_is_list($operations)) {
@@ -169,6 +240,18 @@ final readonly class ModuleRegistryCompiler
         foreach ($operations as $operation) {
             if (!is_array($operation)) {
                 throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid operation in {$moduleKey}.");
+            }
+            foreach ($operation['permissions'] ?? [] as $permissionKey) {
+                if (!is_string($permissionKey) || $permissionKey === '') {
+                    throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid operation permission in {$moduleKey}.");
+                }
+                $this->assertAccessibleOwner(
+                    $permissionKey,
+                    'permission',
+                    $moduleKey,
+                    $dependencies,
+                    $permissionOwners,
+                );
             }
             $cardinality = $operation['target_cardinality'] ?? null;
             if (!is_string($cardinality) || !in_array($cardinality, [
@@ -191,12 +274,28 @@ final readonly class ModuleRegistryCompiler
                 if (!isset($targetOwners[$targetResourceKey])) {
                     throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation references unknown target type in {$moduleKey}.");
                 }
+                $this->assertAccessibleOwner(
+                    $targetResourceKey,
+                    'target type',
+                    $moduleKey,
+                    $dependencies,
+                    $targetOwners,
+                );
                 if (!in_array($inputMode, ['explicit', 'derived', 'either'], true)) {
                     throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target input mode is invalid in {$moduleKey}.");
                 }
                 $selectionPermission = $targetType['policy_selection_permission'] ?? null;
                 if ($selectionPermission !== null && (!is_string($selectionPermission) || $selectionPermission === '')) {
                     throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Policy selection permission is invalid in {$moduleKey}.");
+                }
+                if (is_string($selectionPermission)) {
+                    $this->assertAccessibleOwner(
+                        $selectionPermission,
+                        'permission',
+                        $moduleKey,
+                        $dependencies,
+                        $permissionOwners,
+                    );
                 }
                 $relationKey = $targetRole . ':' . $targetResourceKey;
                 if (isset($relations[$relationKey])) {
@@ -210,6 +309,31 @@ final readonly class ModuleRegistryCompiler
             if ($cardinality !== 'none' && $targetTypes === []) {
                 throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Targeted operation has no target relations in {$moduleKey}.");
             }
+            foreach ($operation['conditions'] ?? [] as $condition) {
+                if (!is_array($condition)) {
+                    throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid operation condition in {$moduleKey}.");
+                }
+                $this->assertAccessibleOwner(
+                    $this->arrayString($condition, 'key', $moduleKey),
+                    'data condition',
+                    $moduleKey,
+                    $dependencies,
+                    $conditionOwners,
+                );
+                $selector = $condition['selector_resource_key'] ?? null;
+                if ($selector !== null) {
+                    if (!is_string($selector) || $selector === '') {
+                        throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid condition selector in {$moduleKey}.");
+                    }
+                    $this->assertAccessibleOwner(
+                        $selector,
+                        'target type',
+                        $moduleKey,
+                        $dependencies,
+                        $targetOwners,
+                    );
+                }
+            }
         }
     }
 
@@ -217,6 +341,40 @@ final readonly class ModuleRegistryCompiler
     {
         if (!$this->contractInspector->implements($class, $contract)) {
             throw new ModuleException('MODULE_CONTRACT_MISSING', "{$class} must implement {$contract}.");
+        }
+    }
+
+    private function assertOwnedContract(string $class, string $contract, string $moduleKey): void
+    {
+        if (!str_starts_with($class, ModuleKey::fromString($moduleKey)->backendNamespace())) {
+            throw new ModuleException(
+                'MODULE_CONTRACT_MISSING',
+                "{$class} must be implemented inside its owning module {$moduleKey}.",
+            );
+        }
+        $this->assertContract($class, $contract);
+    }
+
+    /**
+     * @param array<string, true> $dependencies
+     * @param array<string, string> $owners
+     */
+    private function assertAccessibleOwner(
+        string $key,
+        string $kind,
+        string $moduleKey,
+        array $dependencies,
+        array $owners,
+    ): void {
+        $owner = $owners[$key] ?? null;
+        if ($owner === null) {
+            throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Unknown {$kind} {$key} in {$moduleKey}.");
+        }
+        if ($owner !== 'core' && $owner !== $moduleKey && !isset($dependencies[$owner])) {
+            throw new ModuleException(
+                'MODULE_DEPENDENCY_MISSING',
+                "{$moduleKey} references {$kind} {$key} without declaring dependency {$owner}.",
+            );
         }
     }
 
@@ -232,9 +390,17 @@ final readonly class ModuleRegistryCompiler
     /**
      * @param array<string, array<string, mixed>> $menus
      * @param array<string, mixed> $menu
+     * @param array<string, true> $dependencies
+     * @param array<string, string> $permissionOwners
      */
-    private function claimMenu(array &$menus, string $menuKey, string $moduleKey, array $menu): void
-    {
+    private function claimMenu(
+        array &$menus,
+        string $menuKey,
+        string $moduleKey,
+        array $menu,
+        array $dependencies,
+        array $permissionOwners,
+    ): void {
         if (isset($menus[$menuKey])) {
             throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Duplicate menu key: {$menuKey}");
         }
@@ -243,7 +409,13 @@ final readonly class ModuleRegistryCompiler
             if (!in_array($component, $this->frontendComponents, true)) {
                 throw new ModuleException('MODULE_CONTRACT_MISSING', "Unknown frontend component: {$component}");
             }
-            $this->arrayString($menu, 'required_permission', $moduleKey);
+            $this->assertAccessibleOwner(
+                $this->arrayString($menu, 'required_permission', $moduleKey),
+                'permission',
+                $moduleKey,
+                $dependencies,
+                $permissionOwners,
+            );
         }
         $menus[$menuKey] = $menu + ['module_key' => $moduleKey];
     }

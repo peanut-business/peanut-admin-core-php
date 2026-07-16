@@ -155,7 +155,11 @@ final class ModuleRegistryCompilerTest extends TestCase
 
         $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($target, $resource): void {
             $this->compiler()->compile([
-                $this->manifest('example.target', targetTypes: $target),
+                $this->manifest(
+                    'example.target',
+                    targetTypes: $target,
+                    permissions: [$this->permission('example.target.manage')],
+                ),
                 $this->manifest(
                     'example.work-item',
                     ['example.target'],
@@ -165,7 +169,11 @@ final class ModuleRegistryCompilerTest extends TestCase
         });
 
         $registry = $this->compiler()->compile([
-            $this->manifest('example.target', targetTypes: $target),
+            $this->manifest(
+                'example.target',
+                targetTypes: $target,
+                permissions: [$this->permission('example.target.manage')],
+            ),
             $this->manifest(
                 'example.work-item',
                 ['example.target'],
@@ -203,11 +211,73 @@ final class ModuleRegistryCompilerTest extends TestCase
         });
     }
 
+    public function testCompilerRejectsUnknownCatalogReferencesAndUndeclaredTargetOwner(): void
+    {
+        $resource = static fn(array $overrides = []): array => $overrides + [
+            'key' => 'example.work-item',
+            'ownership' => 'tenant_owned',
+            'provider' => 'query.work-item',
+            'operations' => [[
+                'key' => 'list',
+                'permissions' => ['example.missing.read'],
+                'target_cardinality' => 'none',
+                'target_types' => [],
+                'conditions' => [],
+            ]],
+        ];
+
+        $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($resource): void {
+            $this->compiler()->compile([
+                $this->manifest('example.work-item', protectedResources: [$resource()]),
+            ]);
+        });
+
+        $target = [[
+            'key' => 'example.project',
+            'name' => 'Project',
+            'resolver' => 'resolver.project',
+            'catalog_provider' => 'catalog.project',
+        ]];
+        $targeted = $resource(['operations' => [[
+            'key' => 'list',
+            'permissions' => ['core.member.read'],
+            'target_cardinality' => 'many_readable',
+            'target_types' => [[
+                'target_resource_key' => 'example.project',
+                'target_role' => 'primary',
+                'input_mode' => 'explicit',
+                'policy_selection_permission' => null,
+            ]],
+            'conditions' => [],
+        ]]]);
+        $this->expectModuleCode('MODULE_DEPENDENCY_MISSING', function () use ($target, $targeted): void {
+            $this->compiler()->compile([
+                $this->manifest('example.target', targetTypes: $target),
+                $this->manifest('example.work-item', protectedResources: [$targeted]),
+            ]);
+        });
+    }
+
+    public function testCompilerRejectsResourceProviderOwnedByAnotherModule(): void
+    {
+        $this->expectModuleCode('MODULE_CONTRACT_MISSING', function (): void {
+            $this->compiler(['provider.module', 'ForeignPolicyProvider'])->compile([
+                $this->manifest('example.work-item', protectedResources: [[
+                    'key' => 'example.work-item',
+                    'ownership' => 'tenant_owned',
+                    'provider' => 'PeanutAdmin\\App\\Modules\\Example\\Other\\ForeignPolicyProvider',
+                    'operations' => [],
+                ]]),
+            ]);
+        });
+    }
+
     /**
      * @param list<string> $dependencies
      * @param list<array<string, mixed>> $targetTypes
      * @param list<array<string, mixed>> $protectedResources
      * @param list<array<string, mixed>> $menus
+     * @param list<array<string, mixed>> $permissions
      */
     private function manifest(
         string $key,
@@ -216,8 +286,26 @@ final class ModuleRegistryCompilerTest extends TestCase
         array $targetTypes = [],
         array $protectedResources = [],
         array $menus = [],
+        array $permissions = [],
     ): ManifestDocument {
         $moduleKey = \PeanutAdmin\Kernel\Module\ModuleKey::fromString($key);
+        $namespace = $moduleKey->backendNamespace();
+        foreach ($targetTypes as &$targetType) {
+            foreach (['resolver', 'catalog_provider'] as $field) {
+                if (is_string($targetType[$field] ?? null) && !str_contains($targetType[$field], '\\')) {
+                    $targetType[$field] = $namespace . $targetType[$field];
+                }
+            }
+        }
+        unset($targetType);
+        foreach ($protectedResources as &$resource) {
+            foreach (['provider', 'scope_provider'] as $field) {
+                if (is_string($resource[$field] ?? null) && !str_contains($resource[$field], '\\')) {
+                    $resource[$field] = $namespace . $resource[$field];
+                }
+            }
+        }
+        unset($resource);
 
         return ManifestDocument::fromArray('/tmp/' . str_replace('.', '-', $key), [
             'schema_version' => 1,
@@ -245,6 +333,7 @@ final class ModuleRegistryCompilerTest extends TestCase
                 'target_types' => $targetTypes,
                 'protected_resources' => $protectedResources,
                 'menus' => $menus,
+                'permissions' => $permissions,
             ],
         ]);
     }
@@ -291,12 +380,22 @@ final class ModuleRegistryCompilerTest extends TestCase
                         return str_ends_with($class, 'ModuleProvider');
                     }
 
-                    return in_array($class, $this->available, true);
+                    $separator = strrpos($class, '\\');
+                    $alias = $separator === false ? $class : substr($class, $separator + 1);
+
+                    return in_array($class, $this->available, true)
+                        || in_array($alias, $this->available, true);
                 }
             },
             '1.0.0',
             $components,
         );
+    }
+
+    /** @return array{key: string, type: string, name: string, risk_level: string} */
+    private function permission(string $key): array
+    {
+        return ['key' => $key, 'type' => 'api', 'name' => $key, 'risk_level' => 'normal'];
     }
 
     private function expectModuleCode(string $code, callable $operation): void

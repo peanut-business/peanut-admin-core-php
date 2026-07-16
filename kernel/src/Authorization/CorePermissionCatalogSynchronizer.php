@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Authorization;
 
 use PeanutAdmin\Kernel\Authorization\Persistence\AuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\DataConditionDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 
 final readonly class CorePermissionCatalogSynchronizer
@@ -20,6 +21,24 @@ final readonly class CorePermissionCatalogSynchronizer
         }
         foreach (CorePermissionCatalog::PLATFORM as $key) {
             $this->synchronizePermission($key, 'platform');
+        }
+        foreach ([
+            'core.tenant_all' => ['tenant', 'none'],
+            'core.self' => ['self', 'none'],
+            'core.own_department' => ['department', 'none'],
+            'core.department_tree' => ['department', 'none'],
+            'core.specified_departments' => ['selected', 'department'],
+            'core.specified_objects' => ['selected', 'resource'],
+        ] as $key => [$category, $targetMode]) {
+            $this->catalog->syncDataCondition(new DataConditionDefinition(
+                $key,
+                'core',
+                $category,
+                $targetMode,
+                null,
+                self::MANIFEST_VERSION,
+                hash('sha256', $key . ':' . $category . ':' . $targetMode),
+            ));
         }
     }
 

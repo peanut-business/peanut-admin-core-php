@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Authorization\Persistence;
 
 use DomainException;
+use JsonException;
 use PeanutAdmin\Kernel\Persistence\Pdo\PdoRepository;
 
 final class PdoAuthorizationCatalogRepository extends PdoRepository implements AuthorizationCatalogRepository
@@ -101,6 +102,45 @@ SQL, [
         return $this->idByKey('pa_target_type', $definition->key);
     }
 
+    public function syncDataCondition(DataConditionDefinition $definition): int
+    {
+        $this->assertOwner('pa_data_condition_definition', $definition->key, $definition->moduleKey);
+        try {
+            $configSchema = $definition->configSchema === null
+                ? null
+                : json_encode($definition->configSchema, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        } catch (JsonException) {
+            throw new DomainException('Data condition config schema is not valid JSON.');
+        }
+        $now = $this->now();
+        $this->execute(<<<'SQL'
+INSERT INTO pa_data_condition_definition (
+    `key`, module_key, category, target_mode, config_schema_json,
+    status, manifest_version, manifest_digest, created_at, updated_at
+) VALUES (
+    :condition_key, :module_key, :category, :target_mode, :config_schema,
+    'active', :manifest_version, :manifest_digest, :created_at, :updated_at
+)
+ON DUPLICATE KEY UPDATE
+    category = VALUES(category), target_mode = VALUES(target_mode),
+    config_schema_json = VALUES(config_schema_json), status = 'active',
+    manifest_version = VALUES(manifest_version), manifest_digest = VALUES(manifest_digest),
+    updated_at = VALUES(updated_at)
+SQL, [
+            'condition_key' => $definition->key,
+            'module_key' => $definition->moduleKey,
+            'category' => $definition->category,
+            'target_mode' => $definition->targetMode,
+            'config_schema' => $configSchema,
+            'manifest_version' => $definition->manifestVersion,
+            'manifest_digest' => $definition->manifestDigest,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        return $this->idByKey('pa_data_condition_definition', $definition->key);
+    }
+
     public function syncResourceOperation(ResourceOperationDefinition $definition): int
     {
         $resourceId = $this->idByKey('pa_protected_resource', $definition->resourceKey);
@@ -168,6 +208,56 @@ SQL, [
             'input_mode' => $inputMode,
             'selection_permission_id' => $policySelectionPermissionId,
         ]);
+    }
+
+    public function bindOperationCondition(
+        int $operationId,
+        int $conditionDefinitionId,
+        ?string $selectorResourceKey,
+    ): void {
+        $this->execute(<<<'SQL'
+INSERT INTO pa_resource_operation_condition (
+    resource_operation_id, condition_definition_id, selector_resource_key, status
+) VALUES (
+    :operation_id, :condition_id, :selector_resource_key, 'active'
+)
+ON DUPLICATE KEY UPDATE status = 'active'
+SQL, [
+            'operation_id' => $operationId,
+            'condition_id' => $conditionDefinitionId,
+            'selector_resource_key' => $selectorResourceKey,
+        ]);
+    }
+
+    public function resetOperationRelations(int $operationId): void
+    {
+        $this->execute(
+            'DELETE FROM pa_resource_operation_permission WHERE resource_operation_id = :operation_id',
+            ['operation_id' => $operationId],
+        );
+        $this->execute(
+            "UPDATE pa_resource_operation_target_type SET status = 'retired' WHERE resource_operation_id = :operation_id",
+            ['operation_id' => $operationId],
+        );
+        $this->execute(
+            "UPDATE pa_resource_operation_condition SET status = 'retired' WHERE resource_operation_id = :operation_id",
+            ['operation_id' => $operationId],
+        );
+    }
+
+    public function permissionId(string $key): int
+    {
+        return $this->idByKey('pa_permission', $key);
+    }
+
+    public function targetTypeId(string $key): int
+    {
+        return $this->idByKey('pa_target_type', $key);
+    }
+
+    public function dataConditionId(string $key): int
+    {
+        return $this->idByKey('pa_data_condition_definition', $key);
     }
 
     public function registryRevision(): string
