@@ -86,6 +86,7 @@ final readonly class DataPermissionEngine
             new AuthorizationContext($tenantContext, $policies->primaryDepartmentId),
             $operation,
             $query,
+            $policies,
         );
     }
 
@@ -109,9 +110,19 @@ final readonly class DataPermissionEngine
             return new AlwaysTrue();
         }
 
-        $dataConstraint = $operation->accessMode === 'tenant_wide'
-            ? new AlwaysTrue()
-            : $provider->compilePredicate($context, $operation, $policies);
+        $dataConstraint = new AlwaysTrue();
+        if ($operation->accessMode !== 'tenant_wide') {
+            $targetsCoverPolicy = $resolvedTargets->sets !== []
+                && $this->providers->target($operation->providerKey)->assertTargetsAllowed(
+                    $context,
+                    $operation,
+                    $resolvedTargets,
+                    $policies,
+                )->allowed;
+            $dataConstraint = $targetsCoverPolicy
+                ? new AlwaysTrue()
+                : $provider->compilePredicate($context, $operation, $policies);
+        }
         $constraints = [$dataConstraint];
         if ($resolvedTargets->sets !== []) {
             $constraints[] = $provider->requestedTargetConstraint($context, $operation, $resolvedTargets);

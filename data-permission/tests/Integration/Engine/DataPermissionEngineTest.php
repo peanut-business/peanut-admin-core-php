@@ -310,6 +310,15 @@ SQL);
     {
         $this->authorizationCatalog = new PdoAuthorizationCatalogRepository($this->database);
         (new CorePermissionCatalogSynchronizer($this->authorizationCatalog))->synchronize();
+        $this->insert('pa_module_installation', [
+            'module_key' => 'example',
+            'installed_version' => '1.0.0',
+            'manifest_schema_version' => 1,
+            'manifest_digest' => hash('sha256', 'example'),
+            'status' => 'active',
+            'created_at' => self::NOW,
+            'updated_at' => self::NOW,
+        ]);
         $this->readPermissionId = $this->authorizationCatalog->syncPermission(new PermissionDefinition(
             'example.work-item.read',
             'example',

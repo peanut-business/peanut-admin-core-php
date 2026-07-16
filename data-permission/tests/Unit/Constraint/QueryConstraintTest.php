@@ -10,6 +10,7 @@ use PeanutAdmin\DataPermission\Constraint\ColumnEquals;
 use PeanutAdmin\DataPermission\Constraint\ColumnIn;
 use PeanutAdmin\DataPermission\Constraint\ColumnReference;
 use PeanutAdmin\DataPermission\Constraint\ExistsByContract;
+use PeanutAdmin\DataPermission\Constraint\JsonArrayContainsColumn;
 use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
 use PeanutAdmin\DataPermission\Constraint\QueryConstraint;
 use PeanutAdmin\DataPermission\Constraint\TenantEquals;
@@ -44,6 +45,19 @@ final class QueryConstraintTest extends TestCase
         self::assertStringContainsString('EXISTS (', $compiled->sql);
         self::assertStringContainsString('pa_data_permission_target', $compiled->sql);
         self::assertCount(2, $compiled->parameters);
+    }
+
+    public function testLargeRequestedTargetSetUsesOneJsonParameter(): void
+    {
+        $compiled = (new PdoQueryConstraintCompiler())->compile(new JsonArrayContainsColumn(
+            new ColumnReference('item.project_id'),
+            array_map('strval', range(1, 5000)),
+        ));
+
+        self::assertStringContainsString('JSON_TABLE(', $compiled->sql);
+        self::assertStringContainsString('CAST(item.project_id AS CHAR', $compiled->sql);
+        self::assertCount(1, $compiled->parameters);
+        self::assertCount(5000, json_decode((string) array_values($compiled->parameters)[0], true, 512, JSON_THROW_ON_ERROR));
     }
 
     public function testColumnInRejectsMoreThanFiveHundredValues(): void

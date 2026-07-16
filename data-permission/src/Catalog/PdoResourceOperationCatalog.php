@@ -49,10 +49,16 @@ SQL);
             return true;
         }
         $statement = $this->pdo->prepare(<<<'SQL'
-SELECT id FROM pa_tenant_module
-WHERE tenant_id = :tenant_id AND module_key = :module_key AND status = 'enabled'
-  AND (effective_at IS NULL OR effective_at <= CURRENT_TIMESTAMP(3))
-  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP(3))
+SELECT tenant_module.id
+FROM pa_tenant_module tenant_module
+JOIN pa_module_installation installation
+  ON installation.module_key = tenant_module.module_key
+ AND installation.status = 'active'
+WHERE tenant_module.tenant_id = :tenant_id
+  AND tenant_module.module_key = :module_key
+  AND tenant_module.status = 'enabled'
+  AND (tenant_module.effective_at IS NULL OR tenant_module.effective_at <= CURRENT_TIMESTAMP(3))
+  AND (tenant_module.expires_at IS NULL OR tenant_module.expires_at > CURRENT_TIMESTAMP(3))
 LIMIT 1
 SQL);
         $statement->execute(['tenant_id' => $tenantId, 'module_key' => $moduleKey]);

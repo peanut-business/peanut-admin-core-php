@@ -30,6 +30,7 @@ final class PdoQueryConstraintCompiler implements QueryConstraintCompiler
             $constraint instanceof TenantEquals => $this->equals($constraint->column, $constraint->tenantId),
             $constraint instanceof ColumnEquals => $this->equals($constraint->column, $constraint->value),
             $constraint instanceof ColumnIn => $this->in($constraint),
+            $constraint instanceof JsonArrayContainsColumn => $this->jsonArrayContains($constraint),
             $constraint instanceof AndConstraint => $this->combine('AND', $constraint->constraints),
             $constraint instanceof OrConstraint => $this->combine('OR', $constraint->constraints),
             $constraint instanceof ExistsByContract => $this->exists($constraint),
@@ -55,6 +56,28 @@ final class PdoQueryConstraintCompiler implements QueryConstraintCompiler
         );
 
         return sprintf('%s IN (%s)', $constraint->column->value, implode(', ', $parameters));
+    }
+
+    private function jsonArrayContains(JsonArrayContainsColumn $constraint): string
+    {
+        $parameter = $this->parameter(json_encode(
+            $constraint->values,
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+        ));
+
+        return <<<SQL
+EXISTS (
+    SELECT 1
+    FROM JSON_TABLE(
+        :{$parameter},
+        '$[*]' COLUMNS (target_id VARCHAR(128) PATH '$')
+    ) requested_target
+    WHERE requested_target.target_id COLLATE utf8mb4_0900_ai_ci = (
+        CAST({$constraint->column->value} AS CHAR CHARACTER SET utf8mb4)
+        COLLATE utf8mb4_0900_ai_ci
+    )
+)
+SQL;
     }
 
     /** @param non-empty-list<QueryConstraint> $constraints */

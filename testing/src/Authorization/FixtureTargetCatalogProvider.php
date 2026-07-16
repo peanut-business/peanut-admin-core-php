@@ -7,6 +7,7 @@ namespace PeanutAdmin\Testing\Authorization;
 use PDO;
 use PeanutAdmin\DataPermission\Catalog\ResourceOperation;
 use PeanutAdmin\DataPermission\Context\AuthorizationContext;
+use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
 use PeanutAdmin\DataPermission\Target\ResourceTargetCatalogProvider;
 use PeanutAdmin\DataPermission\Target\TargetCatalogQuery;
 use PeanutAdmin\DataPermission\Target\TargetOptionPage;
@@ -19,6 +20,7 @@ final readonly class FixtureTargetCatalogProvider implements ResourceTargetCatal
         AuthorizationContext $context,
         ResourceOperation $operation,
         TargetCatalogQuery $query,
+        EffectivePolicySet $policies,
     ): TargetOptionPage {
         $offset = ($query->page - 1) * $query->pageSize;
         $count = $this->pdo->prepare(<<<'SQL'

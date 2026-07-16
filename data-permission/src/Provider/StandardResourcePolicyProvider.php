@@ -11,6 +11,7 @@ use PeanutAdmin\DataPermission\Constraint\AndConstraint;
 use PeanutAdmin\DataPermission\Constraint\ColumnEquals;
 use PeanutAdmin\DataPermission\Constraint\ColumnIn;
 use PeanutAdmin\DataPermission\Constraint\ExistsByContract;
+use PeanutAdmin\DataPermission\Constraint\JsonArrayContainsColumn;
 use PeanutAdmin\DataPermission\Constraint\OrConstraint;
 use PeanutAdmin\DataPermission\Constraint\QueryConstraint;
 use PeanutAdmin\DataPermission\Context\AuthorizationContext;
@@ -55,13 +56,15 @@ final readonly class StandardResourcePolicyProvider implements
         $constraints = [];
         foreach ($targets->sets as $targetSet) {
             $column = $this->columns->targetColumns[$targetSet->targetResourceKey] ?? null;
-            if ($column === null || $targetSet->targetIds === [] || count($targetSet->targetIds) > 500) {
+            if ($column === null || $targetSet->targetIds === []) {
                 throw new DataAuthorizationException(
                     'AUTHZ_TARGET_CARDINALITY_INVALID',
-                    'Requested target filters must use a registered column and at most 500 IDs.',
+                    'Requested target filters must use a registered column and non-empty IDs.',
                 );
             }
-            $constraints[] = new ColumnIn($column, $targetSet->targetIds);
+            $constraints[] = count($targetSet->targetIds) <= 500
+                ? new ColumnIn($column, $targetSet->targetIds)
+                : new JsonArrayContainsColumn($column, $targetSet->targetIds);
         }
 
         return count($constraints) === 1 ? $constraints[0] : new AndConstraint($constraints);
@@ -237,7 +240,7 @@ final readonly class StandardResourcePolicyProvider implements
         }
         foreach ($group->conditions as $condition) {
             if ($condition->key === 'core.tenant_all') {
-                return true;
+                return count($group->conditions) === 1;
             }
             if (!in_array($condition->key, ['core.specified_departments', 'core.specified_objects'], true)) {
                 return false;

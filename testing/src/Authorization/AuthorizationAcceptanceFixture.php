@@ -170,6 +170,15 @@ SQL,
     {
         $this->catalog = new PdoAuthorizationCatalogRepository($this->pdo);
         (new CorePermissionCatalogSynchronizer($this->catalog))->synchronize();
+        $this->insert('pa_module_installation', [
+            'module_key' => 'fixture',
+            'installed_version' => '1.0.0',
+            'manifest_schema_version' => 1,
+            'manifest_digest' => hash('sha256', 'fixture'),
+            'status' => 'active',
+            'created_at' => self::NOW,
+            'updated_at' => self::NOW,
+        ]);
         foreach ([
             'menu', 'read', 'create', 'update', 'delete', 'batch', 'import',
             'export', 'job', 'aggregate', 'reference.read', 'reference.use', 'project.select',
@@ -236,26 +245,8 @@ SQL,
             '1.0.0',
             str_repeat('e', 64),
         ));
-        $this->conditionIds['core.tenant_all'] = $this->insert('pa_data_condition_definition', [
-            'key' => 'core.tenant_all',
-            'module_key' => 'core',
-            'category' => 'tenant',
-            'target_mode' => 'none',
-            'manifest_version' => '1.0.0',
-            'manifest_digest' => hash('sha256', 'core.tenant_all'),
-            'created_at' => self::NOW,
-            'updated_at' => self::NOW,
-        ]);
-        $this->conditionIds['core.specified_objects'] = $this->insert('pa_data_condition_definition', [
-            'key' => 'core.specified_objects',
-            'module_key' => 'core',
-            'category' => 'selected',
-            'target_mode' => 'resource',
-            'manifest_version' => '1.0.0',
-            'manifest_digest' => hash('sha256', 'core.specified_objects'),
-            'created_at' => self::NOW,
-            'updated_at' => self::NOW,
-        ]);
+        $this->conditionIds['core.tenant_all'] = $this->catalog->dataConditionId('core.tenant_all');
+        $this->conditionIds['core.specified_objects'] = $this->catalog->dataConditionId('core.specified_objects');
 
         foreach ([
             'list' => ['rule_filtered', 'many_readable', 'fixture.record.read'],
