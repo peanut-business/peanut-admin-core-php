@@ -302,6 +302,20 @@ SQL)->fetchAll();
             'request-expired-access',
         ));
         self::assertSame('AUTH_SESSION_EXPIRED', $error->errorCode);
+
+        $rotated = $this->auth->refresh(
+            $authentication->tokens->refresh->expose(),
+            '127.0.0.1',
+            'Test Agent',
+            'request-refresh-after-access-expiry',
+        );
+        self::assertSame(
+            $this->alphaTenantId,
+            $this->auth->context(
+                $rotated->tokens->access->expose(),
+                'request-context-after-access-expiry',
+            )->tenantId,
+        );
     }
 
     public function testRefreshRotatesOnceAndReuseRevokesTheTokenFamily(): void
@@ -322,6 +336,13 @@ SQL)->fetchAll();
             $this->captureAuthError(
                 fn() => $this->auth->context($oldAccess, 'request-old-access'),
             )->errorCode,
+        );
+        self::assertSame(
+            $this->alphaTenantId,
+            $this->auth->context(
+                $rotated->tokens->access->expose(),
+                'request-new-access-after-late-old-access',
+            )->tenantId,
         );
 
         $reuse = $this->captureAuthError(fn() => $this->auth->refresh(

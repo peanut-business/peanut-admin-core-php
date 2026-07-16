@@ -144,7 +144,8 @@ final class PlatformAuthService
 
                 return new AuthException('AUTH_REFRESH_REUSED', 401);
             }
-            $failure = $this->sessionFailure($record, $now);
+            $failure = $this->tokenFailure($record, 'refresh', $now)
+                ?? $this->sessionFailure($record, $now);
             if ($failure !== null) {
                 $this->repository->revokeSession($record->sessionId, 'session_invalid', $now);
 
@@ -201,6 +202,10 @@ final class PlatformAuthService
             if ($record === null) {
                 return new AuthException('AUTH_TOKEN_INVALID', 401);
             }
+            $tokenFailure = $this->tokenFailure($record, 'access', $now);
+            if ($tokenFailure !== null) {
+                return $tokenFailure;
+            }
             $failure = $this->sessionFailure($record, $now);
             if ($failure !== null) {
                 $this->repository->revokeSession($record->sessionId, 'session_invalid', $now);
@@ -229,12 +234,8 @@ final class PlatformAuthService
         PlatformSessionAuthenticationRecord $record,
         DateTimeImmutable $now,
     ): ?AuthException {
-        if ($record->tokenStatus !== 'active') {
-            return new AuthException('AUTH_TOKEN_INVALID', 401);
-        }
         if (
-            $now >= $record->tokenExpiresAt
-            || $now >= $record->idleExpiresAt
+            $now >= $record->idleExpiresAt
             || $now >= $record->absoluteExpiresAt
         ) {
             return new AuthException('AUTH_SESSION_EXPIRED', 401);
@@ -249,6 +250,21 @@ final class PlatformAuthService
             || $record->operatorSecurityRevision !== $record->currentOperatorSecurityRevision
         ) {
             return new AuthException('AUTH_ACCOUNT_UNAVAILABLE', 401);
+        }
+
+        return null;
+    }
+
+    private function tokenFailure(
+        PlatformSessionAuthenticationRecord $record,
+        string $expectedType,
+        DateTimeImmutable $now,
+    ): ?AuthException {
+        if ($record->tokenType !== $expectedType || $record->tokenStatus !== 'active') {
+            return new AuthException('AUTH_TOKEN_INVALID', 401);
+        }
+        if ($now >= $record->tokenExpiresAt) {
+            return new AuthException('AUTH_SESSION_EXPIRED', 401);
         }
 
         return null;

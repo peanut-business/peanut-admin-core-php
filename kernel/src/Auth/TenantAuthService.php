@@ -275,11 +275,12 @@ final class TenantAuthService
                 return new AuthException('AUTH_REFRESH_REUSED', 401);
             }
 
-            $invalid = $this->sessionFailure($record, $now);
-            if ($invalid !== null || $record->tokenType !== 'refresh') {
+            $invalid = $this->tokenFailure($record, 'refresh', $now)
+                ?? $this->sessionFailure($record, $now);
+            if ($invalid !== null) {
                 $this->repository->revokeSession($record->sessionId, 'session_invalid', $now);
 
-                return $invalid ?? new AuthException('AUTH_TOKEN_INVALID', 401);
+                return $invalid;
             }
 
             $tokens = $this->issuePair($now, $record->absoluteExpiresAt);
@@ -406,11 +407,15 @@ final class TenantAuthService
                 return new AuthException('AUTH_TOKEN_INVALID', 401);
             }
 
+            $tokenFailure = $this->tokenFailure($record, 'access', $now);
+            if ($tokenFailure !== null) {
+                return $tokenFailure;
+            }
             $failure = $this->sessionFailure($record, $now);
-            if ($failure !== null || $record->tokenType !== 'access') {
+            if ($failure !== null) {
                 $this->repository->revokeSession($record->sessionId, 'session_invalid', $now);
 
-                return $failure ?? new AuthException('AUTH_TOKEN_INVALID', 401);
+                return $failure;
             }
 
             return $record->validated();
@@ -444,12 +449,8 @@ final class TenantAuthService
         SessionAuthenticationRecord $record,
         DateTimeImmutable $now,
     ): ?AuthException {
-        if ($record->tokenStatus !== 'active') {
-            return new AuthException('AUTH_TOKEN_INVALID', 401);
-        }
         if (
-            $now >= $record->tokenExpiresAt
-            || $now >= $record->idleExpiresAt
+            $now >= $record->idleExpiresAt
             || $now >= $record->absoluteExpiresAt
         ) {
             return new AuthException('AUTH_SESSION_EXPIRED', 401);
@@ -474,6 +475,21 @@ final class TenantAuthService
             || $record->memberSecurityRevision !== $record->currentMemberSecurityRevision
         ) {
             return new AuthException('AUTH_MEMBER_UNAVAILABLE', 403);
+        }
+
+        return null;
+    }
+
+    private function tokenFailure(
+        SessionAuthenticationRecord $record,
+        string $expectedType,
+        DateTimeImmutable $now,
+    ): ?AuthException {
+        if ($record->tokenType !== $expectedType || $record->tokenStatus !== 'active') {
+            return new AuthException('AUTH_TOKEN_INVALID', 401);
+        }
+        if ($now >= $record->tokenExpiresAt) {
+            return new AuthException('AUTH_SESSION_EXPIRED', 401);
         }
 
         return null;

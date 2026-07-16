@@ -202,6 +202,18 @@ SQL, ['revoked_at' => $this->format($now), 'session_id' => $refresh->sessionId])
         $this->execute(<<<'SQL'
 UPDATE pa_platform_session_token SET replaced_by_token_id = :replacement_id WHERE id = :token_id
 SQL, ['replacement_id' => $newRefreshId, 'token_id' => $refresh->tokenId]);
+        $this->execute(<<<'SQL'
+UPDATE pa_platform_session
+SET last_seen_at = :last_seen_at,
+    idle_expires_at = LEAST(:idle_expires_at, absolute_expires_at),
+    updated_at = :updated_at
+WHERE id = :session_id
+SQL, [
+            'last_seen_at' => $this->format($now),
+            'idle_expires_at' => $this->format($now->modify('+8 hours')),
+            'updated_at' => $this->format($now),
+            'session_id' => $refresh->sessionId,
+        ]);
     }
 
     public function revokeSession(int $sessionId, string $reason, DateTimeImmutable $now): void

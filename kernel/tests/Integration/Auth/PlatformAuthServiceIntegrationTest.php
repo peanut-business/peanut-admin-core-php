@@ -140,6 +140,45 @@ SQL);
         );
     }
 
+    public function testExpiredAndRotatedAccessTokensDoNotRevokeTheRefreshFamily(): void
+    {
+        $authentication = $this->login();
+        $oldAccess = $authentication->tokens->access->expose();
+        $this->clock->advance('+15 minutes');
+        self::assertSame(
+            'AUTH_SESSION_EXPIRED',
+            $this->authError(fn() => $this->platformAuth->context(
+                $oldAccess,
+                'request-platform-expired-access',
+            ))->errorCode,
+        );
+
+        $rotated = $this->platformAuth->refresh(
+            $authentication->tokens->refresh->expose(),
+            '127.0.0.1',
+            'Test Agent',
+            'request-platform-refresh-after-expiry',
+        );
+        self::assertSame(1, $this->platformAuth->context(
+            $rotated->tokens->access->expose(),
+            'request-platform-new-access',
+        )->operatorId);
+        self::assertSame(
+            'AUTH_TOKEN_INVALID',
+            $this->authError(fn() => $this->platformAuth->context(
+                $oldAccess,
+                'request-platform-late-old-access',
+            ))->errorCode,
+        );
+        self::assertSame(1, $this->platformAuth->context(
+            $rotated->tokens->access->expose(),
+            'request-platform-new-access-still-valid',
+        )->operatorId);
+
+        $lastSeen = $this->query('SELECT last_seen_at FROM pa_platform_session WHERE id = 1')->fetchColumn();
+        self::assertSame('2026-07-16 03:15:00.000', $lastSeen);
+    }
+
     private function login(): \PeanutAdmin\Kernel\Auth\PlatformAuthentication
     {
         return $this->platformAuth->login(
