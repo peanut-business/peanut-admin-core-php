@@ -44,6 +44,29 @@ final readonly class StandardResourcePolicyProvider implements
         );
     }
 
+    public function requestedTargetConstraint(
+        AuthorizationContext $context,
+        ResourceOperation $operation,
+        TypedResourceTargetCollection $targets,
+    ): QueryConstraint {
+        if ($targets->sets === []) {
+            return new AlwaysTrue();
+        }
+        $constraints = [];
+        foreach ($targets->sets as $targetSet) {
+            $column = $this->columns->targetColumns[$targetSet->targetResourceKey] ?? null;
+            if ($column === null || $targetSet->targetIds === [] || count($targetSet->targetIds) > 500) {
+                throw new DataAuthorizationException(
+                    'AUTHZ_TARGET_CARDINALITY_INVALID',
+                    'Requested target filters must use a registered column and at most 500 IDs.',
+                );
+            }
+            $constraints[] = new ColumnIn($column, $targetSet->targetIds);
+        }
+
+        return count($constraints) === 1 ? $constraints[0] : new AndConstraint($constraints);
+    }
+
     public function compilePredicate(
         AuthorizationContext $context,
         ResourceOperation $operation,

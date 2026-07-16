@@ -113,6 +113,9 @@ final readonly class DataPermissionEngine
             ? new AlwaysTrue()
             : $provider->compilePredicate($context, $operation, $policies);
         $constraints = [$dataConstraint];
+        if ($resolvedTargets->sets !== []) {
+            $constraints[] = $provider->requestedTargetConstraint($context, $operation, $resolvedTargets);
+        }
         if (in_array($operation->ownership, ['tenant_owned', 'business_target_owned'], true)) {
             array_unshift($constraints, $provider->tenantConstraint($context, $operation));
         }

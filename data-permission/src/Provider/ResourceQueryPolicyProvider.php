@@ -8,12 +8,19 @@ use PeanutAdmin\DataPermission\Catalog\ResourceOperation;
 use PeanutAdmin\DataPermission\Constraint\QueryConstraint;
 use PeanutAdmin\DataPermission\Context\AuthorizationContext;
 use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
+use PeanutAdmin\DataPermission\Target\TypedResourceTargetCollection;
 
 interface ResourceQueryPolicyProvider
 {
     public function tenantConstraint(
         AuthorizationContext $context,
         ResourceOperation $operation,
+    ): QueryConstraint;
+
+    public function requestedTargetConstraint(
+        AuthorizationContext $context,
+        ResourceOperation $operation,
+        TypedResourceTargetCollection $targets,
     ): QueryConstraint;
 
     public function compilePredicate(
