@@ -124,7 +124,7 @@ final readonly class DataPermissionEngine
                 : $provider->compilePredicate($context, $operation, $policies);
         }
         $constraints = [$dataConstraint];
-        if ($resolvedTargets->sets !== []) {
+        if ($resolvedTargets->sets !== [] && $operation->ownership !== 'shared_master') {
             $constraints[] = $provider->requestedTargetConstraint($context, $operation, $resolvedTargets);
         }
         if (in_array($operation->ownership, ['tenant_owned', 'business_target_owned'], true)) {

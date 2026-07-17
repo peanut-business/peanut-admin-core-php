@@ -242,6 +242,18 @@ SQL);
         $statement->execute($compiled->parameters);
         self::assertSame(['PRIVATE_A', 'PUBLIC'], $statement->fetchAll(PDO::FETCH_COLUMN));
 
+        $targeted = (new PdoQueryConstraintCompiler())->compile($this->fixture->engine->queryConstraint(
+            $this->fixture->alphaContext,
+            'fixture.reference',
+            'list',
+            ResourceProviderContractHarness::targets('fixture.project', ['A']),
+        ));
+        $statement = $this->database->prepare(
+            'SELECT id FROM fixture_reference reference WHERE ' . $targeted->sql . ' ORDER BY id',
+        );
+        $statement->execute($targeted->parameters);
+        self::assertSame(['PRIVATE_A', 'PUBLIC'], $statement->fetchAll(PDO::FETCH_COLUMN));
+
         self::assertTrue($this->fixture->engine->decideTargets(
             $this->fixture->alphaContext,
             'fixture.reference',
