@@ -19,7 +19,6 @@ require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 
 final class AdminAccessServiceTest extends DatabaseTestCase
 {
-    private const HMAC_KEY = 'integration-member-hmac-key-32-bytes-long';
     private const NOW = '2026-07-16 08:00:00.000';
 
     private int $tenantId;
@@ -52,9 +51,9 @@ final class AdminAccessServiceTest extends DatabaseTestCase
             'request-member-create',
         );
         self::assertSame('pending', $candidate['status']);
-        self::assertSame(64, strlen((string) $this->query(
+        self::assertSame('new-member@example.test', (string) $this->query(
             'SELECT identifier_normalized FROM pa_credential ORDER BY id DESC LIMIT 1',
-        )->fetchColumn()));
+        )->fetchColumn());
 
         $memberId = (int) $candidate['id'];
         $activated = $service->activate(
@@ -293,7 +292,7 @@ final class AdminAccessServiceTest extends DatabaseTestCase
             'created_at' => self::NOW,
             'updated_at' => self::NOW,
         ]);
-        $service = new TenantOwnerAdminService($this->database, self::HMAC_KEY);
+        $service = new TenantOwnerAdminService($this->database);
         $candidate = $service->createCandidate(
             $operatorId,
             $operatorAccountId,
@@ -305,6 +304,9 @@ final class AdminAccessServiceTest extends DatabaseTestCase
         );
         self::assertSame('pending', $candidate['member']['status']);
         self::assertArrayNotHasKey('initial_password', $candidate);
+        self::assertSame('first-owner@example.test', (string) $this->query(
+            'SELECT identifier_normalized FROM pa_credential ORDER BY id DESC LIMIT 1',
+        )->fetchColumn());
 
         $this->assertAdminError('TENANT_OWNER_CANDIDATE_EXISTS', fn() => $service->createCandidate(
             $operatorId,
@@ -348,7 +350,7 @@ SQL)->fetchColumn());
 
     private function members(): MemberAdminService
     {
-        return new MemberAdminService($this->database, self::HMAC_KEY);
+        return new MemberAdminService($this->database);
     }
 
     private function account(string $name): int

@@ -19,17 +19,8 @@ final readonly class TenantOwnerAdminService
 {
     public function __construct(
         private PDO $pdo,
-        private string $identifierHmacKey,
         private PasswordHasher $passwords = new PasswordHasher(),
-    ) {
-        if (strlen($identifierHmacKey) < 32) {
-            throw new AdminAccessException(
-                'AUTH_IDENTIFIER_HMAC_KEY_INVALID',
-                500,
-                'The credential identifier key is not configured.',
-            );
-        }
-    }
+    ) {}
 
     /** @return array<string, mixed> */
     public function createCandidate(
@@ -46,7 +37,7 @@ final readonly class TenantOwnerAdminService
         } catch (InvalidArgumentException) {
             throw AdminAccessException::invalid('EMAIL_INVALID', 'The email address is invalid.');
         }
-        $identifier = hash_hmac('sha256', $normalizedEmail, $this->identifierHmacKey);
+        $identifier = $normalizedEmail;
 
         return $this->transaction(function () use (
             $operatorId,
