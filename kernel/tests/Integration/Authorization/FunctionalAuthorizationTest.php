@@ -57,10 +57,10 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
         $roleId = $this->tenantRole($tenantId, $memberId, 'manager');
         $corePermissionId = $this->permissionId('core.member.read');
         $modulePermissionId = $this->catalog->syncPermission(new PermissionDefinition(
-            'inventory.stock.read',
-            'inventory',
+            'example.record.read',
+            'example.records',
             'api',
-            'Read stock',
+            'Read example records',
             'normal',
             '1.0.0',
         ));
@@ -70,7 +70,7 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
         $this->grantTenantPermission($tenantId, $roleId, $platformPermissionId);
         $this->insert('pa_tenant_module', [
             'tenant_id' => $tenantId,
-            'module_key' => 'inventory',
+            'module_key' => 'example.records',
             'status' => 'disabled',
             'created_at' => self::NOW,
             'updated_at' => self::NOW,
@@ -79,15 +79,15 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
         $evaluator = $this->tenantEvaluator();
         $context = $this->tenantContext($tenantId, $memberId);
         self::assertTrue($evaluator->allows($context, 'core.member.read'));
-        self::assertFalse($evaluator->allows($context, 'inventory.stock.read'));
+        self::assertFalse($evaluator->allows($context, 'example.record.read'));
         self::assertFalse($evaluator->allows($context, 'platform.tenant.read'));
 
         $this->database->exec(<<<'SQL'
 UPDATE pa_tenant_module
 SET status = 'enabled', authorization_revision = authorization_revision + 1
-WHERE module_key = 'inventory'
+WHERE module_key = 'example.records'
 SQL);
-        self::assertTrue($evaluator->allows($context, 'inventory.stock.read'));
+        self::assertTrue($evaluator->allows($context, 'example.record.read'));
 
         $this->database->exec("UPDATE pa_role SET status = 'disabled', authorization_revision = authorization_revision + 1 WHERE id = {$roleId}");
         self::assertFalse($evaluator->allows($context, 'core.member.read'));
@@ -98,16 +98,16 @@ SQL);
         [$tenantId, $memberId] = $this->tenantMember('tenant-owner');
         $this->tenantRole($tenantId, $memberId, 'core.tenant-owner');
         $this->catalog->syncPermission(new PermissionDefinition(
-            'inventory.stock.adjust',
-            'inventory',
+            'example.record.manage',
+            'example.records',
             'api',
-            'Adjust stock',
+            'Manage example records',
             'sensitive',
             '1.0.0',
         ));
         $this->insert('pa_tenant_module', [
             'tenant_id' => $tenantId,
-            'module_key' => 'inventory',
+            'module_key' => 'example.records',
             'status' => 'enabled',
             'created_at' => self::NOW,
             'updated_at' => self::NOW,
@@ -118,7 +118,7 @@ SQL);
         foreach (CorePermissionCatalog::TENANT as $permission) {
             self::assertTrue($evaluator->allows($context, $permission));
         }
-        self::assertFalse($evaluator->allows($context, 'inventory.stock.adjust'));
+        self::assertFalse($evaluator->allows($context, 'example.record.manage'));
     }
 
     public function testOwnerKeyWithoutBuiltinMarkerHasNoImplicitPermissions(): void

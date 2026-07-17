@@ -34,13 +34,13 @@ final class SystemAndAsyncContextTest extends TestCase
             }
         };
         $factory = new SystemContextFactory(new SystemActorRegistry([
-            new SystemActorDefinition('inventory.scheduler', 'tenant', ['inventory.reconcile']),
+            new SystemActorDefinition('example.scheduler', 'tenant', ['example.reconcile']),
             new SystemActorDefinition('platform.maintenance', 'platform', ['platform.health']),
         ]), $resolver);
 
         $tenant = $factory->tenant(
-            'inventory.scheduler',
-            'inventory.reconcile',
+            'example.scheduler',
+            'example.reconcile',
             'alpha',
             'operation-1',
         );
@@ -52,22 +52,22 @@ final class SystemAndAsyncContextTest extends TestCase
         )->actorKey);
 
         $this->expectException(AuthException::class);
-        $factory->tenant('inventory.scheduler', 'inventory.reconcile', '', 'operation-3');
+        $factory->tenant('example.scheduler', 'example.reconcile', '', 'operation-3');
     }
 
     public function testCacheAndLockKeysSeparateAudienceTenantAndRevision(): void
     {
-        $alpha = CacheKeyBuilder::tenant(101, 'inventory.item', 7, 'sku-1');
-        $beta = CacheKeyBuilder::tenant(202, 'inventory.item', 7, 'sku-1');
-        $newRevision = CacheKeyBuilder::tenant(101, 'inventory.item', 8, 'sku-1');
+        $alpha = CacheKeyBuilder::tenant(101, 'example.record', 7, 'record-1');
+        $beta = CacheKeyBuilder::tenant(202, 'example.record', 7, 'record-1');
+        $newRevision = CacheKeyBuilder::tenant(101, 'example.record', 8, 'record-1');
         $platform = CacheKeyBuilder::platform('tenant.catalog', 7, 'page-1');
 
         self::assertNotSame($alpha, $beta);
         self::assertNotSame($alpha, $newRevision);
         self::assertNotSame($alpha, $platform);
         self::assertNotSame(
-            LockKeyBuilder::tenant(101, 'inventory.item', 7, 'sku-1'),
-            LockKeyBuilder::tenant(202, 'inventory.item', 7, 'sku-1'),
+            LockKeyBuilder::tenant(101, 'example.record', 7, 'record-1'),
+            LockKeyBuilder::tenant(202, 'example.record', 7, 'record-1'),
         );
     }
 

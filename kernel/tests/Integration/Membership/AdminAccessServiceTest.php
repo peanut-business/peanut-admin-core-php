@@ -218,8 +218,8 @@ final class AdminAccessServiceTest extends DatabaseTestCase
         $service = new RoleAdminService($this->database);
         $role = $service->create(
             $this->tenantId,
-            'inventory-manager',
-            'Inventory manager',
+            'example-reader',
+            'Example reader',
             null,
             $this->actorMemberId,
             $this->actorAccountId,
@@ -227,16 +227,16 @@ final class AdminAccessServiceTest extends DatabaseTestCase
         );
         $catalog = new PdoAuthorizationCatalogRepository($this->database);
         $catalog->syncPermission(new PermissionDefinition(
-            'inventory.stock.read',
-            'inventory',
+            'example.record.read',
+            'example.records',
             'api',
-            'Read stock',
+            'Read example records',
             'normal',
             '1.0.0',
         ));
         $this->insert('pa_tenant_module', [
             'tenant_id' => $this->tenantId,
-            'module_key' => 'inventory',
+            'module_key' => 'example.records',
             'status' => 'disabled',
             'created_at' => self::NOW,
             'updated_at' => self::NOW,
@@ -245,23 +245,23 @@ final class AdminAccessServiceTest extends DatabaseTestCase
         $this->assertAdminError('PERMISSION_NOT_ASSIGNABLE', fn() => $service->replacePermissions(
             $this->tenantId,
             (int) $role['id'],
-            ['inventory.stock.read'],
+            ['example.record.read'],
             (int) $role['revision'],
             $this->actorMemberId,
             $this->actorAccountId,
             'request-role-permissions-disabled',
         ));
-        $this->database->exec("UPDATE pa_tenant_module SET status = 'enabled' WHERE tenant_id = {$this->tenantId} AND module_key = 'inventory'");
+        $this->database->exec("UPDATE pa_tenant_module SET status = 'enabled' WHERE tenant_id = {$this->tenantId} AND module_key = 'example.records'");
         $updated = $service->replacePermissions(
             $this->tenantId,
             (int) $role['id'],
-            ['inventory.stock.read'],
+            ['example.record.read'],
             (int) $role['revision'],
             $this->actorMemberId,
             $this->actorAccountId,
             'request-role-permissions',
         );
-        self::assertSame(['inventory.stock.read'], $updated['permission_keys']);
+        self::assertSame(['example.record.read'], $updated['permission_keys']);
 
         $this->assertAdminError('PERMISSION_NOT_ASSIGNABLE', fn() => $service->replacePermissions(
             $this->tenantId,
