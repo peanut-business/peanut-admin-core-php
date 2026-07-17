@@ -138,11 +138,15 @@ SQL);
         $statement = $this->pdo->prepare(<<<'SQL'
 SELECT module_key FROM pa_tenant_module
 WHERE tenant_id = :tenant_id AND status = 'enabled'
-  AND (effective_at IS NULL OR effective_at <= :now)
-  AND (expires_at IS NULL OR expires_at > :now)
+  AND (effective_at IS NULL OR effective_at <= :effective_now)
+  AND (expires_at IS NULL OR expires_at > :expires_now)
 ORDER BY module_key
 SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'now' => $now]);
+        $statement->execute([
+            'tenant_id' => $tenantId,
+            'effective_now' => $now,
+            'expires_now' => $now,
+        ]);
 
         return array_values(array_map('strval', $statement->fetchAll(\PDO::FETCH_COLUMN)));
     }
