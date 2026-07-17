@@ -22,6 +22,9 @@ final readonly class TenantModuleManager
         string $moduleKey,
         array $config,
         DateTimeImmutable $now,
+        string $source = 'manual',
+        ?DateTimeImmutable $effectiveAt = null,
+        ?DateTimeImmutable $expiresAt = null,
     ): TenantModuleRecord {
         if (!$this->repository->tenantIsActive($tenantId)) {
             throw new ModuleException('MODULE_TENANT_DISABLED', 'Only an active tenant can enable a module.');
@@ -47,7 +50,15 @@ final readonly class TenantModuleManager
         }
         ($this->hooks[$moduleKey] ?? null)?->enable($tenantId, $config);
 
-        return $this->repository->enable($tenantId, $moduleKey, $config, $now);
+        return $this->repository->enable(
+            $tenantId,
+            $moduleKey,
+            $config,
+            $now,
+            $source,
+            $effectiveAt,
+            $expiresAt,
+        );
     }
 
     public function disable(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord

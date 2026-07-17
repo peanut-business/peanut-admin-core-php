@@ -122,8 +122,18 @@ final class InMemoryTenantModuleMutationRepository implements TenantModuleMutati
         string $moduleKey,
         array $config,
         DateTimeImmutable $now,
+        string $source = 'manual',
+        ?DateTimeImmutable $effectiveAt = null,
+        ?DateTimeImmutable $expiresAt = null,
     ): TenantModuleRecord {
-        return $this->records[$moduleKey] = new TenantModuleRecord($tenantId, $moduleKey, 'enabled', null, null, 1);
+        return $this->records[$moduleKey] = new TenantModuleRecord(
+            $tenantId,
+            $moduleKey,
+            'enabled',
+            $effectiveAt,
+            $expiresAt,
+            1,
+        );
     }
 
     public function disable(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord

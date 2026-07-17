@@ -16,6 +16,9 @@ interface TenantModuleMutationRepository extends ModuleRuntimeRepository
         string $moduleKey,
         array $config,
         DateTimeImmutable $now,
+        string $source = 'manual',
+        ?DateTimeImmutable $effectiveAt = null,
+        ?DateTimeImmutable $expiresAt = null,
     ): TenantModuleRecord;
 
     public function disable(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord;

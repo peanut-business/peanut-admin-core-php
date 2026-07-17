@@ -74,26 +74,33 @@ SQL);
         string $moduleKey,
         array $config,
         DateTimeImmutable $now,
+        string $source = 'manual',
+        ?DateTimeImmutable $effectiveAt = null,
+        ?DateTimeImmutable $expiresAt = null,
     ): TenantModuleRecord {
         $timestamp = $now->format('Y-m-d H:i:s.v');
         $this->execute(<<<'SQL'
 INSERT INTO pa_tenant_module (
     tenant_id, module_key, status, source, config_json, config_revision,
-    authorization_revision, enabled_at, created_at, updated_at
+    authorization_revision, effective_at, expires_at, enabled_at, created_at, updated_at
 ) VALUES (
-    :tenant_id, :module_key, 'enabled', 'manual', :config_json, 1, 1,
-    :enabled_at, :created_at, :updated_at
+    :tenant_id, :module_key, 'enabled', :source, :config_json, 1, 1,
+    :effective_at, :expires_at, :enabled_at, :created_at, :updated_at
 )
 ON DUPLICATE KEY UPDATE
-    status = 'enabled', config_json = VALUES(config_json),
+    status = 'enabled', source = VALUES(source), config_json = VALUES(config_json),
     config_revision = config_revision + 1,
     authorization_revision = authorization_revision + 1,
+    effective_at = VALUES(effective_at), expires_at = VALUES(expires_at),
     enabled_at = VALUES(enabled_at), disabled_at = NULL, disabled_reason = NULL,
     updated_at = VALUES(updated_at)
 SQL, [
             'tenant_id' => $tenantId,
             'module_key' => $moduleKey,
+            'source' => $source,
             'config_json' => json_encode($config, JSON_THROW_ON_ERROR),
+            'effective_at' => $effectiveAt?->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.v'),
+            'expires_at' => $expiresAt?->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.v'),
             'enabled_at' => $timestamp,
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
