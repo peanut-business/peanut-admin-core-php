@@ -17,13 +17,18 @@ final readonly class ModuleRegistryCompiler
         'core.specified_objects',
     ];
 
-    /** @param list<string> $frontendComponents */
+    /**
+     * @param list<string> $frontendComponents
+     * @param list<string> $reservedTables
+     */
     public function __construct(
         private ManifestSchemaValidator $schemaValidator,
         private VersionConstraintMatcher $versionMatcher,
         private ContractInspector $contractInspector,
         private string $kernelVersion,
         private array $frontendComponents,
+        private ModuleHostLayout $layout,
+        private array $reservedTables = [],
     ) {}
 
     /** @param list<ManifestDocument> $documents */
@@ -44,7 +49,7 @@ final readonly class ModuleRegistryCompiler
                 throw new ModuleException('MODULE_VERSION_INCOMPATIBLE', "Kernel version is incompatible with {$key}.");
             }
             $provider = $this->nestedString($document, 'backend', 'provider');
-            if (!str_starts_with($provider, $moduleKey->backendNamespace())
+            if (!str_starts_with($provider, $this->layout->backendNamespace($moduleKey))
                 || !$this->contractInspector->implements($provider, ModuleProvider::class)) {
                 throw new ModuleException('MODULE_CONTRACT_MISSING', "Invalid ModuleProvider for {$key}.");
             }
@@ -83,8 +88,11 @@ final readonly class ModuleRegistryCompiler
             }
             $database = is_array($document->data['database'] ?? null) ? $document->data['database'] : [];
             foreach ($database['owned_tables'] ?? [] as $table) {
-                if (!is_string($table) || preg_match('/^pa_[a-z0-9_]+$/D', $table) !== 1) {
+                if (!is_string($table) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $table) !== 1) {
                     throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid owned table in {$key}.");
+                }
+                if (in_array($table, $this->reservedTables, true)) {
+                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Reserved table cannot be owned by {$key}: {$table}");
                 }
                 $this->claim($tableOwners, $table, $key, 'table');
             }
@@ -346,7 +354,7 @@ final readonly class ModuleRegistryCompiler
 
     private function assertOwnedContract(string $class, string $contract, string $moduleKey): void
     {
-        if (!str_starts_with($class, ModuleKey::fromString($moduleKey)->backendNamespace())) {
+        if (!str_starts_with($class, $this->layout->backendNamespace(ModuleKey::fromString($moduleKey)))) {
             throw new ModuleException(
                 'MODULE_CONTRACT_MISSING',
                 "{$class} must be implemented inside its owning module {$moduleKey}.",

@@ -82,6 +82,12 @@ CREATE TABLE `pa_menu_definition` (
 SQL,
     ];
 
+    /** @return list<string> */
+    public static function tableNames(): array
+    {
+        return array_keys(self::CREATE_SQL);
+    }
+
     public static function createSql(string $table): string
     {
         return self::CREATE_SQL[$table] ?? throw new InvalidArgumentException("Unknown module table: {$table}");

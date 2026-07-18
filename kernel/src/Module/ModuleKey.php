@@ -26,27 +26,17 @@ final readonly class ModuleKey
         return $this->value;
     }
 
-    public function backendRelativePath(): string
-    {
-        return 'backend/app/Modules/' . implode('/', $this->pascalSegments()) . '/';
-    }
-
-    public function backendNamespace(): string
-    {
-        return 'PeanutAdmin\\App\\Modules\\' . implode('\\', $this->pascalSegments()) . '\\';
-    }
-
-    public function frontendRelativePath(): string
-    {
-        return 'frontend/src/modules/' . str_replace('.', '-', $this->value) . '/';
-    }
-
-    /** @return list<string> */
-    private function pascalSegments(): array
+    /** @return non-empty-list<string> */
+    public function pascalSegments(): array
     {
         return array_map(
             static fn(string $segment): string => implode('', array_map('ucfirst', explode('-', $segment))),
             explode('.', $this->value),
         );
+    }
+
+    public function slug(): string
+    {
+        return str_replace('.', '-', $this->value);
     }
 }

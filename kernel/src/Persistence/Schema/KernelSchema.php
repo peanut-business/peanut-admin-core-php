@@ -531,6 +531,12 @@ SQL,
 
     private function __construct() {}
 
+    /** @return list<string> */
+    public static function tableNames(): array
+    {
+        return array_keys(self::CREATE_SQL);
+    }
+
     public static function createSql(string $table): string
     {
         $sql = self::CREATE_SQL[$table] ?? null;

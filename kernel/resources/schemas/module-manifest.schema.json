@@ -79,7 +79,7 @@
         "owned_tables": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^pa_[a-z0-9_]+$" }
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }
         }
       }
     },

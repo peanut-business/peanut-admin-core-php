@@ -11,13 +11,13 @@ use PHPUnit\Framework\TestCase;
 
 final class ModuleKeyTest extends TestCase
 {
-    public function testModuleKeyUsesTheCanonicalMechanicalMapping(): void
+    public function testModuleKeyOnlyNormalizesItsMechanicalSegments(): void
     {
         $key = ModuleKey::fromString('example.work-item');
 
-        self::assertSame('backend/app/Modules/Example/WorkItem/', $key->backendRelativePath());
-        self::assertSame('PeanutAdmin\\App\\Modules\\Example\\WorkItem\\', $key->backendNamespace());
-        self::assertSame('frontend/src/modules/example-work-item/', $key->frontendRelativePath());
+        self::assertSame('example.work-item', $key->value());
+        self::assertSame(['Example', 'WorkItem'], $key->pascalSegments());
+        self::assertSame('example-work-item', $key->slug());
     }
 
     /** @return iterable<string, array{string}> */

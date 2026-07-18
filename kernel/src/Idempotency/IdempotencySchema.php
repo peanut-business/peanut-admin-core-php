@@ -6,6 +6,12 @@ namespace PeanutAdmin\Kernel\Idempotency;
 
 final class IdempotencySchema
 {
+    /** @return list<string> */
+    public static function tableNames(): array
+    {
+        return ['pa_tenant_idempotency_record', 'pa_platform_idempotency_record'];
+    }
+
     public static function tenant(): string
     {
         return <<<'SQL'

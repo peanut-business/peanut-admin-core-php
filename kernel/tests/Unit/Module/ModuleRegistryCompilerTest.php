@@ -8,6 +8,7 @@ use PeanutAdmin\Kernel\Module\ContractInspector;
 use PeanutAdmin\Kernel\Module\ManifestDocument;
 use PeanutAdmin\Kernel\Module\ManifestSchemaValidator;
 use PeanutAdmin\Kernel\Module\ModuleException;
+use PeanutAdmin\Kernel\Module\ModuleHostLayout;
 use PeanutAdmin\Kernel\Module\ModuleRegistryCompiler;
 use PeanutAdmin\Kernel\Module\VersionConstraintMatcher;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -211,6 +212,32 @@ final class ModuleRegistryCompilerTest extends TestCase
         });
     }
 
+    public function testCompilerAcceptsExternalHostNamespaceAndBusinessTablePrefix(): void
+    {
+        $manifest = $this->manifest('dcs.store', ownedTables: ['dcs_store']);
+
+        $registry = $this->compiler(
+            layout: new ModuleHostLayout('backend/app/Modules', 'Dcs\\App\\Modules', 'frontend/src/modules'),
+        )->compile([$manifest]);
+
+        self::assertSame(['dcs_store' => 'dcs.store'], $registry->ownedTableOwners);
+    }
+
+    public function testCompilerRejectsReservedOrUnsafeTableNames(): void
+    {
+        $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function (): void {
+            $this->compiler(reservedTables: ['pa_tenant'])->compile([
+                $this->manifest('example.target', ownedTables: ['pa_tenant']),
+            ]);
+        });
+
+        $this->expectModuleCode('MODULE_MANIFEST_INVALID', function (): void {
+            $this->compiler()->compile([
+                $this->manifest('example.target', ownedTables: ['unsafe-table']),
+            ]);
+        });
+    }
+
     public function testCompilerRejectsUnknownCatalogReferencesAndUndeclaredTargetOwner(): void
     {
         $resource = static fn(array $overrides = []): array => $overrides + [
@@ -278,6 +305,7 @@ final class ModuleRegistryCompilerTest extends TestCase
      * @param list<array<string, mixed>> $protectedResources
      * @param list<array<string, mixed>> $menus
      * @param list<array<string, mixed>> $permissions
+     * @param list<string> $ownedTables
      */
     private function manifest(
         string $key,
@@ -287,9 +315,13 @@ final class ModuleRegistryCompilerTest extends TestCase
         array $protectedResources = [],
         array $menus = [],
         array $permissions = [],
+        array $ownedTables = [],
     ): ManifestDocument {
         $moduleKey = \PeanutAdmin\Kernel\Module\ModuleKey::fromString($key);
-        $namespace = $moduleKey->backendNamespace();
+        $layout = str_starts_with($key, 'dcs.')
+            ? new ModuleHostLayout('backend/app/Modules', 'Dcs\\App\\Modules', 'frontend/src/modules')
+            : $this->referenceLayout();
+        $namespace = $layout->backendNamespace($moduleKey);
         foreach ($targetTypes as &$targetType) {
             foreach (['resolver', 'catalog_provider'] as $field) {
                 if (is_string($targetType[$field] ?? null) && !str_contains($targetType[$field], '\\')) {
@@ -323,10 +355,10 @@ final class ModuleRegistryCompilerTest extends TestCase
                 $dependencies,
             ),
             'backend' => [
-                'provider' => $moduleKey->backendNamespace() . 'ModuleProvider',
+                'provider' => $namespace . 'ModuleProvider',
             ],
             'frontend' => [],
-            'database' => ['owned_tables' => []],
+            'database' => ['owned_tables' => $ownedTables],
             'contracts' => ['exports' => [], 'events' => []],
             'tenant' => ['enableable' => true, 'requires' => $dependencies],
             'catalog' => [
@@ -341,10 +373,13 @@ final class ModuleRegistryCompilerTest extends TestCase
     /**
      * @param list<string>|null $availableContracts
      * @param list<string> $components
+     * @param list<string> $reservedTables
      */
     private function compiler(
         ?array $availableContracts = null,
         array $components = ['example.target.list'],
+        ?ModuleHostLayout $layout = null,
+        array $reservedTables = [],
     ): ModuleRegistryCompiler {
         $available = $availableContracts ?? [
             'provider.module',
@@ -389,6 +424,17 @@ final class ModuleRegistryCompilerTest extends TestCase
             },
             '1.0.0',
             $components,
+            $layout ?? $this->referenceLayout(),
+            $reservedTables,
+        );
+    }
+
+    private function referenceLayout(): ModuleHostLayout
+    {
+        return new ModuleHostLayout(
+            'backend/app/Modules',
+            'PeanutAdmin\\App\\Modules',
+            'frontend/src/modules',
         );
     }
 
