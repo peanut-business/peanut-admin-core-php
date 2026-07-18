@@ -11,6 +11,7 @@ final readonly class LoginChallengeRecord
     public function __construct(
         public int $id,
         public int $accountId,
+        public string $clientKey,
         public string $purpose,
         public string $status,
         public ?string $sourceSessionKey,

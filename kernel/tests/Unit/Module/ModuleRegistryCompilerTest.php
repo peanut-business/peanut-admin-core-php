@@ -223,6 +223,23 @@ final class ModuleRegistryCompilerTest extends TestCase
         self::assertSame(['dcs_store' => 'dcs.store'], $registry->ownedTableOwners);
     }
 
+    public function testCompilerRejectsMenusForUnregisteredClients(): void
+    {
+        $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function (): void {
+            $this->compiler(registeredClientKeys: ['admin-web'])->compile([
+                $this->manifest(
+                    'example.target',
+                    menus: [[
+                        'key' => 'example.target.group',
+                        'scope' => 'tenant',
+                        'type' => 'group',
+                        'client_keys' => ['unknown-web'],
+                    ]],
+                ),
+            ]);
+        });
+    }
+
     public function testCompilerRejectsReservedOrUnsafeTableNames(): void
     {
         $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function (): void {
@@ -374,12 +391,14 @@ final class ModuleRegistryCompilerTest extends TestCase
      * @param list<string>|null $availableContracts
      * @param list<string> $components
      * @param list<string> $reservedTables
+     * @param non-empty-list<string> $registeredClientKeys
      */
     private function compiler(
         ?array $availableContracts = null,
         array $components = ['example.target.list'],
         ?ModuleHostLayout $layout = null,
         array $reservedTables = [],
+        array $registeredClientKeys = ['admin-web', 'platform-web'],
     ): ModuleRegistryCompiler {
         $available = $availableContracts ?? [
             'provider.module',
@@ -426,6 +445,7 @@ final class ModuleRegistryCompilerTest extends TestCase
             $components,
             $layout ?? $this->referenceLayout(),
             $reservedTables,
+            $registeredClientKeys,
         );
     }
 

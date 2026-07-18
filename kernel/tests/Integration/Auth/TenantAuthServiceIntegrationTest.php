@@ -11,6 +11,7 @@ use PeanutAdmin\Kernel\Auth\AuthException;
 use PeanutAdmin\Kernel\Auth\Persistence\PdoTenantAuthRepository;
 use PeanutAdmin\Kernel\Auth\TenantAuthentication;
 use PeanutAdmin\Kernel\Auth\TenantAuthService;
+use PeanutAdmin\Kernel\Auth\TenantClientRegistry;
 use PeanutAdmin\Kernel\Auth\TenantSelectionRequired;
 use PeanutAdmin\Kernel\Auth\TokenIssuer;
 use PeanutAdmin\Kernel\Http\TenantAuthEndpoint;
@@ -317,8 +318,8 @@ SQL)->fetchAll();
         self::assertStringContainsString(hash('sha256', $access), $serialized);
         self::assertStringContainsString(hash('sha256', $refresh), $serialized);
 
-        $cookie = TenantRefreshCookie::issue($authentication->tokens->refresh);
-        self::assertStringStartsWith('__Host-pa_tenant_refresh=', $cookie);
+        $cookie = TenantRefreshCookie::issue($this->auth->client(), $authentication->tokens->refresh);
+        self::assertStringStartsWith('__Host-pa_tenant_refresh_admin-web=', $cookie);
         self::assertStringContainsString('Secure', $cookie);
         self::assertStringContainsString('HttpOnly', $cookie);
         self::assertStringContainsString('SameSite=Lax', $cookie);
@@ -349,6 +350,88 @@ SQL)->fetchAll();
             'request-replay',
         ));
         self::assertSame('AUTH_CHALLENGE_USED', $error->errorCode);
+    }
+
+    public function testRegisteredClientsUseIndependentChallengesSessionsTokensAndCookies(): void
+    {
+        $registry = new TenantClientRegistry(['single-store-web', 'multi-store-web']);
+        $single = $this->authServiceForClient($registry, 'single-store-web');
+        $multi = $this->authServiceForClient($registry, 'multi-store-web');
+        $singleSelection = $single->login(
+            self::EMAIL,
+            self::PASSWORD,
+            null,
+            '127.0.0.1',
+            'Single Client',
+            'request-single-login',
+        );
+        self::assertInstanceOf(TenantSelectionRequired::class, $singleSelection);
+        self::assertSame(
+            'AUTH_CHALLENGE_INVALID',
+            $this->captureAuthError(fn() => $multi->selectTenant(
+                $singleSelection->challenge->expose(),
+                $this->alphaTenantId,
+                '127.0.0.1',
+                'Single Client',
+                'request-cross-client-challenge',
+            ))->errorCode,
+        );
+        $singleAuth = $single->selectTenant(
+            $singleSelection->challenge->expose(),
+            $this->alphaTenantId,
+            '127.0.0.1',
+            'Single Client',
+            'request-single-select',
+        );
+        $multiSelection = $multi->login(
+            self::EMAIL,
+            self::PASSWORD,
+            null,
+            '127.0.0.1',
+            'Multi Client',
+            'request-multi-login',
+        );
+        self::assertInstanceOf(TenantSelectionRequired::class, $multiSelection);
+        $multiAuth = $multi->selectTenant(
+            $multiSelection->challenge->expose(),
+            $this->alphaTenantId,
+            '127.0.0.1',
+            'Multi Client',
+            'request-multi-select',
+        );
+
+        self::assertSame('single-store-web', $singleAuth->context->clientKey);
+        self::assertSame('multi-store-web', $multiAuth->context->clientKey);
+        self::assertSame(
+            ['multi-store-web', 'single-store-web'],
+            $this->query('SELECT client_key FROM pa_tenant_session ORDER BY client_key')->fetchAll(PDO::FETCH_COLUMN),
+        );
+        self::assertNotSame(
+            TenantRefreshCookie::name($single->client()),
+            TenantRefreshCookie::name($multi->client()),
+        );
+        self::assertSame(
+            'AUTH_TOKEN_INVALID',
+            $this->captureAuthError(fn() => $multi->context(
+                $singleAuth->tokens->access->expose(),
+                'request-cross-client-access',
+            ))->errorCode,
+        );
+
+        $singleRotated = $single->refresh(
+            $singleAuth->tokens->refresh->expose(),
+            '127.0.0.1',
+            'Single Client',
+            'request-single-refresh',
+        );
+        self::assertSame(
+            $this->alphaTenantId,
+            $multi->context($multiAuth->tokens->access->expose(), 'request-multi-still-valid')->tenantId,
+        );
+        self::assertSame(
+            $this->alphaTenantId,
+            $single->context($singleRotated->tokens->access->expose(), 'request-single-rotated')->tenantId,
+        );
     }
 
     public function testChallengeRejectsChangedIpOrUserAgentWithoutBeingConsumed(): void
@@ -619,7 +702,7 @@ SQL);
                 'request-platform-audience',
             ))->errorCode,
         );
-        self::assertStringContainsString('Max-Age=0', TenantRefreshCookie::clear());
+        self::assertStringContainsString('Max-Age=0', TenantRefreshCookie::clear($this->auth->client()));
     }
 
     private function login(): TenantSelectionRequired|TenantAuthentication
@@ -672,6 +755,20 @@ SQL);
             new MutableClock($this->clock->now()),
             new TokenIssuer(),
             'test-identifier-hmac-secret-at-least-32-bytes',
+        );
+    }
+
+    private function authServiceForClient(TenantClientRegistry $registry, string $clientKey): TenantAuthService
+    {
+        return new TenantAuthService(
+            new PdoTransactionManager($this->database),
+            new PdoTenantAuthRepository($this->database),
+            new PasswordHasher(),
+            $this->clock,
+            new TokenIssuer(),
+            'test-identifier-hmac-secret-at-least-32-bytes',
+            $registry,
+            $clientKey,
         );
     }
 

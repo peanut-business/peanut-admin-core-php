@@ -245,6 +245,7 @@ SQL);
         string $challengeKey,
         string $tokenHash,
         string $purpose,
+        string $clientKey,
         ?string $sourceSessionKey,
         ?string $ipAddress,
         ?string $userAgentHash,
@@ -253,10 +254,10 @@ SQL);
     ): void {
         $this->execute(<<<'SQL'
 INSERT INTO pa_login_challenge (
-    challenge_key, token_hash, account_id, purpose, source_session_key,
+    challenge_key, token_hash, account_id, purpose, client_key, source_session_key,
     ip_address, user_agent_hash, expires_at, created_at
 ) VALUES (
-    :challenge_key, :token_hash, :account_id, :purpose, :source_session_key,
+    :challenge_key, :token_hash, :account_id, :purpose, :client_key, :source_session_key,
     :ip_address, :user_agent_hash, :expires_at, :created_at
 )
 SQL, [
@@ -264,6 +265,7 @@ SQL, [
             'token_hash' => $tokenHash,
             'account_id' => $accountId,
             'purpose' => $purpose,
+            'client_key' => $clientKey,
             'source_session_key' => $sourceSessionKey,
             'ip_address' => $ipAddress,
             'user_agent_hash' => $userAgentHash,
@@ -275,7 +277,7 @@ SQL, [
     public function challengeByHash(string $tokenHash, bool $forUpdate = false): ?LoginChallengeRecord
     {
         $row = $this->fetchOne(
-            'SELECT id, account_id, purpose, status, source_session_key, ip_address, user_agent_hash, expires_at'
+            'SELECT id, account_id, client_key, purpose, status, source_session_key, ip_address, user_agent_hash, expires_at'
             . ' FROM pa_login_challenge WHERE token_hash = :token_hash'
             . ($forUpdate ? ' FOR UPDATE' : ''),
             ['token_hash' => $tokenHash],
@@ -287,6 +289,7 @@ SQL, [
         return new LoginChallengeRecord(
             (int) $row['id'],
             (int) $row['account_id'],
+            (string) $row['client_key'],
             (string) $row['purpose'],
             (string) $row['status'],
             is_string($row['source_session_key']) ? $row['source_session_key'] : null,
@@ -311,6 +314,7 @@ SQL, ['used_at' => $this->format($now), 'id' => $challengeId]);
         TenantChoice $choice,
         string $sessionKey,
         TenantTokenPair $tokens,
+        string $clientKey,
         string $ipAddress,
         ?string $userAgentHash,
         DateTimeImmutable $now,
@@ -341,7 +345,7 @@ INSERT INTO pa_tenant_session (
     issued_at, last_seen_at, idle_expires_at, absolute_expires_at,
     ip_address, user_agent_hash, created_at, updated_at
 ) VALUES (
-    :session_key, :tenant_id, :account_id, :member_id, 'admin-web',
+    :session_key, :tenant_id, :account_id, :member_id, :client_key,
     :account_revision, :tenant_revision, :member_revision,
     :issued_at, :last_seen_at, :idle_expires_at, :absolute_expires_at,
     :ip_address, :user_agent_hash, :created_at, :updated_at
@@ -351,6 +355,7 @@ SQL, [
             'tenant_id' => $choice->tenantId,
             'account_id' => (int) $principal['account_id'],
             'member_id' => $choice->memberId,
+            'client_key' => $clientKey,
             'account_revision' => (int) $principal['account_security_revision'],
             'tenant_revision' => (int) $principal['tenant_security_revision'],
             'member_revision' => (int) $principal['member_security_revision'],
@@ -373,7 +378,7 @@ SQL, [
             $choice->tenantId,
             (int) $principal['account_id'],
             $choice->memberId,
-            'admin-web',
+            $clientKey,
             $now,
             (int) $principal['authorization_revision'],
         );

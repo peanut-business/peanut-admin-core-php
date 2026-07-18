@@ -23,6 +23,7 @@ final class TenantAuthService
     private const RATE_LIMIT = 20;
 
     private readonly string $dummyPasswordHash;
+    private readonly TenantClient $client;
 
     public function __construct(
         private readonly TransactionManager $transactions,
@@ -31,8 +32,16 @@ final class TenantAuthService
         private readonly Clock $clock,
         private readonly TokenIssuer $tokens,
         private readonly string $identifierHmacKey,
+        ?TenantClientRegistry $clients = null,
+        string $clientKey = 'admin-web',
     ) {
+        $this->client = ($clients ?? TenantClientRegistry::adminWeb())->require($clientKey);
         $this->dummyPasswordHash = $this->passwords->hash('peanut-admin-invalid-credential-pad');
+    }
+
+    public function client(): TenantClient
+    {
+        return $this->client;
     }
 
     public function login(
@@ -264,6 +273,18 @@ final class TenantAuthService
 
                 return new AuthException('AUTH_CHALLENGE_INVALID', 401);
             }
+            if ($challenge->clientKey !== $this->client->key) {
+                $this->recordChallengeDenied(
+                    $challenge,
+                    'challenge_client_mismatch',
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+
+                return new AuthException('AUTH_CHALLENGE_INVALID', 401);
+            }
             if (
                 $challenge->ipAddress !== $ipAddress
                 || $challenge->userAgentHash !== $this->userAgentHash($userAgent)
@@ -352,6 +373,9 @@ final class TenantAuthService
                 true,
             );
             if ($record === null) {
+                return new AuthException('AUTH_TOKEN_INVALID', 401);
+            }
+            if ($record->clientKey !== $this->client->key) {
                 return new AuthException('AUTH_TOKEN_INVALID', 401);
             }
             if ($record->tokenStatus === 'used') {
@@ -504,6 +528,9 @@ final class TenantAuthService
             if ($record === null) {
                 return new AuthException('AUTH_TOKEN_INVALID', 401);
             }
+            if ($record->clientKey !== $this->client->key) {
+                return new AuthException('AUTH_TOKEN_INVALID', 401);
+            }
 
             $tokenFailure = $this->tokenFailure($record, 'access', $now);
             if ($tokenFailure !== null) {
@@ -611,6 +638,7 @@ final class TenantAuthService
             $this->tokens->key($now),
             $challenge->hash(),
             $purpose,
+            $this->client->key,
             $sourceSessionKey,
             $ipAddress,
             $this->userAgentHash($userAgent),
@@ -646,6 +674,7 @@ final class TenantAuthService
             $choice,
             $this->tokens->key($now),
             $tokens,
+            $this->client->key,
             $ipAddress,
             $this->userAgentHash($userAgent),
             $now,

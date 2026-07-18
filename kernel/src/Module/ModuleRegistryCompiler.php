@@ -20,6 +20,7 @@ final readonly class ModuleRegistryCompiler
     /**
      * @param list<string> $frontendComponents
      * @param list<string> $reservedTables
+     * @param non-empty-list<string> $registeredClientKeys
      */
     public function __construct(
         private ManifestSchemaValidator $schemaValidator,
@@ -28,7 +29,8 @@ final readonly class ModuleRegistryCompiler
         private string $kernelVersion,
         private array $frontendComponents,
         private ModuleHostLayout $layout,
-        private array $reservedTables = [],
+        private array $reservedTables,
+        private array $registeredClientKeys,
     ) {}
 
     /** @param list<ManifestDocument> $documents */
@@ -424,6 +426,11 @@ final readonly class ModuleRegistryCompiler
                 $dependencies,
                 $permissionOwners,
             );
+        }
+        foreach ($menu['client_keys'] ?? [] as $clientKey) {
+            if (!is_string($clientKey) || !in_array($clientKey, $this->registeredClientKeys, true)) {
+                throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Menu {$menuKey} references an unknown Client.");
+            }
         }
         $menus[$menuKey] = $menu + ['module_key' => $moduleKey];
     }

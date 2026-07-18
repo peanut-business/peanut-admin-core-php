@@ -112,6 +112,36 @@ final class KernelSchemaConstraintTest extends DatabaseTestCase
         ]));
     }
 
+    public function testTenantClientKeysAllowRegisteredShapesButRejectUnsafeValues(): void
+    {
+        $account = $this->account('Client account');
+        $tenant = $this->tenant('client-tenant');
+        $member = $this->member($tenant, $account);
+        $base = [
+            'tenant_id' => $tenant,
+            'account_id' => $account,
+            'tenant_member_id' => $member,
+            'account_security_revision' => 1,
+            'tenant_security_revision' => 1,
+            'member_security_revision' => 1,
+            'issued_at' => self::NOW,
+            'last_seen_at' => self::NOW,
+            'idle_expires_at' => '2026-07-16 09:00:00.000',
+            'absolute_expires_at' => '2026-07-30 01:00:00.000',
+            'created_at' => self::NOW,
+            'updated_at' => self::NOW,
+        ];
+
+        $this->insert('pa_tenant_session', $base + [
+            'session_key' => '01JZ0000000000000000000011',
+            'client_key' => 'single-store-web',
+        ]);
+        $this->assertDatabaseRejects(fn() => $this->insert('pa_tenant_session', $base + [
+            'session_key' => '01JZ0000000000000000000012',
+            'client_key' => 'Single Store Web',
+        ]));
+    }
+
     private function account(string $displayName): int
     {
         return $this->insert('pa_account', [

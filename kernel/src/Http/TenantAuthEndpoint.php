@@ -111,7 +111,7 @@ final readonly class TenantAuthEndpoint
         $this->auth->logout($accessToken, $requestId);
 
         return new TenantAuthResponse(204, null, [
-            'Set-Cookie' => TenantRefreshCookie::clear(),
+            'Set-Cookie' => TenantRefreshCookie::clear($this->auth->client()),
         ]);
     }
 
@@ -120,7 +120,7 @@ final readonly class TenantAuthEndpoint
         $this->auth->logoutAll($accessToken, $requestId);
 
         return new TenantAuthResponse(204, null, [
-            'Set-Cookie' => TenantRefreshCookie::clear(),
+            'Set-Cookie' => TenantRefreshCookie::clear($this->auth->client()),
         ]);
     }
 
@@ -146,7 +146,12 @@ final readonly class TenantAuthEndpoint
             'data' => $authentication->responseData(),
             'meta' => ['request_id' => $requestId],
         ], [
-            'Set-Cookie' => TenantRefreshCookie::issue($authentication->tokens->refresh),
+            'Set-Cookie' => TenantRefreshCookie::issue($this->auth->client(), $authentication->tokens->refresh),
         ]);
+    }
+
+    public function refreshCookieName(): string
+    {
+        return TenantRefreshCookie::name($this->auth->client());
     }
 }
