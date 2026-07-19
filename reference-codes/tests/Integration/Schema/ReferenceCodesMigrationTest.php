@@ -159,8 +159,8 @@ SQL);
         $statement->execute(['table_name' => $table]);
 
         $indexes = array_map(
-            static fn(array $row): string => (string) $row['index_name'] . ':' . (string) $row['columns'],
-            $statement->fetchAll(),
+            static fn(array $row): string => implode(':', array_map('strval', $row)),
+            $statement->fetchAll(PDO::FETCH_NUM),
         );
         sort($indexes, SORT_STRING);
 

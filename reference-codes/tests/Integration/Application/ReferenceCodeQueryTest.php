@@ -135,9 +135,10 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
         $created = $this->create($service, $definition, $tenant['context'], override: [
             'effective_at' => new DateTimeImmutable('2020-01-01T00:00:00.000Z'),
         ]);
+        usleep(2000);
         $service->retire($definition, $tenant['context'], 'sample-code', $created->etag);
         $historical = $this->query($repository)->get(
-            $definition, $tenant['context'], 'sample-code', new DateTimeImmutable('2021-01-01T00:00:00.000Z'),
+            $definition, $tenant['context'], 'sample-code', new DateTimeImmutable($created->createdAt),
         );
         self::assertSame('active', $historical->lifecycle);
         self::assertNotNull($historical->effective);
@@ -187,9 +188,7 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
     {
         [$definition, $repository, $tenant] = $this->fixture('query-corruption');
         $created = $this->create($this->adminService($repository), $definition, $tenant['context']);
-        $this->database->exec('SET SESSION check_constraint_checks = OFF');
-        $this->database->exec("UPDATE pa_reference_code_entry_version SET status = 'corrupt' WHERE revision = 1");
-        $this->database->exec('SET SESSION check_constraint_checks = ON');
+        $this->database->exec('UPDATE pa_reference_code_entry SET revision = 2');
         $this->expectReferenceCodeError('INTERNAL_ERROR', 500, fn() => $this->query($repository)->get(
             $definition, $tenant['context'], 'sample-code',
         ));

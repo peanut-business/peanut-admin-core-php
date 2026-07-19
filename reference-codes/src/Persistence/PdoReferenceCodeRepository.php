@@ -131,15 +131,16 @@ INSERT INTO pa_reference_code_entry (
   tenant_id, set_id, code, lifecycle, revision, created_by_member_id,
   updated_by_member_id, retired_at, created_at, updated_at
 ) VALUES (
-  :tenant_id, :set_id, :code, 'active', 1, :member_id,
-  :member_id, NULL, :created_at, :updated_at
+  :tenant_id, :set_id, :code, 'active', 1, :created_by_member_id,
+  :updated_by_member_id, NULL, :created_at, :updated_at
 )
 SQL);
                 $statement->execute([
                     'tenant_id' => $context->tenantId,
                     'set_id' => (int) $set['id'],
                     'code' => $code,
-                    'member_id' => $context->memberId,
+                    'created_by_member_id' => $context->memberId,
+                    'updated_by_member_id' => $context->memberId,
                     'created_at' => $this->date($now),
                     'updated_at' => $this->date($now),
                 ]);

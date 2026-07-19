@@ -179,7 +179,7 @@ abstract class ReferenceCodesDatabaseTestCase extends TestCase
             'metadata' => [],
             'status' => 'active',
             'sort_order' => 0,
-            'effective_at' => new DateTimeImmutable('2026-07-20T00:00:00.000Z'),
+            'effective_at' => new DateTimeImmutable('2020-01-01T00:00:00.000Z'),
             'expires_at' => null,
         ], $override);
 
