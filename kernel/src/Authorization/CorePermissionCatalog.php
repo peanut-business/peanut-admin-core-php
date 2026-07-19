@@ -9,6 +9,7 @@ final class CorePermissionCatalog
     /** @var list<string> */
     public const TENANT = [
         'core.member.read',
+        'core.member.effective-access.read',
         'core.member.create',
         'core.member.update',
         'core.member.role.assign',

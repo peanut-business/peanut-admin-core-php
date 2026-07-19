@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\DataPermission\Catalog;
 
 use PDO;
+use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 
 final readonly class PdoResourceOperationCatalog implements ResourceOperationCatalog
 {
@@ -43,6 +44,73 @@ SQL);
         );
     }
 
+    public function availableOperations(int $tenantId, PageRequest $page): array
+    {
+        $availability = <<<'SQL'
+pr.module_key = 'core'
+OR EXISTS (
+    SELECT 1
+    FROM pa_tenant_module tenant_module
+    JOIN pa_module_installation installation
+      ON installation.module_key = tenant_module.module_key
+     AND installation.status = 'active'
+    WHERE tenant_module.tenant_id = :tenant_id
+      AND tenant_module.module_key = pr.module_key
+      AND tenant_module.status = 'enabled'
+      AND (tenant_module.effective_at IS NULL OR tenant_module.effective_at <= CURRENT_TIMESTAMP(3))
+      AND (tenant_module.expires_at IS NULL OR tenant_module.expires_at > CURRENT_TIMESTAMP(3))
+)
+SQL;
+        $count = $this->pdo->prepare(<<<SQL
+SELECT COUNT(*)
+FROM pa_resource_operation ro
+JOIN pa_protected_resource pr
+  ON pr.id = ro.protected_resource_id AND pr.status = 'active'
+WHERE ro.status = 'active' AND ({$availability})
+SQL);
+        $count->execute(['tenant_id' => $tenantId]);
+        $total = (int) $count->fetchColumn();
+        if ($total === 0 || $page->page > intdiv($total - 1, $page->pageSize) + 1) {
+            return ['items' => [], 'total' => $total];
+        }
+
+        $statement = $this->pdo->prepare(<<<SQL
+SELECT ro.id, ro.protected_resource_id, ro.operation, ro.access_mode,
+       ro.target_cardinality, ro.permission_match,
+       pr.`key` AS resource_key, pr.module_key, pr.provider_key, pr.ownership
+FROM pa_resource_operation ro
+JOIN pa_protected_resource pr
+  ON pr.id = ro.protected_resource_id AND pr.status = 'active'
+WHERE ro.status = 'active' AND ({$availability})
+ORDER BY pr.`key`, ro.operation, ro.id
+LIMIT :limit OFFSET :offset
+SQL);
+        $statement->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
+        $statement->bindValue(':limit', $page->pageSize, PDO::PARAM_INT);
+        $statement->bindValue(':offset', $page->offset(), PDO::PARAM_INT);
+        $statement->execute();
+        $items = [];
+        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            $operationId = (int) $row['id'];
+            $items[] = new ResourceOperation(
+                $operationId,
+                (int) $row['protected_resource_id'],
+                (string) $row['resource_key'],
+                (string) $row['module_key'],
+                (string) $row['provider_key'],
+                (string) $row['ownership'],
+                (string) $row['operation'],
+                (string) $row['access_mode'],
+                (string) $row['target_cardinality'],
+                (string) $row['permission_match'],
+                $this->permissionKeys($operationId),
+                $this->targetTypes($operationId),
+            );
+        }
+
+        return ['items' => $items, 'total' => $total];
+    }
+
     public function moduleAvailable(int $tenantId, string $moduleKey): bool
     {
         if ($moduleKey === 'core') {
@@ -73,6 +141,9 @@ SELECT digest FROM (
     SELECT CONCAT('resource:', id, ':', status, ':', manifest_digest) AS digest FROM pa_protected_resource
     UNION ALL
     SELECT CONCAT('operation:', id, ':', status, ':', manifest_digest) FROM pa_resource_operation
+    UNION ALL
+    SELECT CONCAT('module-installation:', module_key, ':', status, ':', revision, ':', manifest_digest)
+    FROM pa_module_installation
     UNION ALL
     SELECT CONCAT('target:', id, ':', status, ':', manifest_digest) FROM pa_target_type
     UNION ALL

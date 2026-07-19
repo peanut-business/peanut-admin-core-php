@@ -23,6 +23,11 @@ final class AdminRouteContractTest extends TestCase
         foreach ($platformRoutes as $route => $binding) {
             self::assertSame($permissionConfig['platform_routes'][$route] ?? null, $binding[2]);
         }
+
+        self::assertSame(
+            'core.member.effective-access.read',
+            $tenantRoutes['GET /api/v1/members/{member_id}/effective-access'][2] ?? null,
+        );
     }
 
     public function testEtagParserRequiresTheExactRevisionFormat(): void

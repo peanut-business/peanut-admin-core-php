@@ -49,6 +49,34 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
 
         (new CorePermissionCatalogSynchronizer($this->catalog))->synchronize();
         self::assertSame(count($expected), (int) $this->query('SELECT COUNT(*) FROM pa_permission')->fetchColumn());
+        self::assertSame('sensitive', $this->query(
+            "SELECT risk_level FROM pa_permission WHERE `key` = 'core.member.effective-access.read'",
+        )->fetchColumn());
+    }
+
+    public function testPreviewProjectionReturnsTheMemberAndOnlyActiveRolesInStableOrder(): void
+    {
+        [$tenantId, $memberId] = $this->tenantMember('preview-subject');
+        $roleB = $this->tenantRole($tenantId, $memberId, 'tenant.preview-b');
+        $roleA = $this->tenantRole($tenantId, $memberId, 'tenant.preview-a');
+        $this->database->exec(
+            "UPDATE pa_role SET status = 'disabled' WHERE id = {$roleB}",
+        );
+
+        $repository = new PdoTenantAuthorizationRepository($this->database);
+        $member = $repository->member($tenantId, $memberId);
+
+        self::assertSame($memberId, $member['id'] ?? null);
+        self::assertSame('active', $member['status']);
+        self::assertSame([
+            [
+                'id' => $roleA,
+                'key' => 'tenant.preview-a',
+                'name' => 'tenant.preview-a',
+                'is_builtin' => false,
+            ],
+        ], $repository->activeRoles($tenantId, $memberId));
+        self::assertNull($repository->member($tenantId + 1, $memberId));
     }
 
     public function testTenantRbacRequiresAnActiveRoleAndAvailableModule(): void
@@ -68,6 +96,15 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
         $this->grantTenantPermission($tenantId, $roleId, $corePermissionId);
         $this->grantTenantPermission($tenantId, $roleId, $modulePermissionId);
         $this->grantTenantPermission($tenantId, $roleId, $platformPermissionId);
+        $this->insert('pa_module_installation', [
+            'module_key' => 'example.records',
+            'installed_version' => '1.0.0',
+            'manifest_schema_version' => 1,
+            'manifest_digest' => hash('sha256', 'example.records'),
+            'status' => 'active',
+            'created_at' => self::NOW,
+            'updated_at' => self::NOW,
+        ]);
         $this->insert('pa_tenant_module', [
             'tenant_id' => $tenantId,
             'module_key' => 'example.records',
@@ -83,10 +120,24 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
         self::assertFalse($evaluator->allows($context, 'platform.tenant.read'));
 
         $this->database->exec(<<<'SQL'
-UPDATE pa_tenant_module
-SET status = 'enabled', authorization_revision = authorization_revision + 1
-WHERE module_key = 'example.records'
-SQL);
+        UPDATE pa_tenant_module
+        SET status = 'enabled', authorization_revision = authorization_revision + 1
+        WHERE module_key = 'example.records'
+        SQL);
+        self::assertTrue($evaluator->allows($context, 'example.record.read'));
+
+        $this->database->exec(<<<'SQL'
+        UPDATE pa_module_installation
+        SET status = 'maintenance', revision = revision + 1
+        WHERE module_key = 'example.records'
+        SQL);
+        self::assertFalse($evaluator->allows($context, 'example.record.read'));
+
+        $this->database->exec(<<<'SQL'
+        UPDATE pa_module_installation
+        SET status = 'active', revision = revision + 1
+        WHERE module_key = 'example.records'
+        SQL);
         self::assertTrue($evaluator->allows($context, 'example.record.read'));
 
         $this->database->exec("UPDATE pa_role SET status = 'disabled', authorization_revision = authorization_revision + 1 WHERE id = {$roleId}");

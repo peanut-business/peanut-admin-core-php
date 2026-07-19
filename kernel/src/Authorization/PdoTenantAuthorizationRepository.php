@@ -9,6 +9,56 @@ use PeanutAdmin\Kernel\Persistence\Pdo\PdoRepository;
 
 final class PdoTenantAuthorizationRepository extends PdoRepository implements TenantAuthorizationRepository
 {
+    public function member(int $tenantId, int $memberId): ?array
+    {
+        $row = $this->fetchOne(<<<'SQL'
+SELECT id, display_name, status, primary_department_id
+FROM pa_tenant_member
+WHERE tenant_id = :tenant_id AND id = :member_id
+SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]);
+
+        return $row === null ? null : [
+            'id' => (int) $row['id'],
+            'display_name' => is_string($row['display_name']) ? $row['display_name'] : null,
+            'status' => (string) $row['status'],
+            'primary_department_id' => $row['primary_department_id'] === null
+                ? null
+                : (int) $row['primary_department_id'],
+        ];
+    }
+
+    public function activeRoles(int $tenantId, int $memberId): array
+    {
+        $statement = $this->pdo->prepare(<<<'SQL'
+SELECT role.id, role.`key`, role.name, role.is_builtin
+FROM pa_tenant_member member
+JOIN pa_member_role member_role
+  ON member_role.tenant_id = member.tenant_id
+ AND member_role.tenant_member_id = member.id
+JOIN pa_role role
+  ON role.tenant_id = member_role.tenant_id
+ AND role.id = member_role.role_id
+ AND role.status = 'active'
+WHERE member.tenant_id = :tenant_id
+  AND member.id = :member_id
+  AND member.status = 'active'
+ORDER BY role.`key`, role.id
+SQL);
+        $statement->execute(['tenant_id' => $tenantId, 'member_id' => $memberId]);
+
+        $roles = [];
+        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            $roles[] = [
+                'id' => (int) $row['id'],
+                'key' => (string) $row['key'],
+                'name' => (string) $row['name'],
+                'is_builtin' => (int) $row['is_builtin'] === 1,
+            ];
+        }
+
+        return $roles;
+    }
+
     public function revision(int $tenantId, int $memberId): string
     {
         $row = $this->fetchOne(<<<'SQL'
@@ -21,16 +71,22 @@ SELECT
         ORDER BY r.id SEPARATOR '|'), '') AS role_revisions,
     COALESCE((
         SELECT GROUP_CONCAT(CONCAT(
-            module_key, ':', status, ':', authorization_revision, ':',
+            tenant_module.module_key, ':', tenant_module.status, ':',
+            tenant_module.authorization_revision, ':',
+            COALESCE(installation.status, 'missing'), ':',
+            COALESCE(installation.revision, 0), ':',
             CASE
-                WHEN status = 'enabled'
-                    AND (effective_at IS NULL OR effective_at <= CURRENT_TIMESTAMP(3))
-                    AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP(3))
+                WHEN installation.status = 'active'
+                    AND tenant_module.status = 'enabled'
+                    AND (tenant_module.effective_at IS NULL OR tenant_module.effective_at <= CURRENT_TIMESTAMP(3))
+                    AND (tenant_module.expires_at IS NULL OR tenant_module.expires_at > CURRENT_TIMESTAMP(3))
                 THEN 'available' ELSE 'unavailable'
             END
-        ) ORDER BY module_key SEPARATOR '|')
-        FROM pa_tenant_module
-        WHERE tenant_id = t.id
+        ) ORDER BY tenant_module.module_key SEPARATOR '|')
+        FROM pa_tenant_module tenant_module
+        LEFT JOIN pa_module_installation installation
+          ON installation.module_key = tenant_module.module_key
+        WHERE tenant_module.tenant_id = t.id
     ), '') AS module_revisions
 FROM pa_tenant t
 LEFT JOIN pa_tenant_member tm ON tm.tenant_id = t.id AND tm.id = :member_id
@@ -69,6 +125,9 @@ LEFT JOIN pa_permission p
     OR EXISTS (
         SELECT 1
         FROM pa_tenant_module tenant_module
+        JOIN pa_module_installation installation
+          ON installation.module_key = tenant_module.module_key
+         AND installation.status = 'active'
         WHERE tenant_module.tenant_id = t.id
           AND tenant_module.module_key = p.module_key
           AND tenant_module.status = 'enabled'
