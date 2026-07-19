@@ -7,6 +7,7 @@ namespace PeanutAdmin\Kernel\Tests\Unit\Idempotency;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Idempotency\CanonicalRequestHasher;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyRecord;
 use PHPUnit\Framework\TestCase;
 
 final class IdempotencyContractTest extends TestCase
@@ -39,5 +40,36 @@ final class IdempotencyContractTest extends TestCase
 
         $this->expectException(ApiException::class);
         IdempotencyKey::fromString('short');
+    }
+
+    public function testRecordDistinguishesExecutionOwnershipAndTerminalReplay(): void
+    {
+        $processing = new IdempotencyRecord(
+            10,
+            'processing',
+            'request-hash',
+            null,
+            null,
+            null,
+            null,
+            false,
+        );
+        $created = new IdempotencyRecord(12, 'processing', 'request-hash', null, null, null, null, true);
+        $failed = new IdempotencyRecord(
+            11,
+            'failed',
+            'request-hash',
+            422,
+            ['code' => 'FIXTURE_DENIED'],
+            null,
+            null,
+            false,
+        );
+
+        self::assertFalse($processing->acquiredForExecution());
+        self::assertFalse($processing->replayable());
+        self::assertTrue($created->acquiredForExecution());
+        self::assertFalse($failed->acquiredForExecution());
+        self::assertTrue($failed->replayable());
     }
 }

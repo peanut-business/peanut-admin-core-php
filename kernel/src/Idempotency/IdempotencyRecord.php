@@ -17,4 +17,16 @@ final readonly class IdempotencyRecord
         public ?string $resourceId,
         public bool $created,
     ) {}
+
+    public function acquiredForExecution(): bool
+    {
+        return $this->created;
+    }
+
+    public function replayable(): bool
+    {
+        return in_array($this->status, ['completed', 'failed'], true)
+            && $this->responseStatus !== null
+            && $this->responseBody !== null;
+    }
 }

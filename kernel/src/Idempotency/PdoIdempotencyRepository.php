@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Idempotency;
 
 use DateTimeImmutable;
+use DateTimeZone;
 use JsonException;
-use PDO;
 use PDOException;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Persistence\Pdo\PdoRepository;
+use RuntimeException;
+use Throwable;
 
 final class PdoIdempotencyRepository extends PdoRepository
 {
@@ -20,6 +22,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         IdempotencyKey $key,
         string $requestHash,
         DateTimeImmutable $expiresAt,
+        ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
         return $this->begin(
             'pa_tenant_idempotency_record',
@@ -28,6 +31,7 @@ final class PdoIdempotencyRepository extends PdoRepository
             $key,
             $requestHash,
             $expiresAt,
+            $comparisonTime,
         );
     }
 
@@ -37,6 +41,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         IdempotencyKey $key,
         string $requestHash,
         DateTimeImmutable $expiresAt,
+        ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
         return $this->begin(
             'pa_platform_idempotency_record',
@@ -45,6 +50,7 @@ final class PdoIdempotencyRepository extends PdoRepository
             $key,
             $requestHash,
             $expiresAt,
+            $comparisonTime,
         );
     }
 
@@ -70,6 +76,44 @@ final class PdoIdempotencyRepository extends PdoRepository
         $this->complete('pa_platform_idempotency_record', $id, $responseStatus, $responseBody, $resourceType, $resourceId);
     }
 
+    /** @param array<string, mixed> $responseBody */
+    public function failTenant(
+        int $id,
+        int $responseStatus,
+        array $responseBody,
+        ?string $resourceType = null,
+        ?string $resourceId = null,
+    ): void {
+        $this->storeOutcome(
+            'pa_tenant_idempotency_record',
+            'failed',
+            $id,
+            $responseStatus,
+            $responseBody,
+            $resourceType,
+            $resourceId,
+        );
+    }
+
+    /** @param array<string, mixed> $responseBody */
+    public function failPlatform(
+        int $id,
+        int $responseStatus,
+        array $responseBody,
+        ?string $resourceType = null,
+        ?string $resourceId = null,
+    ): void {
+        $this->storeOutcome(
+            'pa_platform_idempotency_record',
+            'failed',
+            $id,
+            $responseStatus,
+            $responseBody,
+            $resourceType,
+            $resourceId,
+        );
+    }
+
     /**
      * @param 'pa_tenant_idempotency_record'|'pa_platform_idempotency_record' $table
      * @param array<string, int> $scope
@@ -81,6 +125,56 @@ final class PdoIdempotencyRepository extends PdoRepository
         IdempotencyKey $key,
         string $requestHash,
         DateTimeImmutable $expiresAt,
+        ?DateTimeImmutable $comparisonTime,
+    ): IdempotencyRecord {
+        $now = ($comparisonTime ?? new DateTimeImmutable('now', new DateTimeZone('UTC')))
+            ->setTimezone(new DateTimeZone('UTC'));
+        $expiresAt = $expiresAt->setTimezone(new DateTimeZone('UTC'));
+        if ($expiresAt <= $now) {
+            throw new \InvalidArgumentException('Idempotency expiry must be later than the comparison time.');
+        }
+
+        $ownsTransaction = !$this->transactionActive();
+        if ($ownsTransaction) {
+            $this->pdo->beginTransaction();
+        }
+
+        try {
+            $record = $this->acquire(
+                $table,
+                $scope,
+                $operationKey,
+                $key,
+                $requestHash,
+                $expiresAt,
+                $now,
+            );
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
+
+            return $record;
+        } catch (Throwable $throwable) {
+            if ($ownsTransaction && $this->transactionActive()) {
+                $this->pdo->rollBack();
+            }
+
+            throw $throwable;
+        }
+    }
+
+    /**
+     * @param 'pa_tenant_idempotency_record'|'pa_platform_idempotency_record' $table
+     * @param array<string, int> $scope
+     */
+    private function acquire(
+        string $table,
+        array $scope,
+        string $operationKey,
+        IdempotencyKey $key,
+        string $requestHash,
+        DateTimeImmutable $expiresAt,
+        DateTimeImmutable $now,
     ): IdempotencyRecord {
         $where = implode(' AND ', array_map(static fn(string $column): string => "{$column} = :{$column}", array_keys($scope)));
         $parameters = [
@@ -88,19 +182,24 @@ final class PdoIdempotencyRepository extends PdoRepository
             'operation_key' => $operationKey,
             'idempotency_key_hash' => $key->hash,
         ];
-        $row = $this->fetchOne(<<<SQL
-SELECT id, status, request_hash, response_status, response_body_json, resource_type, resource_id
-FROM {$table}
-WHERE {$where} AND operation_key = :operation_key AND idempotency_key_hash = :idempotency_key_hash
-SQL, $parameters);
-        if ($row !== null) {
-            return $this->existing($row, $requestHash);
-        }
-        $now = $this->now();
         $columns = [...array_keys($scope), 'operation_key', 'idempotency_key_hash', 'request_hash', 'status', 'expires_at', 'created_at', 'updated_at'];
         $bindings = array_map(static fn(string $column): string => ":{$column}", $columns);
+        $known = $this->fetchOne(<<<SQL
+SELECT id FROM {$table}
+WHERE {$where} AND operation_key = :operation_key AND idempotency_key_hash = :idempotency_key_hash
+LIMIT 1
+SQL, $parameters);
+        if ($known !== null) {
+            $row = $this->lockRecord($table, $where, $parameters);
+            if ($row === null) {
+                throw new RuntimeException('Known idempotency record disappeared before it could be locked.');
+            }
+
+            return $this->existing($row, $requestHash);
+        }
+
         try {
-            $this->execute(sprintf(
+            $inserted = $this->execute(sprintf(
                 'INSERT INTO %s (%s) VALUES (%s)',
                 $table,
                 implode(', ', $columns),
@@ -109,19 +208,53 @@ SQL, $parameters);
                 ...$parameters,
                 'request_hash' => $requestHash,
                 'status' => 'processing',
-                'expires_at' => $expiresAt->format('Y-m-d H:i:s.v'),
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
+                'expires_at' => $this->format($expiresAt),
+                'created_at' => $this->format($now),
+                'updated_at' => $this->format($now),
+            ]) === 1;
         } catch (PDOException $exception) {
             if ($exception->getCode() !== '23000' || ($exception->errorInfo[1] ?? null) !== 1062) {
                 throw $exception;
             }
-
-            return $this->begin($table, $scope, $operationKey, $key, $requestHash, $expiresAt);
+            $inserted = false;
+        }
+        $insertedId = $inserted ? $this->lastInsertId() : null;
+        $row = $this->lockRecord($table, $where, $parameters);
+        if ($row === null || ($inserted && (int) $row['id'] !== $insertedId)) {
+            throw new RuntimeException('Idempotency acquisition did not return its locked record.');
+        }
+        if ($inserted) {
+            return new IdempotencyRecord((int) $insertedId, 'processing', $requestHash, null, null, null, null, true);
         }
 
-        return new IdempotencyRecord($this->lastInsertId(), 'processing', $requestHash, null, null, null, null, true);
+        return $this->existing($row, $requestHash);
+    }
+
+    /**
+     * @param 'pa_tenant_idempotency_record'|'pa_platform_idempotency_record' $table
+     * @param array<string, int|string> $parameters
+     * @return array<string, mixed>|null
+     */
+    private function lockRecord(string $table, string $where, array $parameters): ?array
+    {
+        return $this->fetchOne(<<<SQL
+SELECT id, status, request_hash, response_status, response_body_json,
+       resource_type, resource_id
+FROM {$table}
+WHERE {$where} AND operation_key = :operation_key AND idempotency_key_hash = :idempotency_key_hash
+FOR UPDATE
+SQL, $parameters);
+    }
+
+    private function format(DateTimeImmutable $value): string
+    {
+        return $value->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.v');
+    }
+
+    /** @phpstan-impure */
+    private function transactionActive(): bool
+    {
+        return $this->pdo->inTransaction();
     }
 
     /**
@@ -136,6 +269,23 @@ SQL, $parameters);
         ?string $resourceType,
         ?string $resourceId,
     ): void {
+        $this->storeOutcome($table, 'completed', $id, $responseStatus, $responseBody, $resourceType, $resourceId);
+    }
+
+    /**
+     * @param 'pa_tenant_idempotency_record'|'pa_platform_idempotency_record' $table
+     * @param 'completed'|'failed' $status
+     * @param array<string, mixed> $responseBody
+     */
+    private function storeOutcome(
+        string $table,
+        string $status,
+        int $id,
+        int $responseStatus,
+        array $responseBody,
+        ?string $resourceType,
+        ?string $resourceId,
+    ): void {
         try {
             $body = json_encode($responseBody, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } catch (JsonException $exception) {
@@ -143,11 +293,12 @@ SQL, $parameters);
         }
         $updated = $this->execute(<<<SQL
 UPDATE {$table}
-SET status = 'completed', response_status = :response_status,
+SET status = :status, response_status = :response_status,
     response_body_json = :response_body, resource_type = :resource_type,
     resource_id = :resource_id, updated_at = :updated_at
 WHERE id = :id AND status = 'processing'
 SQL, [
+            'status' => $status,
             'response_status' => $responseStatus,
             'response_body' => $body,
             'resource_type' => $resourceType,
