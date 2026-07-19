@@ -188,22 +188,22 @@ SQL, [
                 'The new password must contain between 12 and 128 bytes.',
             );
         }
-        if (hash_equals($currentPassword, $newPassword)) {
-            throw AdminAccessException::invalid('PASSWORD_UNCHANGED', 'The new password must be different.');
-        }
 
-        $error = $this->transaction(function () use (
-            $tenantId,
-            $memberId,
-            $accountId,
-            $sessionKey,
-            $currentPassword,
-            $newPassword,
-            $ipAddress,
-            $userAgent,
-            $requestId,
-        ): ?AdminAccessException {
-            $credential = $this->fetchOne(<<<'SQL'
+        $ipLockName = $this->passwordChangeIpLockName($ipAddress);
+        $this->acquirePasswordChangeIpLock($ipLockName);
+        try {
+            $error = $this->transaction(function () use (
+                $tenantId,
+                $memberId,
+                $accountId,
+                $sessionKey,
+                $currentPassword,
+                $newPassword,
+                $ipAddress,
+                $userAgent,
+                $requestId,
+            ): ?AdminAccessException {
+                $credential = $this->fetchOne(<<<'SQL'
 SELECT c.id, c.secret_hash
 FROM pa_credential c
 JOIN pa_account a ON a.id = c.account_id
@@ -222,60 +222,67 @@ ORDER BY c.id
 LIMIT 1
 FOR UPDATE
 SQL, [
-                'account_id' => $accountId,
-                'tenant_id' => $tenantId,
-                'member_id' => $memberId,
-            ]);
-            if ($credential === null) {
-                throw AdminAccessException::conflict(
-                    'ACCOUNT_CREDENTIAL_UNAVAILABLE',
-                    'The account credential is not available.',
-                );
-            }
+                    'account_id' => $accountId,
+                    'tenant_id' => $tenantId,
+                    'member_id' => $memberId,
+                ]);
+                if ($credential === null) {
+                    throw AdminAccessException::conflict(
+                        'ACCOUNT_CREDENTIAL_UNAVAILABLE',
+                        'The account credential is not available.',
+                    );
+                }
 
-            $now = $this->now();
-            if ($this->passwordChangeDeniedCount($accountId, $ipAddress, $now)
-                >= self::PASSWORD_CHANGE_RATE_LIMIT) {
-                $this->authEvent(
-                    'password_change_rate_limited',
-                    'denied',
-                    'rate_limited',
-                    $accountId,
-                    (int) $credential['id'],
-                    $sessionKey,
-                    $requestId,
-                    $ipAddress,
-                    $userAgent,
-                    $now,
-                );
+                $now = $this->now();
+                $deniedCounts = $this->passwordChangeDeniedCounts($accountId, $ipAddress, $now);
+                if ($deniedCounts['account'] >= self::PASSWORD_CHANGE_RATE_LIMIT
+                    || $deniedCounts['ip'] >= self::PASSWORD_CHANGE_RATE_LIMIT) {
+                    $this->authEvent(
+                        'password_change_rate_limited',
+                        'denied',
+                        'rate_limited',
+                        $accountId,
+                        (int) $credential['id'],
+                        $sessionKey,
+                        $requestId,
+                        $ipAddress,
+                        $userAgent,
+                        $now,
+                    );
 
-                return new AdminAccessException(
-                    'PASSWORD_CHANGE_RATE_LIMITED',
-                    429,
-                    'Too many password change attempts. Try again later.',
-                );
-            }
-            if (!$this->passwords->verify($currentPassword, (string) $credential['secret_hash'])) {
-                $this->authEvent(
-                    'password_change_denied',
-                    'denied',
-                    'current_password_invalid',
-                    $accountId,
-                    (int) $credential['id'],
-                    $sessionKey,
-                    $requestId,
-                    $ipAddress,
-                    $userAgent,
-                    $now,
-                );
+                    return new AdminAccessException(
+                        'PASSWORD_CHANGE_RATE_LIMITED',
+                        429,
+                        'Too many password change attempts. Try again later.',
+                    );
+                }
+                if (!$this->passwords->verify($currentPassword, (string) $credential['secret_hash'])) {
+                    $this->authEvent(
+                        'password_change_denied',
+                        'denied',
+                        'current_password_invalid',
+                        $accountId,
+                        (int) $credential['id'],
+                        $sessionKey,
+                        $requestId,
+                        $ipAddress,
+                        $userAgent,
+                        $now,
+                    );
 
-                return AdminAccessException::invalid(
-                    'CURRENT_PASSWORD_INVALID',
-                    'The current password is invalid.',
-                );
-            }
+                    return AdminAccessException::invalid(
+                        'CURRENT_PASSWORD_INVALID',
+                        'The current password is invalid.',
+                    );
+                }
+                if (hash_equals($currentPassword, $newPassword)) {
+                    return AdminAccessException::invalid(
+                        'PASSWORD_UNCHANGED',
+                        'The new password must be different.',
+                    );
+                }
 
-            $this->execute(<<<'SQL'
+                $this->execute(<<<'SQL'
 UPDATE pa_credential
 SET secret_hash = :secret_hash,
     failed_attempts = 0,
@@ -285,48 +292,51 @@ SET secret_hash = :secret_hash,
     updated_at = :updated_at
 WHERE id = :credential_id AND status = 'active'
 SQL, [
-                'secret_hash' => $this->passwords->hash($newPassword),
-                'secret_changed_at' => $now,
-                'updated_at' => $now,
-                'credential_id' => (int) $credential['id'],
-            ]);
-            $this->execute(<<<'SQL'
+                    'secret_hash' => $this->passwords->hash($newPassword),
+                    'secret_changed_at' => $now,
+                    'updated_at' => $now,
+                    'credential_id' => (int) $credential['id'],
+                ]);
+                $this->execute(<<<'SQL'
 UPDATE pa_account
 SET security_revision = security_revision + 1, updated_at = :updated_at
 WHERE id = :account_id AND status = 'active'
 SQL, ['updated_at' => $now, 'account_id' => $accountId]);
 
-            $this->revokeSessionTokens('pa_tenant_session', 'pa_tenant_session_token', $accountId, $now);
-            $this->revokeSessionTokens('pa_platform_session', 'pa_platform_session_token', $accountId, $now);
-            $this->revokeSessions('pa_tenant_session', $accountId, $now);
-            $this->revokeSessions('pa_platform_session', $accountId, $now);
-            $this->revokeLoginChallenges($accountId, $now);
+                $this->revokeSessionTokens('pa_tenant_session', 'pa_tenant_session_token', $accountId, $now);
+                $this->revokeSessionTokens('pa_platform_session', 'pa_platform_session_token', $accountId, $now);
+                $this->revokeSessions('pa_tenant_session', $accountId, $now);
+                $this->revokeSessions('pa_platform_session', $accountId, $now);
+                $this->revokeLoginChallenges($accountId, $now);
 
-            $this->authEvent(
-                'password_changed',
-                'success',
-                null,
-                $accountId,
-                (int) $credential['id'],
-                $sessionKey,
-                $requestId,
-                $ipAddress,
-                $userAgent,
-                $now,
-            );
-            $this->tenantAudit(
-                $tenantId,
-                $memberId,
-                $accountId,
-                'account.password.changed',
-                'account.password.changed',
-                $requestId,
-                ['revoked_all_sessions' => true],
-                $now,
-            );
+                $this->authEvent(
+                    'password_changed',
+                    'success',
+                    null,
+                    $accountId,
+                    (int) $credential['id'],
+                    $sessionKey,
+                    $requestId,
+                    $ipAddress,
+                    $userAgent,
+                    $now,
+                );
+                $this->tenantAudit(
+                    $tenantId,
+                    $memberId,
+                    $accountId,
+                    'account.password.changed',
+                    'account.password.changed',
+                    $requestId,
+                    ['revoked_all_sessions' => true],
+                    $now,
+                );
 
-            return null;
-        });
+                return null;
+            });
+        } finally {
+            $this->releasePasswordChangeIpLock($ipLockName);
+        }
 
         if ($error !== null) {
             throw $error;
@@ -412,25 +422,78 @@ WHERE account_id = :account_id AND status = 'active'
 SQL, ['revoked_at' => $now, 'account_id' => $accountId]);
     }
 
-    private function passwordChangeDeniedCount(int $accountId, string $ipAddress, string $now): int
+    /** @return array{account: int, ip: int} */
+    private function passwordChangeDeniedCounts(int $accountId, string $ipAddress, string $now): array
     {
         $since = (new DateTimeImmutable($now, new DateTimeZone('UTC')))
             ->modify(self::PASSWORD_CHANGE_RATE_WINDOW)
             ->format('Y-m-d H:i:s.v');
-        $row = $this->fetchOne(<<<'SQL'
+        $account = $this->fetchOne(<<<'SQL'
 SELECT COUNT(*) AS aggregate
 FROM pa_auth_security_event
 WHERE event_type = 'password_change_denied'
   AND outcome = 'denied'
   AND occurred_at >= :since_at
-  AND (account_id = :account_id OR ip_address = :ip_address)
+  AND account_id = :account_id
 SQL, [
             'since_at' => $since,
             'account_id' => $accountId,
+        ]);
+        $ip = $this->fetchOne(<<<'SQL'
+SELECT COUNT(*) AS aggregate
+FROM pa_auth_security_event
+WHERE event_type = 'password_change_denied'
+  AND outcome = 'denied'
+  AND occurred_at >= :since_at
+  AND ip_address = :ip_address
+SQL, [
+            'since_at' => $since,
             'ip_address' => $ipAddress,
         ]);
 
-        return $row === null ? 0 : (int) $row['aggregate'];
+        return [
+            'account' => $account === null ? 0 : (int) $account['aggregate'],
+            'ip' => $ip === null ? 0 : (int) $ip['aggregate'],
+        ];
+    }
+
+    private function passwordChangeIpLockName(string $ipAddress): string
+    {
+        return 'pa-pwd:' . substr(hash('sha256', $ipAddress), 0, 57);
+    }
+
+    private function acquirePasswordChangeIpLock(string $lockName): void
+    {
+        $row = $this->fetchOne('SELECT GET_LOCK(:lock_name, 10) AS acquired', [
+            'lock_name' => $lockName,
+        ]);
+        if ($row === null || (int) $row['acquired'] !== 1) {
+            throw new AdminAccessException(
+                'DATABASE_ERROR',
+                500,
+                'Could not serialize password change attempts.',
+            );
+        }
+    }
+
+    private function releasePasswordChangeIpLock(string $lockName): void
+    {
+        try {
+            $row = $this->fetchOne('SELECT RELEASE_LOCK(:lock_name) AS released', [
+                'lock_name' => $lockName,
+            ]);
+            if ($row !== null && (int) ($row['released'] ?? 0) === 1) {
+                return;
+            }
+        } catch (Throwable) {
+            // Fall through to connection-wide cleanup without replacing the committed outcome.
+        }
+
+        try {
+            $this->pdo->query('SELECT RELEASE_ALL_LOCKS()');
+        } catch (Throwable) {
+            // A broken connection releases its MySQL locks when the request-scoped PDO is destroyed.
+        }
     }
 
     /** @param array<string, bool|list<string>> $metadata */

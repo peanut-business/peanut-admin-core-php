@@ -19,6 +19,7 @@ use PeanutAdmin\Kernel\Http\TenantRefreshCookie;
 use PeanutAdmin\Kernel\Identity\AccountStatus;
 use PeanutAdmin\Kernel\Identity\CredentialStatus;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
+use PeanutAdmin\Kernel\Identity\SelfService\AccountSelfService;
 use PeanutAdmin\Kernel\Membership\TenantMemberStatus;
 use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
 use PeanutAdmin\Kernel\Persistence\Pdo\PdoIdentityRepository;
@@ -662,6 +663,293 @@ SQL);
         );
     }
 
+    public function testSwitchChallengePersistsInvalidSourceSessionRevocation(): void
+    {
+        $authentication = $this->selectAlpha($this->login());
+        $context = $authentication->context;
+        $this->identity->transitionAccount($this->accountId, AccountStatus::Disabled);
+
+        self::assertSame(
+            'AUTH_ACCOUNT_UNAVAILABLE',
+            $this->captureAuthError(fn() => $this->auth->switchChallenge(
+                $authentication->tokens->access->expose(),
+                '127.0.0.1',
+                'Test Agent',
+                'request-invalid-switch-source',
+            ))->errorCode,
+        );
+
+        $sessionStatement = $this->database->prepare(<<<'SQL'
+SELECT status, revoke_reason
+FROM pa_tenant_session
+WHERE session_key = :session_key
+SQL);
+        self::assertNotFalse($sessionStatement);
+        $sessionStatement->execute(['session_key' => $context->sessionKey]);
+        $session = $sessionStatement->fetch();
+        self::assertIsArray($session);
+        self::assertSame('revoked', $session['status']);
+        self::assertSame('session_invalid', $session['revoke_reason']);
+        $tokenStatement = $this->database->prepare(<<<'SQL'
+SELECT COUNT(*)
+FROM pa_tenant_session_token token
+JOIN pa_tenant_session session ON session.id = token.session_id
+WHERE session.session_key = :session_key AND token.status = 'revoked'
+SQL);
+        self::assertNotFalse($tokenStatement);
+        $tokenStatement->execute(['session_key' => $context->sessionKey]);
+        self::assertSame(2, (int) $tokenStatement->fetchColumn());
+    }
+
+    public function testPasswordChangeCannotBeOvertakenByTenantSwitchChallengeCreation(): void
+    {
+        $authentication = $this->selectAlpha($this->login());
+        $context = $authentication->context;
+        $accessToken = $authentication->tokens->access->expose();
+        $deadline = microtime(true) + 15;
+        $lockSuffix = getmypid() . '_' . bin2hex(random_bytes(4));
+        $arrivedLock = 'pa_switch_arrived_' . $lockSuffix;
+        $gateLock = 'pa_switch_gate_' . $lockSuffix;
+        $triggerName = 'test_pause_tenant_switch_challenge';
+        $triggerCreated = false;
+        $gateConnection = null;
+        $gateLockHeld = false;
+        $switchParentSocket = null;
+        $switchChildSocket = null;
+        $passwordParentSocket = null;
+        $passwordChildSocket = null;
+        $switchProcessId = null;
+        $passwordProcessId = null;
+        $connectionsReset = false;
+
+        try {
+            $this->database->exec(<<<SQL
+CREATE TRIGGER test_pause_tenant_switch_challenge
+BEFORE INSERT ON pa_login_challenge
+FOR EACH ROW
+BEGIN
+    IF NEW.purpose = 'tenant_switch' THEN
+        SET @switch_arrived_lock = GET_LOCK('{$arrivedLock}', 0);
+        SET @switch_gate_lock = GET_LOCK('{$gateLock}', 15);
+        SET @switch_gate_release = RELEASE_LOCK('{$gateLock}');
+        SET @switch_arrived_release = RELEASE_LOCK('{$arrivedLock}');
+    END IF;
+END
+SQL);
+            $triggerCreated = true;
+
+            $switchSockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+            self::assertIsArray($switchSockets);
+            $switchParentSocket = $switchSockets[0];
+            $switchChildSocket = $switchSockets[1];
+            $passwordSockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+            self::assertIsArray($passwordSockets);
+            $passwordParentSocket = $passwordSockets[0];
+            $passwordChildSocket = $passwordSockets[1];
+            foreach ([...$switchSockets, ...$passwordSockets] as $socket) {
+                self::assertTrue(stream_set_blocking($socket, false));
+            }
+
+            $switchProcessId = pcntl_fork();
+            self::assertGreaterThanOrEqual(0, $switchProcessId);
+            if ($switchProcessId === 0) {
+                fclose($switchSockets[0]);
+                fclose($passwordSockets[0]);
+                fclose($passwordSockets[1]);
+                try {
+                    $this->readSocketLine($switchSockets[1], $deadline);
+                    $challenge = $this->authServiceForNewConnection()->switchChallenge(
+                        $accessToken,
+                        '127.0.0.1',
+                        'Test Agent',
+                        'request-switch-password-race',
+                    );
+                    $outcome = [
+                        'status' => 'success',
+                        'challenge' => $challenge->challenge->expose(),
+                    ];
+                } catch (\Throwable $throwable) {
+                    $outcome = [
+                        'status' => 'error',
+                        'error' => $throwable instanceof AuthException
+                            ? $throwable->errorCode
+                            : $throwable::class,
+                    ];
+                }
+                try {
+                    $this->writeSocketLine(
+                        $switchSockets[1],
+                        json_encode($outcome, JSON_THROW_ON_ERROR),
+                        $deadline,
+                    );
+                } catch (\Throwable) {
+                }
+                fclose($switchSockets[1]);
+                exit(0);
+            }
+            fclose($switchSockets[1]);
+            $switchChildSocket = null;
+
+            $passwordProcessId = pcntl_fork();
+            self::assertGreaterThanOrEqual(0, $passwordProcessId);
+            if ($passwordProcessId === 0) {
+                fclose($passwordSockets[0]);
+                fclose($switchSockets[0]);
+                $outcome = 'child_setup_failed';
+                try {
+                    $passwordConnection = $this->newConnection(self::DATABASE);
+                    $connectionIdStatement = $passwordConnection->query('SELECT CONNECTION_ID()');
+                    if ($connectionIdStatement === false) {
+                        throw new \RuntimeException('Could not read the password child connection ID.');
+                    }
+                    $connectionId = $connectionIdStatement->fetchColumn();
+                    $this->writeSocketLine($passwordSockets[1], (string) $connectionId, $deadline);
+                    $this->readSocketLine($passwordSockets[1], $deadline);
+                    $passwords = new AccountSelfService($passwordConnection, new PasswordHasher());
+                    $passwords->changePassword(
+                        $context->tenantId,
+                        $context->memberId,
+                        $context->accountId,
+                        $context->sessionKey,
+                        self::PASSWORD,
+                        'Replacement-password-456!',
+                        '127.0.0.1',
+                        'Test Agent',
+                        'request-password-switch-race',
+                    );
+                    $outcome = 'success';
+                } catch (\Throwable $throwable) {
+                    $outcome = $throwable::class;
+                }
+                try {
+                    $this->writeSocketLine($passwordSockets[1], $outcome, $deadline);
+                } catch (\Throwable) {
+                }
+                fclose($passwordSockets[1]);
+                exit(0);
+            }
+            fclose($passwordSockets[1]);
+            $passwordChildSocket = null;
+
+            $gateConnection = $this->newConnection(self::DATABASE);
+            self::assertSame(1, $this->acquireNamedLock($gateConnection, $gateLock));
+            $gateLockHeld = true;
+            $this->writeSocketLine($switchParentSocket, 'start', $deadline);
+            $switchConnectionId = $this->waitForNamedLockOwner($gateConnection, $arrivedLock, $deadline);
+            self::assertNotNull($switchConnectionId, 'Tenant switch did not reach the challenge insert gate.');
+
+            $passwordConnectionId = (int) $this->readSocketLine($passwordParentSocket, $deadline);
+            self::assertGreaterThan(0, $passwordConnectionId);
+            $this->writeSocketLine($passwordParentSocket, 'start', $deadline);
+            self::assertTrue(
+                $this->waitForDataLockWait(
+                    $gateConnection,
+                    $passwordConnectionId,
+                    $switchConnectionId,
+                    $deadline,
+                ),
+                'Password change did not wait behind the tenant-switch source-session transaction.',
+            );
+
+            self::assertSame(1, $this->releaseNamedLock($gateConnection, $gateLock));
+            $gateLockHeld = false;
+            $switchOutcome = $this->readSocketLine($switchParentSocket, $deadline);
+            $passwordOutcome = $this->readSocketLine($passwordParentSocket, $deadline);
+            fclose($switchParentSocket);
+            $switchParentSocket = null;
+            fclose($passwordParentSocket);
+            $passwordParentSocket = null;
+
+            $switchStatus = $this->waitForChildProcess($switchProcessId, $deadline);
+            self::assertIsInt($switchStatus, 'Tenant-switch child did not exit before the deadline.');
+            $switchProcessId = null;
+            $passwordStatus = $this->waitForChildProcess($passwordProcessId, $deadline);
+            self::assertIsInt($passwordStatus, 'Password-change child did not exit before the deadline.');
+            $passwordProcessId = null;
+
+            self::assertSame('success', $passwordOutcome);
+            self::assertTrue(pcntl_wifexited($switchStatus));
+            self::assertSame(0, pcntl_wexitstatus($switchStatus));
+            self::assertTrue(pcntl_wifexited($passwordStatus));
+            self::assertSame(0, pcntl_wexitstatus($passwordStatus));
+
+            $this->admin = $this->newConnection();
+            $this->database = $this->newConnection(self::DATABASE);
+            $connectionsReset = true;
+            $this->database->exec("DROP TRIGGER IF EXISTS `{$triggerName}`");
+            $triggerCreated = false;
+
+            $switchResult = json_decode($switchOutcome, true, 512, JSON_THROW_ON_ERROR);
+            self::assertIsArray($switchResult);
+            self::assertSame('success', $switchResult['status'] ?? null);
+            self::assertIsString($switchResult['challenge'] ?? null);
+
+            $challengeStatement = $this->database->prepare(<<<'SQL'
+SELECT status
+FROM pa_login_challenge
+WHERE purpose = 'tenant_switch' AND source_session_key = :source_session_key
+ORDER BY id DESC
+LIMIT 1
+SQL);
+            self::assertNotFalse($challengeStatement);
+            $challengeStatement->execute(['source_session_key' => $context->sessionKey]);
+            self::assertSame('revoked', $challengeStatement->fetchColumn());
+            self::assertSame(
+                'AUTH_CHALLENGE_INVALID',
+                $this->captureAuthError(fn() => $this->authServiceForNewConnection()->selectTenant(
+                    $switchResult['challenge'],
+                    $this->betaTenantId,
+                    '127.0.0.1',
+                    'Test Agent',
+                    'request-select-password-revoked-switch',
+                ))->errorCode,
+            );
+        } finally {
+            if ($gateLockHeld && $gateConnection instanceof PDO) {
+                try {
+                    $this->releaseNamedLock($gateConnection, $gateLock);
+                } catch (\Throwable) {
+                }
+            }
+            if (is_resource($switchParentSocket)) {
+                fclose($switchParentSocket);
+            }
+            if (is_resource($switchChildSocket)) {
+                fclose($switchChildSocket);
+            }
+            if (is_resource($passwordParentSocket)) {
+                fclose($passwordParentSocket);
+            }
+            if (is_resource($passwordChildSocket)) {
+                fclose($passwordChildSocket);
+            }
+            $this->terminateChildProcess($switchProcessId, $deadline);
+            $this->terminateChildProcess($passwordProcessId, $deadline);
+
+            try {
+                $cleanupDeadline = max($deadline, microtime(true) + 1.0);
+                $cleanupConnection = $this->newConnection();
+                $this->forceReleaseNamedLock($cleanupConnection, $gateLock, $cleanupDeadline);
+                $this->forceReleaseNamedLock($cleanupConnection, $arrivedLock, $cleanupDeadline);
+            } catch (\Throwable) {
+            }
+
+            if (!$connectionsReset) {
+                try {
+                    $this->admin = $this->newConnection();
+                    $this->database = $this->newConnection(self::DATABASE);
+                } catch (\Throwable) {
+                }
+            }
+            if ($triggerCreated && isset($this->database)) {
+                try {
+                    $this->database->exec("DROP TRIGGER IF EXISTS `{$triggerName}`");
+                } catch (\Throwable) {
+                }
+            }
+        }
+    }
+
     public function testLogoutLogoutAllSwitchAndAudienceSeparation(): void
     {
         $alpha = $this->selectAlpha($this->login());
@@ -786,6 +1074,207 @@ SQL);
                 PDO::ATTR_EMULATE_PREPARES => false,
             ],
         );
+    }
+
+    private function acquireNamedLock(PDO $pdo, string $lockName): int
+    {
+        $statement = $pdo->prepare('SELECT GET_LOCK(:lock_name, 0)');
+        self::assertNotFalse($statement);
+        $statement->execute(['lock_name' => $lockName]);
+
+        return (int) $statement->fetchColumn();
+    }
+
+    private function releaseNamedLock(PDO $pdo, string $lockName): int
+    {
+        $statement = $pdo->prepare('SELECT RELEASE_LOCK(:lock_name)');
+        self::assertNotFalse($statement);
+        $statement->execute(['lock_name' => $lockName]);
+
+        return (int) $statement->fetchColumn();
+    }
+
+    private function waitForNamedLockOwner(PDO $pdo, string $lockName, float $deadline): ?int
+    {
+        $statement = $pdo->prepare('SELECT IS_USED_LOCK(:lock_name)');
+        self::assertNotFalse($statement);
+        do {
+            $statement->execute(['lock_name' => $lockName]);
+            $owner = $statement->fetchColumn();
+            if ($owner !== false && $owner !== null) {
+                return (int) $owner;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+
+        return null;
+    }
+
+    private function waitForDataLockWait(
+        PDO $pdo,
+        int $requestingConnectionId,
+        int $blockingConnectionId,
+        float $deadline,
+    ): bool {
+        $statement = $pdo->prepare(<<<'SQL'
+SELECT COUNT(*)
+FROM performance_schema.data_lock_waits lock_wait
+JOIN performance_schema.threads requesting_thread
+  ON requesting_thread.THREAD_ID = lock_wait.REQUESTING_THREAD_ID
+JOIN performance_schema.threads blocking_thread
+  ON blocking_thread.THREAD_ID = lock_wait.BLOCKING_THREAD_ID
+WHERE requesting_thread.PROCESSLIST_ID = :requesting_connection_id
+  AND blocking_thread.PROCESSLIST_ID = :blocking_connection_id
+  AND EXISTS (
+      SELECT 1
+      FROM performance_schema.data_locks source_session_lock
+      JOIN performance_schema.threads source_session_thread
+        ON source_session_thread.THREAD_ID = source_session_lock.THREAD_ID
+      WHERE source_session_thread.PROCESSLIST_ID = :source_session_connection_id
+        AND source_session_lock.OBJECT_SCHEMA = DATABASE()
+        AND source_session_lock.OBJECT_NAME = 'pa_tenant_session'
+        AND source_session_lock.LOCK_TYPE = 'RECORD'
+        AND source_session_lock.LOCK_STATUS = 'GRANTED'
+  )
+SQL);
+        self::assertNotFalse($statement);
+        do {
+            $statement->execute([
+                'requesting_connection_id' => $requestingConnectionId,
+                'blocking_connection_id' => $blockingConnectionId,
+                'source_session_connection_id' => $blockingConnectionId,
+            ]);
+            if ((int) $statement->fetchColumn() > 0) {
+                return true;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+
+        return false;
+    }
+
+    /** @param resource $socket */
+    private function readSocketLine($socket, float $deadline): string
+    {
+        $buffer = '';
+        do {
+            $read = [$socket];
+            $write = [];
+            $except = [];
+            [$seconds, $microseconds] = $this->selectTimeout($deadline);
+            $selected = stream_select($read, $write, $except, $seconds, $microseconds);
+            if ($selected === false) {
+                throw new \RuntimeException('Could not wait for child process output.');
+            }
+            if ($selected === 0) {
+                break;
+            }
+            $chunk = fgets($socket);
+            if ($chunk === false) {
+                if (feof($socket)) {
+                    break;
+                }
+
+                continue;
+            }
+            $buffer .= $chunk;
+            if (str_ends_with($buffer, "\n")) {
+                return rtrim($buffer, "\r\n");
+            }
+        } while (microtime(true) < $deadline);
+
+        throw new \RuntimeException('Child process output deadline exceeded.');
+    }
+
+    /** @param resource $socket */
+    private function writeSocketLine($socket, string $message, float $deadline): void
+    {
+        $payload = $message . "\n";
+        $offset = 0;
+        $length = strlen($payload);
+        do {
+            $read = [];
+            $write = [$socket];
+            $except = [];
+            [$seconds, $microseconds] = $this->selectTimeout($deadline);
+            $selected = stream_select($read, $write, $except, $seconds, $microseconds);
+            if ($selected === false) {
+                throw new \RuntimeException('Could not wait to signal child process.');
+            }
+            if ($selected === 0) {
+                break;
+            }
+            $written = fwrite($socket, substr($payload, $offset));
+            if ($written === false) {
+                throw new \RuntimeException('Could not signal child process.');
+            }
+            $offset += $written;
+            if ($offset === $length) {
+                return;
+            }
+        } while (microtime(true) < $deadline);
+
+        throw new \RuntimeException('Child process signal deadline exceeded.');
+    }
+
+    /** @return array{int, int} */
+    private function selectTimeout(float $deadline): array
+    {
+        $remaining = max(0.0, $deadline - microtime(true));
+        $seconds = (int) $remaining;
+
+        return [$seconds, (int) (($remaining - $seconds) * 1_000_000)];
+    }
+
+    private function waitForChildProcess(int $processId, float $deadline): int|false|null
+    {
+        do {
+            $result = pcntl_waitpid($processId, $status, WNOHANG);
+            if ($result === $processId) {
+                return $status;
+            }
+            if ($result === -1) {
+                return false;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+
+        return null;
+    }
+
+    private function terminateChildProcess(?int $processId, float $deadline): void
+    {
+        if ($processId === null || $processId <= 0) {
+            return;
+        }
+        if ($this->waitForChildProcess($processId, $deadline) !== null) {
+            return;
+        }
+
+        posix_kill($processId, SIGTERM);
+        if ($this->waitForChildProcess($processId, microtime(true) + 0.5) !== null) {
+            return;
+        }
+
+        posix_kill($processId, SIGKILL);
+        $this->waitForChildProcess($processId, microtime(true) + 1.0);
+    }
+
+    private function forceReleaseNamedLock(PDO $pdo, string $lockName, float $deadline): void
+    {
+        $statement = $pdo->prepare('SELECT IS_USED_LOCK(:lock_name)');
+        if ($statement === false) {
+            return;
+        }
+        do {
+            $statement->execute(['lock_name' => $lockName]);
+            $owner = $statement->fetchColumn();
+            if ($owner === false || $owner === null) {
+                return;
+            }
+            $pdo->exec('KILL CONNECTION ' . (int) $owner);
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
     }
 
     private function refreshOutcome(

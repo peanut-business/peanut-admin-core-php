@@ -494,25 +494,42 @@ final class TenantAuthService
         ?string $userAgent,
         string $requestId,
     ): TenantSelectionRequired {
-        $session = $this->validatedAccessSession($accessToken);
-        $choices = array_values(array_filter(
-            $this->repository->availableTenants($session->accountId),
-            static fn(TenantChoice $choice): bool => $choice->tenantId !== $session->tenantId,
-        ));
-        if ($choices === []) {
-            throw new AuthException('AUTH_NO_AVAILABLE_TENANT', 403);
-        }
-
-        return $this->transactions->run(fn(): TenantSelectionRequired => $this->createSelection(
-            $session->accountId,
-            $choices,
-            'tenant_switch',
-            $session->sessionKey,
+        $result = $this->transactions->run(function () use (
+            $accessToken,
             $ipAddress,
             $userAgent,
             $requestId,
-            $this->clock->now(),
-        ));
+        ): TenantSelectionRequired|AuthException {
+            try {
+                $session = $this->validatedAccessSession($accessToken);
+            } catch (AuthException $exception) {
+                return $exception;
+            }
+            $choices = array_values(array_filter(
+                $this->repository->availableTenants($session->accountId),
+                static fn(TenantChoice $choice): bool => $choice->tenantId !== $session->tenantId,
+            ));
+            if ($choices === []) {
+                throw new AuthException('AUTH_NO_AVAILABLE_TENANT', 403);
+            }
+
+            return $this->createSelection(
+                $session->accountId,
+                $choices,
+                'tenant_switch',
+                $session->sessionKey,
+                $ipAddress,
+                $userAgent,
+                $requestId,
+                $this->clock->now(),
+            );
+        });
+
+        if ($result instanceof AuthException) {
+            throw $result;
+        }
+
+        return $result;
     }
 
     private function validatedAccessSession(string $accessToken): ValidatedTenantSession
