@@ -199,9 +199,9 @@ SQL);
             (string) $row['status'],
             (int) $row['created_by_member_id'],
             (int) $row['revision'],
-            (string) $row['created_at'],
-            (string) $row['updated_at'],
-            $row['archived_at'] === null ? null : (string) $row['archived_at'],
+            $this->timestamp($row['created_at']),
+            $this->timestamp($row['updated_at']),
+            $row['archived_at'] === null ? null : $this->timestamp($row['archived_at']),
         );
     }
 
@@ -219,5 +219,22 @@ SQL);
     private function date(DateTimeImmutable $date): string
     {
         return $date->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.v');
+    }
+
+    private function timestamp(mixed $value): string
+    {
+        if (!is_string($value)) {
+            throw FileMediaException::internal();
+        }
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s.v', $value, new DateTimeZone('UTC'));
+        $errors = DateTimeImmutable::getLastErrors();
+        if (!$date instanceof DateTimeImmutable
+            || ($errors !== false && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
+            || $date->format('Y-m-d H:i:s.v') !== $value
+        ) {
+            throw FileMediaException::internal();
+        }
+
+        return $date->format('Y-m-d\TH:i:s.v\Z');
     }
 }
