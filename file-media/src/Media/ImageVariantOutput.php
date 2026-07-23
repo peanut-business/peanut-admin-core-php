@@ -13,7 +13,9 @@ final readonly class ImageVariantOutput
         public int $sizeBytes,
         public string $sha256,
     ) {
-        if ($sizeBytes < 1 || preg_match('/^[0-9a-f]{64}$/D', $sha256) !== 1) {
+        if ($sizeBytes < 1 || $sizeBytes > ImageMetadataInspector::HARD_MAX_BYTES
+            || preg_match('/^[0-9a-f]{64}$/D', $sha256) !== 1
+        ) {
             throw FileMediaException::imageInvalid();
         }
     }

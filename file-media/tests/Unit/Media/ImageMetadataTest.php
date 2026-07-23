@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PeanutAdmin\FileMedia\Tests\Unit\Media;
 
 use PeanutAdmin\FileMedia\Application\FileMediaException;
+use PeanutAdmin\FileMedia\Media\ImageInspection;
+use PeanutAdmin\FileMedia\Media\ImageMetadata;
 use PeanutAdmin\FileMedia\Media\ImageMetadataInspector;
 use PeanutAdmin\FileMedia\Media\ImageVariantDefinition;
 use PeanutAdmin\FileMedia\Media\ImageVariantOutput;
@@ -57,14 +59,25 @@ final class ImageMetadataTest extends TestCase
     public function testVariantValueObjectsCannotBeForged(): void
     {
         $valid = new ImageVariantPlan('thumb', 100, 80, 'cover', 'image/jpeg', 'variants/thumb.jpg');
-        self::assertSame('thumb', (new ImageVariantOutput($valid, 10, str_repeat('a', 64)))->plan->variantKey);
+        $hardCap = ImageMetadataInspector::HARD_MAX_BYTES;
+        $output = new ImageVariantOutput($valid, $hardCap, str_repeat('a', 64));
+        self::assertSame('thumb', $output->plan->variantKey);
+        self::assertSame($hardCap, $output->persistenceMetadata()['size_bytes']);
+        $inspection = new ImageInspection(new ImageMetadata(100, 80, 'image/jpeg'), $hardCap, str_repeat('b', 64));
+        self::assertSame($hardCap, $inspection->sizeBytes);
 
         $this->expectImageError(fn() => new ImageVariantPlan('thumb', 100, 80, 'cover', 'image/jpeg', '../thumb.jpg'));
         $this->expectImageError(fn() => new ImageVariantPlan('thumb', 0, 80, 'cover', 'image/jpeg', 'variants/thumb.jpg'));
         $this->expectImageError(fn() => new ImageVariantPlan('thumb', 100, 80, 'stretch', 'image/jpeg', 'variants/thumb.jpg'));
         $this->expectImageError(fn() => new ImageVariantPlan('thumb', 100, 80, 'cover', 'text/plain', 'variants/thumb.jpg'));
         $this->expectImageError(fn() => new ImageVariantOutput($valid, 0, str_repeat('a', 64)));
+        $this->expectImageError(fn() => new ImageVariantOutput($valid, $hardCap + 1, str_repeat('a', 64)));
         $this->expectImageError(fn() => new ImageVariantOutput($valid, 10, '../not-a-hash'));
+        $this->expectImageError(fn() => new ImageInspection(
+            new ImageMetadata(100, 80, 'image/jpeg'),
+            $hardCap + 1,
+            str_repeat('b', 64),
+        ));
     }
 
     private function expectImageError(callable $operation): void
