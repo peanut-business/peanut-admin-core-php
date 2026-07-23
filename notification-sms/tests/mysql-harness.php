@@ -18,6 +18,7 @@ spl_autoload_register(static function (string $class) use ($root): void {
 
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
+use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
@@ -31,6 +32,12 @@ use PeanutAdmin\NotificationSms\Database\Schema;
 use PeanutAdmin\NotificationSms\Package;
 use PeanutAdmin\NotificationSms\Persistence\PdoNotificationRepository;
 use PeanutAdmin\NotificationSms\Sms\SmsRecipient;
+use PeanutAdmin\NotificationSms\Task\NotificationOutboxDispatcher;
+use PeanutAdmin\NotificationSms\Task\OutboxTaskSubmissionProvider;
+use PeanutAdmin\TaskJob\Database\Schema as TaskJobSchema;
+use PeanutAdmin\TaskJob\Persistence\PdoTaskJobRepository;
+use PeanutAdmin\TaskJob\Submission\TaskSubmissionRegistry;
+use PeanutAdmin\TaskJob\Submission\TrustedJobPublisher;
 
 function same(mixed $expected, mixed $actual, string $message): void
 {
@@ -71,8 +78,10 @@ $pdo = new PDO($dsn, $user, $password, [
 ]);
 
 $drop = array_reverse(Schema::tableNames());
+$taskDrop = array_reverse(TaskJobSchema::tableNames());
 try {
     foreach ($drop as $table) $pdo->exec(Schema::dropSql($table));
+    foreach ($taskDrop as $table) $pdo->exec(TaskJobSchema::dropSql($table));
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant_member');
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant');
     $pdo->exec(<<<'SQL'
@@ -94,6 +103,7 @@ CREATE TABLE pa_tenant_member (
 SQL);
     $pdo->exec("INSERT INTO pa_tenant (id) VALUES (101), (202)");
     $pdo->exec("INSERT INTO pa_tenant_member (id, tenant_id, account_id, status) VALUES (501,101,301,'active'), (502,202,302,'active')");
+    foreach (TaskJobSchema::tableNames() as $table) $pdo->exec(TaskJobSchema::createSql($table));
     foreach (Schema::tableNames() as $table) $pdo->exec(Schema::createSql($table));
 
     $repository = new PdoNotificationRepository($pdo);
@@ -158,9 +168,40 @@ SQL);
     same(1, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_template')->fetchColumn(), 'template row');
     same(1, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message WHERE template_revision = 1')->fetchColumn(), 'message row');
 
+    $publisher = new TrustedJobPublisher(
+        new PdoTaskJobRepository($pdo),
+        new TaskSubmissionRegistry([
+            new OutboxTaskSubmissionProvider('inbox'),
+            new OutboxTaskSubmissionProvider('sms'),
+        ]),
+        new TrustedEnvelopeCodec(str_repeat('e', 32)),
+    );
+    $dispatcher = new NotificationOutboxDispatcher($repository, $publisher);
+    $messageCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn();
+    $outboxCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_outbox')->fetchColumn();
+    $notificationEventCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_event')->fetchColumn();
+    $pdo->beginTransaction();
+    $transactional = $service->publish($manage101, 'security.alert', [[
+        'member_id' => 501,
+        'variables' => ['code' => 'ROLLBACK'],
+    ]], []);
+    foreach ($transactional['outbox'] as $outbox) {
+        $dispatcher->dispatch($manage101, $outbox->outboxKey);
+    }
+    same(2, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn(), 'outer transaction sees notification');
+    same(2, (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job')->fetchColumn(), 'outer transaction sees dispatch jobs');
+    same(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_notification_outbox WHERE status = 'queued'")->fetchColumn(), 'outer transaction binds dispatch jobs');
+    $pdo->rollBack();
+    same($messageCount, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn(), 'outer rollback removes notification');
+    same($outboxCount, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_outbox')->fetchColumn(), 'outer rollback removes outbox rows');
+    same(0, (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job')->fetchColumn(), 'outer rollback removes dispatch jobs');
+    same(0, (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job_event')->fetchColumn(), 'outer rollback removes task events');
+    same($notificationEventCount, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_event')->fetchColumn(), 'outer rollback removes notification event');
+
     fwrite(STDOUT, "notification-sms MySQL harness: PASS\n");
 } finally {
     foreach ($drop as $table) $pdo->exec(Schema::dropSql($table));
+    foreach ($taskDrop as $table) $pdo->exec(TaskJobSchema::dropSql($table));
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant_member');
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant');
 }

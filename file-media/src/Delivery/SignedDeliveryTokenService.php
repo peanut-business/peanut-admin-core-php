@@ -52,6 +52,19 @@ final readonly class SignedDeliveryTokenService
         return $payload . '.' . $this->encode(hash_hmac('sha256', $payload, $this->secret, true));
     }
 
+    public static function peekTenantId(string $token, string $secret): int
+    {
+        if (strlen($secret) < 32) {
+            throw FileMediaException::deliveryDenied();
+        }
+        $claims = self::verifiedClaims($token, $secret);
+        if ($claims['v'] !== 1 || !is_int($claims['tid']) || $claims['tid'] < 1) {
+            throw FileMediaException::deliveryDenied();
+        }
+
+        return $claims['tid'];
+    }
+
     /** @return array{visibility: DeliveryVisibility, replay_mode: ReplayMode, expires_at: DateTimeImmutable, token_id: string} */
     public function verifyAndConsume(
         string $token,
@@ -59,24 +72,8 @@ final readonly class SignedDeliveryTokenService
         string $fileKey,
         DateTimeImmutable $now,
     ): array {
-        if (strlen($token) > 2048) {
-            throw FileMediaException::deliveryDenied();
-        }
-        $parts = explode('.', $token);
-        if (count($parts) !== 2 || strlen($parts[0]) > 1536
-            || preg_match('/^[A-Za-z0-9_-]+$/D', $parts[0]) !== 1
-            || preg_match('/^[A-Za-z0-9_-]{43}$/D', $parts[1]) !== 1
-            || !hash_equals($this->encode(hash_hmac('sha256', $parts[0], $this->secret, true)), $parts[1])
-        ) {
-            throw FileMediaException::deliveryDenied();
-        }
-        try {
-            $claims = json_decode($this->decode($parts[0]), true, 16, JSON_THROW_ON_ERROR);
-        } catch (JsonException) {
-            throw FileMediaException::deliveryDenied();
-        }
-        if (!is_array($claims) || array_keys($claims) !== ['v', 'tid', 'fk', 'vis', 'replay', 'iat', 'exp', 'jti']
-            || $claims['v'] !== 1 || $claims['tid'] !== $tenantId || $claims['fk'] !== $fileKey
+        $claims = self::verifiedClaims($token, $this->secret);
+        if ($claims['v'] !== 1 || $claims['tid'] !== $tenantId || $claims['fk'] !== $fileKey
             || !is_int($claims['iat']) || !is_int($claims['exp']) || !is_string($claims['jti'])
             || preg_match('/^[0-9a-f]{32}$/D', $claims['jti']) !== 1
             || $claims['iat'] > $now->getTimestamp() + 30 || $claims['exp'] <= $now->getTimestamp()
@@ -108,6 +105,50 @@ final readonly class SignedDeliveryTokenService
     }
 
     private function decode(string $value): string
+    {
+        if ($value === '' || preg_match('/^[A-Za-z0-9_-]+$/D', $value) !== 1) {
+            throw FileMediaException::deliveryDenied();
+        }
+        $decoded = base64_decode(strtr($value, '-_', '+/'), true);
+        if (!is_string($decoded)) {
+            throw FileMediaException::deliveryDenied();
+        }
+
+        return $decoded;
+    }
+
+    /** @return array{v: mixed, tid: mixed, fk: mixed, vis: mixed, replay: mixed, iat: mixed, exp: mixed, jti: mixed} */
+    private static function verifiedClaims(string $token, string $secret): array
+    {
+        if (strlen($token) > 2048) {
+            throw FileMediaException::deliveryDenied();
+        }
+        $parts = explode('.', $token);
+        if (count($parts) !== 2 || strlen($parts[0]) > 1536
+            || preg_match('/^[A-Za-z0-9_-]+$/D', $parts[0]) !== 1
+            || preg_match('/^[A-Za-z0-9_-]{43}$/D', $parts[1]) !== 1
+            || !hash_equals(self::encodeValue(hash_hmac('sha256', $parts[0], $secret, true)), $parts[1])
+        ) {
+            throw FileMediaException::deliveryDenied();
+        }
+        try {
+            $claims = json_decode(self::decodeValue($parts[0]), true, 16, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw FileMediaException::deliveryDenied();
+        }
+        if (!is_array($claims) || array_keys($claims) !== ['v', 'tid', 'fk', 'vis', 'replay', 'iat', 'exp', 'jti']) {
+            throw FileMediaException::deliveryDenied();
+        }
+
+        return $claims;
+    }
+
+    private static function encodeValue(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
+
+    private static function decodeValue(string $value): string
     {
         if ($value === '' || preg_match('/^[A-Za-z0-9_-]+$/D', $value) !== 1) {
             throw FileMediaException::deliveryDenied();

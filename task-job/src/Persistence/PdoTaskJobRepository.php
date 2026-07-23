@@ -142,7 +142,10 @@ SQL);
 
     public function cancel(int $tenantId, int $actorMemberId, string $jobKey, int $revision): JobRecord
     {
-        $this->begin();
+        $ownsTransaction = !$this->pdo->inTransaction();
+        if ($ownsTransaction) {
+            $this->begin();
+        }
         try {
             $row = $this->rowByJobKey($tenantId, $jobKey, true);
             if ($row === null) throw TaskJobException::notFound();
@@ -155,17 +158,24 @@ SQL);
             if ($statement->rowCount() !== 1) throw TaskJobException::stateConflict();
             $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.cancelled', $actorMemberId, ['revision' => $revision + 1]);
             $updated = $this->rowById($tenantId, (int) $row['id'], false);
-            $this->pdo->commit();
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
             return $this->map($updated ?? throw TaskJobException::internal());
         } catch (Throwable $exception) {
-            $this->rollback();
+            if ($ownsTransaction) {
+                $this->rollback();
+            }
             throw $exception;
         }
     }
 
     public function retryDead(int $tenantId, int $actorMemberId, string $jobKey, int $revision): JobRecord
     {
-        $this->begin();
+        $ownsTransaction = !$this->pdo->inTransaction();
+        if ($ownsTransaction) {
+            $this->begin();
+        }
         try {
             $row = $this->rowByJobKey($tenantId, $jobKey, true);
             if ($row === null) throw TaskJobException::notFound();
@@ -180,10 +190,14 @@ SQL);
             if ($statement->rowCount() !== 1) throw TaskJobException::stateConflict();
             $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.retried', $actorMemberId, ['revision' => $revision + 1]);
             $updated = $this->rowById($tenantId, (int) $row['id'], false);
-            $this->pdo->commit();
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
             return $this->map($updated ?? throw TaskJobException::internal());
         } catch (Throwable $exception) {
-            $this->rollback();
+            if ($ownsTransaction) {
+                $this->rollback();
+            }
             throw $exception;
         }
     }

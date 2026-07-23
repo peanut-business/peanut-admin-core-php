@@ -30,11 +30,13 @@ final class DeliverySecurityTest extends TestCase
         $fileKey = 'file_' . str_repeat('a', 32);
         $token = $service->issue(7, $fileKey, DeliveryVisibility::Private, ReplayMode::SingleUse, $now, 60, str_repeat('b', 32));
 
+        self::assertSame(7, SignedDeliveryTokenService::peekTenantId($token, str_repeat('s', 32)));
         $claims = $service->verifyAndConsume($token, 7, $fileKey, $now->modify('+1 second'));
         self::assertSame(DeliveryVisibility::Private, $claims['visibility']);
         $this->expectError('FILE_DELIVERY_DENIED', fn() => $service->verifyAndConsume($token, 7, $fileKey, $now->modify('+2 seconds')));
         $this->expectError('FILE_DELIVERY_DENIED', fn() => $service->verifyAndConsume($token, 8, $fileKey, $now->modify('+2 seconds')));
         $this->expectError('FILE_DELIVERY_DENIED', fn() => $service->verifyAndConsume($token . 'x', 7, $fileKey, $now));
+        $this->expectError('FILE_DELIVERY_DENIED', fn() => SignedDeliveryTokenService::peekTenantId($token, str_repeat('x', 32)));
         $this->expectError('FILE_DELIVERY_DENIED', fn() => $service->verifyAndConsume(str_repeat('x', 2049), 7, $fileKey, $now));
         $expired = $service->issue(7, $fileKey, DeliveryVisibility::Private, ReplayMode::SingleUse, $now, 1, str_repeat('c', 32));
         $this->expectError('FILE_DELIVERY_DENIED', fn() => $service->verifyAndConsume($expired, 7, $fileKey, $now->modify('+1 second')));
