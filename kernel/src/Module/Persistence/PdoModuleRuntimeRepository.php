@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Module\Persistence;
 
 use DateTimeImmutable;
+use PDO;
 use PeanutAdmin\Kernel\Module\ModuleException;
 use PeanutAdmin\Kernel\Module\ModuleInstallationRecord;
 use PeanutAdmin\Kernel\Module\ModuleRuntimeRepository;
@@ -14,6 +15,11 @@ use PeanutAdmin\Kernel\Persistence\Pdo\PdoRepository;
 
 final class PdoModuleRuntimeRepository extends PdoRepository implements ModuleRuntimeRepository, TenantModuleMutationRepository
 {
+    public function __construct(PDO $pdo, private readonly bool $lockAvailabilityReads = false)
+    {
+        parent::__construct($pdo);
+    }
+
     public function tenantIsActive(int $tenantId): bool
     {
         $row = $this->fetchOne('SELECT status FROM pa_tenant WHERE id = :tenant_id', ['tenant_id' => $tenantId]);
@@ -23,9 +29,9 @@ final class PdoModuleRuntimeRepository extends PdoRepository implements ModuleRu
 
     public function installation(string $moduleKey): ?ModuleInstallationRecord
     {
-        $row = $this->fetchOne(<<<'SQL'
+        $row = $this->fetchOne(<<<SQL
 SELECT module_key, installed_version, status, revision, manifest_digest
-FROM pa_module_installation WHERE module_key = :module_key
+FROM pa_module_installation WHERE module_key = :module_key{$this->availabilityLockClause()}
 SQL, ['module_key' => $moduleKey]);
 
         return $row === null ? null : new ModuleInstallationRecord(
@@ -39,9 +45,9 @@ SQL, ['module_key' => $moduleKey]);
 
     public function tenantModule(int $tenantId, string $moduleKey): ?TenantModuleRecord
     {
-        $row = $this->fetchOne(<<<'SQL'
+        $row = $this->fetchOne(<<<SQL
 SELECT tenant_id, module_key, status, effective_at, expires_at, authorization_revision
-FROM pa_tenant_module WHERE tenant_id = :tenant_id AND module_key = :module_key
+FROM pa_tenant_module WHERE tenant_id = :tenant_id AND module_key = :module_key{$this->availabilityLockClause()}
 SQL, ['tenant_id' => $tenantId, 'module_key' => $moduleKey]);
 
         return $row === null ? null : new TenantModuleRecord(
@@ -134,5 +140,10 @@ SQL, ['updated_at' => $timestamp, 'tenant_id' => $tenantId]);
 
         return $this->tenantModule($tenantId, $moduleKey)
             ?? throw new ModuleException('MODULE_TENANT_DISABLED', 'Disabled module could not be reloaded.');
+    }
+
+    private function availabilityLockClause(): string
+    {
+        return $this->lockAvailabilityReads ? ' FOR SHARE' : '';
     }
 }

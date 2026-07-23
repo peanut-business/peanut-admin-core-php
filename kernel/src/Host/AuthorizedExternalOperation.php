@@ -11,9 +11,11 @@ use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 final readonly class AuthorizedExternalOperation
 {
     /** @param list<RequestedTargetSet> $targets */
-    public function __construct(
+    private function __construct(
         public TenantContext|PlatformContext $context,
+        public ExternalOperationDefinition $operation,
         public ?object $queryConstraint = null,
         public array $targets = [],
     ) {}
+
 }

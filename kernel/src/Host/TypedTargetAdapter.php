@@ -8,6 +8,16 @@ use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Api\TypedTargetInput;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Authorization\DataPermissionAdapter;
+use PeanutAdmin\Kernel\Context\RequestedTargetSet;
+
+final readonly class TypedTargetAuthorization
+{
+    /** @param list<RequestedTargetSet> $targets */
+    public function __construct(
+        public ?object $queryConstraint,
+        public array $targets,
+    ) {}
+}
 
 final readonly class TypedTargetAdapter
 {
@@ -18,12 +28,12 @@ final readonly class TypedTargetAdapter
         ExternalOperationDefinition $operation,
         TenantContext $context,
         array $targets,
-    ): AuthorizedExternalOperation {
+    ): TypedTargetAuthorization {
         if ($operation->dataAuthorization === 'none') {
             if ($targets !== []) {
                 throw $this->invalid('This operation does not accept typed targets.');
             }
-            return new AuthorizedExternalOperation($context);
+            return new TypedTargetAuthorization(null, []);
         }
 
         $input = match ($operation->targetCardinality) {
@@ -40,8 +50,7 @@ final readonly class TypedTargetAdapter
         };
         $requested = $input === null ? [] : $input->sets;
         if ($operation->dataAuthorization === 'query') {
-            return new AuthorizedExternalOperation(
-                $context,
+            return new TypedTargetAuthorization(
                 $this->authorization->queryConstraint(
                     $context,
                     (string) $operation->resourceKey,
@@ -59,7 +68,7 @@ final readonly class TypedTargetAdapter
             $requested,
         );
 
-        return new AuthorizedExternalOperation($context, null, $requested);
+        return new TypedTargetAuthorization(null, $requested);
     }
 
     private function invalid(string $message): ApiException

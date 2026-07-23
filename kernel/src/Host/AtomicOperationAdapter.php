@@ -31,6 +31,7 @@ final readonly class AtomicOperationAdapter
     /**
      * @param callable(PDO): ExternalOperationResult $domain
      * @param null|callable(PDO, ExternalOperationResult): void $outbox
+     * @param null|callable(PDO): void $guard
      */
     public function execute(
         ExternalOperationDefinition $operation,
@@ -38,12 +39,16 @@ final readonly class AtomicOperationAdapter
         ExternalOperationRequest $request,
         callable $domain,
         ?callable $outbox = null,
+        ?callable $guard = null,
     ): ExternalOperationResponse {
         if (!$operation->atomicCommand) {
             throw new InvalidArgumentException('Atomic adapter requires an atomic command definition.');
         }
 
-        return $this->transactions->run(function () use ($operation, $context, $request, $domain, $outbox): ExternalOperationResponse {
+        return $this->transactions->run(function () use ($operation, $context, $request, $domain, $outbox, $guard): ExternalOperationResponse {
+            if ($guard !== null) {
+                $guard($this->pdo);
+            }
             $record = $this->acquire($operation, $context, $request);
             if ($record?->replayable()) {
                 return new ExternalOperationResponse(

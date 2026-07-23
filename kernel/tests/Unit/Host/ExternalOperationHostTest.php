@@ -19,6 +19,7 @@ use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationRepository;
 use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Host\AtomicOperationAdapter;
+use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Kernel\Host\ExternalHostConfiguration;
 use PeanutAdmin\Kernel\Host\ExternalOperationDefinition;
 use PeanutAdmin\Kernel\Host\ExternalOperationHost;
@@ -40,10 +41,26 @@ use PeanutAdmin\Kernel\Module\TenantModuleRecord;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationRepository;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
 use stdClass;
 
 final class ExternalOperationHostTest extends TestCase
 {
+    public function testAuthorizedOperationCannotBeConstructedByAHandler(): void
+    {
+        $constructor = (new ReflectionClass(AuthorizedExternalOperation::class))->getConstructor();
+
+        self::assertNotNull($constructor);
+        self::assertTrue($constructor->isPrivate());
+    }
+
+    public function testAuthorizedOperationExposesNoPublicIssuer(): void
+    {
+        self::assertFalse((new ReflectionClass(AuthorizedExternalOperation::class))->hasMethod(
+            'issueFromExternalOperationHost',
+        ));
+    }
+
     public function testIdempotencyHashIncludesTypedTargets(): void
     {
         $now = new DateTimeImmutable('2026-07-19T00:00:00Z');
@@ -81,7 +98,8 @@ final class ExternalOperationHostTest extends TestCase
             'tenant_id' => 999,
         ]);
 
-        $response = $host->read($operation, $request, static function ($authorized): ExternalOperationResponse {
+        $response = $host->read($operation, $request, static function ($authorized) use ($operation): ExternalOperationResponse {
+            self::assertSame($operation, $authorized->operation);
             self::assertInstanceOf(stdClass::class, $authorized->queryConstraint);
             self::assertInstanceOf(TenantContext::class, $authorized->context);
             self::assertSame(10, $authorized->context->tenantId);
@@ -201,6 +219,61 @@ final class ExternalOperationHostTest extends TestCase
         }
 
         self::fail('Tenant context must not enter a platform operation.');
+    }
+
+    public function testCommandGuardRunsAfterAuthorizationAndBeforeAtomicExecution(): void
+    {
+        $targetCalls = 0;
+        $handlerCalls = 0;
+        $guardCalls = 0;
+        $host = $this->host(['fixture.record.write'], $targetCalls);
+        $operation = new ExternalOperationDefinition(
+            'fixtureRecordCreate',
+            'POST',
+            '/api/v1/fixture/records',
+            'tenant',
+            'fixture.record',
+            new PermissionRequirement('tenant', ['fixture.record.write']),
+            atomicCommand: true,
+        );
+        $now = new DateTimeImmutable('2026-07-19T00:00:00Z');
+        $request = new ExternalOperationRequest(
+            RequestId::fromHeader('req_fixture_guard_1001'),
+            $this->context(10, 'req_fixture_guard_1001'),
+            'POST',
+            '/api/v1/fixture/records',
+            [],
+            [],
+            null,
+            $now,
+            $now->modify('+1 hour'),
+        );
+
+        $response = $host->command(
+            $operation,
+            $request,
+            static function () use (&$handlerCalls): never {
+                ++$handlerCalls;
+                throw new \LogicException('The domain handler must not run after a failed command guard.');
+            },
+            guard: static function (
+                AuthorizedExternalOperation $authorized,
+                ExternalOperationRequest $guardedRequest,
+                PDO $transaction,
+            ) use (&$guardCalls, $operation, $request): never {
+                ++$guardCalls;
+                self::assertSame($operation, $authorized->operation);
+                self::assertSame($request, $guardedRequest);
+                self::assertTrue($transaction->inTransaction());
+                throw new ApiException('FIXTURE_UNAVAILABLE', 404, 'The fixture is unavailable.');
+            },
+        );
+
+        self::assertSame(404, $response->status);
+        self::assertSame('FIXTURE_UNAVAILABLE', $response->body['code']);
+        self::assertSame(1, $guardCalls);
+        self::assertSame(0, $handlerCalls);
+        self::assertSame(0, $targetCalls);
     }
 
     /** @param list<string> $permissionKeys */

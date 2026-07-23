@@ -69,6 +69,8 @@ final class ExternalOperationHostIntegrationTest extends TestCase
         if (getenv('PEANUT_INTEGRATION') !== '1') {
             self::markTestSkipped('Run with the isolated R02 MySQL environment.');
         }
+        $this->requiredPort('MYSQL_PORT');
+        $port = $this->requiredPort('DB_PORT');
 
         $this->admin = $this->connect();
         $this->admin->exec('DROP DATABASE IF EXISTS `' . self::DATABASE . '`');
@@ -79,7 +81,7 @@ final class ExternalOperationHostIntegrationTest extends TestCase
         (new KernelMigrationRunner(
             self::DATABASE,
             '127.0.0.1',
-            (int) (getenv('MYSQL_PORT') ?: 33382),
+            $port,
             'root',
             getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
         ))->migrate();
@@ -120,7 +122,8 @@ final class ExternalOperationHostIntegrationTest extends TestCase
             AuthorizedExternalOperation $authorized,
             ExternalOperationRequest $request,
             PDO $pdo,
-        ): ExternalOperationResult {
+        ) use ($create): ExternalOperationResult {
+            self::assertSame($create, $authorized->operation);
             $context = $this->tenantContext($authorized);
             $statement = $pdo->prepare(
                 "INSERT INTO fixture_record (tenant_id, scope_id, name, status, revision) VALUES (:tenant, :scope, :name, 'draft', 1)",
@@ -392,6 +395,105 @@ final class ExternalOperationHostIntegrationTest extends TestCase
         self::assertSame(0, $handlerCalls);
         self::assertSame(0, $this->tableCount('fixture_record'));
         self::assertSame(1, $this->tableCount('pa_tenant_idempotency_record'));
+    }
+
+    public function testAvailabilityLocksHoldThroughNewMutationWithoutSerializingAnotherTenant(): void
+    {
+        $this->assertAvailabilityLocksHoldThroughCommandDecision(false);
+    }
+
+    public function testAvailabilityLocksHoldThroughReplayWithoutSerializingAnotherTenant(): void
+    {
+        $this->assertAvailabilityLocksHoldThroughCommandDecision(true);
+    }
+
+    private function assertAvailabilityLocksHoldThroughCommandDecision(bool $replay): void
+    {
+        self::assertTrue(function_exists('proc_open'), 'R02 integration tests require proc_open.');
+        $operation = $this->definition(
+            'fixtureRecordCreate',
+            'POST',
+            '/api/v1/fixture/records',
+            'create',
+            true,
+        );
+        $request = $this->request(
+            1,
+            $replay ? 'req_r02_lock_replay_0001' : 'req_r02_lock_mutation_0001',
+            'POST',
+            '/api/v1/fixture/records',
+            ['name' => $replay ? 'Replay lock' : 'Mutation lock'],
+            [$this->oneTarget((string) $this->scopeIds[1])],
+            $replay ? '01KPEANUT-R02-LOCK-REPLAY-0001' : '01KPEANUT-R02-LOCK-MUTATION-0001',
+        );
+        $expected = null;
+        if ($replay) {
+            $expected = $this->host->command($operation, $request, $this->insertingHandler());
+            self::assertSame(201, $expected->status);
+        }
+        $handlerCalls = 0;
+        $worker = $this->startTenantDisableWorker();
+        $unrelatedCommitObserved = false;
+        $targetWaitObserved = false;
+
+        try {
+            $response = $this->host->command(
+                $operation,
+                $request,
+                function (
+                    AuthorizedExternalOperation $authorized,
+                    ExternalOperationRequest $command,
+                    PDO $pdo,
+                ) use (&$handlerCalls, $replay): ExternalOperationResult {
+                    ++$handlerCalls;
+                    if ($replay) {
+                        throw new RuntimeException('An exact replay must not run the domain handler.');
+                    }
+
+                    return ($this->insertingHandler())($authorized, $command, $pdo);
+                },
+                guard: function (
+                    AuthorizedExternalOperation $authorized,
+                    ExternalOperationRequest $command,
+                    PDO $transaction,
+                ) use ($worker, &$unrelatedCommitObserved, &$targetWaitObserved): void {
+                    $context = $this->tenantContext($authorized);
+                    $guard = new ModuleGuard(new PdoModuleRuntimeRepository(
+                        $transaction,
+                        lockAvailabilityReads: true,
+                    ));
+                    $guard->assertDeployment($authorized->operation->moduleKey);
+                    $guard->assertTenant(
+                        $context->tenantId,
+                        $authorized->operation->moduleKey,
+                        $command->comparisonTime,
+                    );
+
+                    fwrite($worker['pipes'][0], "go\n");
+                    fflush($worker['pipes'][0]);
+                    $unrelated = $this->readTenantDisableWorkerMessage($worker);
+                    $unrelatedCommitObserved = ($unrelated['kind'] ?? null) === 'unrelated_committed';
+                    $targetWaitObserved = $this->waitForConnectionLock($worker['connection_id']);
+                },
+            );
+
+            self::assertSame(201, $response->status, json_encode($response->body, JSON_THROW_ON_ERROR));
+            self::assertTrue($unrelatedCommitObserved, 'The unrelated Tenant Module update did not commit.');
+            self::assertTrue(
+                $targetWaitObserved,
+                'The target Tenant Module disable crossed the guarded command decision.',
+            );
+            self::assertSame($replay ? 0 : 1, $handlerCalls);
+            if ($expected instanceof ExternalOperationResponse) {
+                self::assertSame($expected->body, $response->body);
+            }
+            $disabled = $this->readTenantDisableWorkerMessage($worker);
+            self::assertSame('target_disabled', $disabled['kind'] ?? null);
+            self::assertSame('disabled', $this->tenantModuleStatus(1));
+            self::assertSame('enabled', $this->tenantModuleStatus(2));
+        } finally {
+            $this->closeTenantDisableWorker($worker);
+        }
     }
 
     private function host(): ExternalOperationHost
@@ -740,11 +842,152 @@ SQL);
         return (int) $statement->fetchColumn();
     }
 
+    /** @return array{process: resource, pipes: array<int, resource>, connection_id: int} */
+    private function startTenantDisableWorker(): array
+    {
+        $pipes = [];
+        $process = proc_open([
+            PHP_BINARY,
+            '-r',
+            $this->tenantDisableWorkerSource(),
+            (string) $this->requiredPort('DB_PORT'),
+            (string) (getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev'),
+            self::DATABASE,
+        ], [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ], $pipes);
+        self::assertIsResource($process);
+        foreach ($pipes as $pipe) {
+            stream_set_timeout($pipe, 10);
+        }
+        $ready = $this->readTenantDisableWorkerMessage([
+            'process' => $process,
+            'pipes' => $pipes,
+            'connection_id' => 0,
+        ]);
+        self::assertSame('ready', $ready['kind'] ?? null);
+        $connectionId = filter_var($ready['connection_id'] ?? null, FILTER_VALIDATE_INT);
+        self::assertIsInt($connectionId);
+        self::assertGreaterThan(0, $connectionId);
+
+        return [
+            'process' => $process,
+            'pipes' => $pipes,
+            'connection_id' => $connectionId,
+        ];
+    }
+
+    /**
+     * @param array{process: resource, pipes: array<int, resource>, connection_id: int} $worker
+     * @return array<string, mixed>
+     */
+    private function readTenantDisableWorkerMessage(array $worker): array
+    {
+        $line = fgets($worker['pipes'][1]);
+        if (!is_string($line)) {
+            self::fail('Tenant Module disable worker failed: ' . stream_get_contents($worker['pipes'][2]));
+        }
+        $message = json_decode($line, true, 32, JSON_THROW_ON_ERROR);
+        self::assertIsArray($message);
+
+        return $message;
+    }
+
+    /** @param array{process: resource, pipes: array<int, resource>, connection_id: int} $worker */
+    private function closeTenantDisableWorker(array $worker): void
+    {
+        $status = proc_get_status($worker['process']);
+        if ($status['running']) {
+            proc_terminate($worker['process']);
+        }
+        foreach ($worker['pipes'] as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+        proc_close($worker['process']);
+    }
+
+    private function waitForConnectionLock(int $connectionId): bool
+    {
+        $statement = $this->admin->prepare(<<<'SQL'
+SELECT COUNT(*)
+FROM performance_schema.data_lock_waits lock_wait
+JOIN performance_schema.threads thread
+  ON thread.THREAD_ID = lock_wait.REQUESTING_THREAD_ID
+WHERE thread.PROCESSLIST_ID = :connection_id
+SQL);
+        $deadline = microtime(true) + 5.0;
+        do {
+            $statement->execute(['connection_id' => $connectionId]);
+            if ((int) $statement->fetchColumn() > 0) {
+                return true;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+
+        return false;
+    }
+
+    private function tenantModuleStatus(int $tenantId): string
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+SELECT status FROM pa_tenant_module
+WHERE tenant_id = :tenant_id AND module_key = 'fixture.record'
+SQL);
+        $statement->execute(['tenant_id' => $tenantId]);
+
+        return (string) $statement->fetchColumn();
+    }
+
+    private function tenantDisableWorkerSource(): string
+    {
+        return <<<'PHP'
+$pdo = new PDO(
+    sprintf('mysql:host=127.0.0.1;port=%d;dbname=%s;charset=utf8mb4', (int) $argv[1], $argv[3]),
+    'root',
+    $argv[2],
+    [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false,
+    ],
+);
+$pdo->exec('SET SESSION innodb_lock_wait_timeout = 10');
+fwrite(STDOUT, json_encode([
+    'kind' => 'ready',
+    'connection_id' => (int) $pdo->query('SELECT CONNECTION_ID()')->fetchColumn(),
+], JSON_THROW_ON_ERROR) . "\n");
+fflush(STDOUT);
+if (fgets(STDIN) !== "go\n") {
+    throw new RuntimeException('The Tenant Module disable worker was not released.');
+}
+$unrelated = $pdo->prepare(<<<'SQL'
+UPDATE pa_tenant_module
+SET authorization_revision = authorization_revision + 1
+WHERE tenant_id = 2 AND module_key = 'fixture.record'
+SQL);
+$unrelated->execute();
+fwrite(STDOUT, json_encode(['kind' => 'unrelated_committed'], JSON_THROW_ON_ERROR) . "\n");
+fflush(STDOUT);
+$target = $pdo->prepare(<<<'SQL'
+UPDATE pa_tenant_module
+SET status = 'disabled', authorization_revision = authorization_revision + 1
+WHERE tenant_id = 1 AND module_key = 'fixture.record'
+SQL);
+$target->execute();
+fwrite(STDOUT, json_encode(['kind' => 'target_disabled'], JSON_THROW_ON_ERROR) . "\n");
+fflush(STDOUT);
+PHP;
+    }
+
     private function connect(?string $database = null): PDO
     {
         $dsn = sprintf(
             'mysql:host=127.0.0.1;port=%d%s;charset=utf8mb4',
-            (int) (getenv('MYSQL_PORT') ?: 33382),
+            $this->requiredPort('DB_PORT'),
             $database === null ? '' : ";dbname={$database}",
         );
         return new PDO($dsn, 'root', getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev', [
@@ -752,5 +995,19 @@ SQL);
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
+    }
+
+    private function requiredPort(string $name): int
+    {
+        $value = getenv($name);
+        if (!is_string($value) || preg_match('/^[0-9]+$/D', $value) !== 1) {
+            throw new RuntimeException("Missing required environment variable: {$name}.");
+        }
+        $port = (int) $value;
+        if ($port < 1 || $port > 65535) {
+            throw new RuntimeException("Invalid port in environment variable: {$name}.");
+        }
+
+        return $port;
     }
 }
