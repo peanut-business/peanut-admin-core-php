@@ -18,6 +18,7 @@ use PeanutAdmin\FileMedia\Delivery\ReplayMode;
 use PeanutAdmin\FileMedia\Delivery\SignedDeliveryTokenService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class DeliverySecurityTest extends TestCase
@@ -73,7 +74,45 @@ final class DeliverySecurityTest extends TestCase
             ReplayMode::Bounded,
             str_repeat('a', 32),
         ))->auditMetadata()));
+        self::assertSame('https://cdn.example.test/object?credential=scope%2Fdate', (new DeliveryGrant(
+            'cdn',
+            'https://cdn.example.test/object?credential=scope%2Fdate',
+            new DateTimeImmutable('2026-07-24T00:01:00Z'),
+            DeliveryVisibility::Public,
+            ReplayMode::Bounded,
+            str_repeat('a', 32),
+        ))->uri);
         self::assertSame(300, (new DeliveryPolicy())->privateMaxTtlSeconds);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function ambiguousDeliveryUris(): iterable
+    {
+        yield 'backslash authority confusion' => ['https://good.example\\evil/x'];
+        yield 'userinfo' => ['https://user@good.example/object'];
+        yield 'control' => ["https://good.example/object\nnext"];
+        yield 'uppercase host' => ['https://GOOD.example/object'];
+        yield 'trailing host dot' => ['https://good.example./object'];
+        yield 'explicit default port' => ['https://good.example:443/object'];
+        yield 'encoded traversal' => ['https://good.example/a/%2E%2E/b'];
+        yield 'encoded separator' => ['https://good.example/a%2Fb'];
+        yield 'duplicate separator' => ['https://good.example/a//b'];
+        yield 'fragment' => ['https://good.example/object#fragment'];
+        yield 'empty path' => ['https://good.example'];
+        yield 'empty query' => ['https://good.example/object?'];
+    }
+
+    #[DataProvider('ambiguousDeliveryUris')]
+    public function testDeliveryGrantRejectsAmbiguousUrls(string $uri): void
+    {
+        $this->expectError('FILE_DELIVERY_UNAVAILABLE', fn() => new DeliveryGrant(
+            'cdn',
+            $uri,
+            new DateTimeImmutable('2026-07-24T00:01:00Z'),
+            DeliveryVisibility::Public,
+            ReplayMode::Bounded,
+            str_repeat('a', 32),
+        ));
     }
 
     public function testDeliveryIsTenantPermissionAndProviderBound(): void

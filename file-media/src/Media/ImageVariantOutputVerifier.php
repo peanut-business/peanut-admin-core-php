@@ -8,23 +8,22 @@ use PeanutAdmin\FileMedia\Application\FileMediaException;
 
 final readonly class ImageVariantOutputVerifier
 {
-    public function __construct(private ImageMetadataInspector $inspector = new ImageMetadataInspector()) {}
+    private ImageMetadataInspector $inspector;
+
+    public function __construct(int $maxBytes = ImageMetadataInspector::DEFAULT_MAX_BYTES)
+    {
+        $this->inspector = new ImageMetadataInspector($maxBytes);
+    }
 
     public function verify(string $destinationPath, ImageVariantPlan $plan): ImageVariantOutput
     {
-        if ($destinationPath === '' || is_link($destinationPath) || !is_file($destinationPath) || !is_readable($destinationPath)) {
-            throw FileMediaException::imageInvalid();
-        }
-        $metadata = $this->inspector->inspect($destinationPath);
-        $size = filesize($destinationPath);
-        $sha256 = hash_file('sha256', $destinationPath);
-        if ($metadata->width !== $plan->width || $metadata->height !== $plan->height
-            || $metadata->mediaType !== $plan->mediaType || !is_int($size) || $size < 1
-            || !is_string($sha256) || preg_match('/^[0-9a-f]{64}$/D', $sha256) !== 1
+        $inspection = $this->inspector->inspectWithEvidence($destinationPath);
+        if ($inspection->metadata->width !== $plan->width || $inspection->metadata->height !== $plan->height
+            || $inspection->metadata->mediaType !== $plan->mediaType
         ) {
             throw FileMediaException::imageInvalid();
         }
 
-        return new ImageVariantOutput($plan, $size, $sha256);
+        return new ImageVariantOutput($plan, $inspection->sizeBytes, $inspection->sha256);
     }
 }

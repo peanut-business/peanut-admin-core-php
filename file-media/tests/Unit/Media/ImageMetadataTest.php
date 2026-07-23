@@ -7,7 +7,9 @@ namespace PeanutAdmin\FileMedia\Tests\Unit\Media;
 use PeanutAdmin\FileMedia\Application\FileMediaException;
 use PeanutAdmin\FileMedia\Media\ImageMetadataInspector;
 use PeanutAdmin\FileMedia\Media\ImageVariantDefinition;
+use PeanutAdmin\FileMedia\Media\ImageVariantOutput;
 use PeanutAdmin\FileMedia\Media\ImageVariantOutputVerifier;
+use PeanutAdmin\FileMedia\Media\ImageVariantPlan;
 use PeanutAdmin\FileMedia\Media\ImageVariantPlanner;
 use PHPUnit\Framework\TestCase;
 
@@ -17,10 +19,14 @@ final class ImageMetadataTest extends TestCase
     {
         $path = tempnam(sys_get_temp_dir(), 'peanut-image-');
         self::assertIsString($path);
-        file_put_contents($path, base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAD0lEQVR4nGP4z8DAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', true));
+        $size = file_put_contents($path, base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAD0lEQVR4nGP4z8DAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', true));
+        self::assertIsInt($size);
         try {
-            $metadata = (new ImageMetadataInspector())->inspect($path);
+            $inspection = (new ImageMetadataInspector($size))->inspectWithEvidence($path);
+            $metadata = $inspection->metadata;
             self::assertSame(['width' => 2, 'height' => 3, 'media_type' => 'image/png'], $metadata->toArray());
+            self::assertSame($size, $inspection->sizeBytes);
+            self::assertSame(hash_file('sha256', $path), $inspection->sha256);
             $plans = (new ImageVariantPlanner())->plan($metadata, [new ImageVariantDefinition('thumb', 320, 320)]);
             self::assertSame(['variant_key' => 'thumb', 'width' => 2, 'height' => 3, 'fit' => 'cover', 'media_type' => 'image/jpeg'], $plans[0]->publicMetadata());
             self::assertSame('variants/thumb.jpg', $plans[0]->storageSuffix);
@@ -29,6 +35,8 @@ final class ImageMetadataTest extends TestCase
             $output = (new ImageVariantOutputVerifier())->verify($path, $pngPlan);
             self::assertSame(hash_file('sha256', $path), $output->sha256);
             self::assertSame(['variant_key', 'width', 'height', 'media_type', 'size_bytes', 'sha256'], array_keys($output->persistenceMetadata()));
+            $this->expectImageError(fn() => (new ImageMetadataInspector($size - 1))->inspect($path));
+            $this->expectImageError(fn() => (new ImageVariantOutputVerifier($size - 1))->verify($path, $pngPlan));
         } finally {
             @unlink($path);
         }
@@ -44,6 +52,19 @@ final class ImageMetadataTest extends TestCase
         } finally {
             @unlink($path);
         }
+    }
+
+    public function testVariantValueObjectsCannotBeForged(): void
+    {
+        $valid = new ImageVariantPlan('thumb', 100, 80, 'cover', 'image/jpeg', 'variants/thumb.jpg');
+        self::assertSame('thumb', (new ImageVariantOutput($valid, 10, str_repeat('a', 64)))->plan->variantKey);
+
+        $this->expectImageError(fn() => new ImageVariantPlan('thumb', 100, 80, 'cover', 'image/jpeg', '../thumb.jpg'));
+        $this->expectImageError(fn() => new ImageVariantPlan('thumb', 0, 80, 'cover', 'image/jpeg', 'variants/thumb.jpg'));
+        $this->expectImageError(fn() => new ImageVariantPlan('thumb', 100, 80, 'stretch', 'image/jpeg', 'variants/thumb.jpg'));
+        $this->expectImageError(fn() => new ImageVariantPlan('thumb', 100, 80, 'cover', 'text/plain', 'variants/thumb.jpg'));
+        $this->expectImageError(fn() => new ImageVariantOutput($valid, 0, str_repeat('a', 64)));
+        $this->expectImageError(fn() => new ImageVariantOutput($valid, 10, '../not-a-hash'));
     }
 
     private function expectImageError(callable $operation): void
