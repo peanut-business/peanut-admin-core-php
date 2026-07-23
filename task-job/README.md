@@ -47,13 +47,19 @@ attempt number, Tenant and unexpired lease. Expired attempts become
 explicit retry of a dead job grants one additional attempt but never exceeds
 10.
 
-Submission idempotency is scoped by Tenant and task type. Only the key digest
-is stored. An exact request returns the existing job; reuse with another
+Submission idempotency is scoped by Tenant, producer member, and task type.
+Only the key digest is stored. An exact request returns the existing job; reuse with another
 provider-built request returns `TASK_IDEMPOTENCY_CONFLICT`.
 
 State changes and their redacted `tenant.task.*` event are committed in the
 same PDO transaction. The Host may project these events into the shared Tenant
 audit query, but it must not replace or weaken this package ledger.
+
+`TrustedJobPublisher` participates when its repository PDO is already inside a
+Host business/outbox transaction; the caller owns commit and rollback. Without
+an existing transaction it opens and closes one atomic enqueue transaction.
+Claim, lease and completion always use short worker-owned transactions, so a
+handler never runs while a claim transaction holds database locks.
 
 ## I04 integration handoff
 
@@ -81,8 +87,9 @@ contracts:
 
 Notification/SMS may start from this package by registering providers and
 handlers in its own feature lane. It must not edit Task/Job files or expose a
-generic submission endpoint. Business commits write their own outbox first;
-I04 composes that outbox dispatch with `TrustedJobPublisher` transactionally.
+generic submission endpoint. I04 invokes `TrustedJobPublisher` with the same
+PDO from the business/outbox transaction; a rollback must remove the outbox,
+job and task audit event together.
 
 ## Focused evidence
 

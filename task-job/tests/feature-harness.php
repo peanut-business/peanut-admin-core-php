@@ -142,6 +142,10 @@ $replay = $publisher->publish($producer101, 'test.echo', ['message' => 'hello'],
 assertSame($job->jobKey, $replay->jobKey, 'exact idempotency replay');
 expectProblem('TASK_IDEMPOTENCY_CONFLICT', fn() => $publisher->publish($producer101, 'test.echo', ['message' => 'changed'], 'idem-0001'), 'idempotency payload conflict');
 expectProblem('TASK_PERMISSION_DENIED', fn() => $publisher->publish(context(101, 'test.message', 'read'), 'test.echo', ['message' => 'hello'], 'idem-wrong'), 'producer operation mismatch');
+$pdo->beginTransaction();
+$transactional = $publisher->publish($producer101, 'test.echo', ['message' => 'rollback'], 'idem-rollback');
+$pdo->rollBack();
+expectProblem('TASK_NOT_FOUND', fn() => $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $transactional->jobKey), 'outer business rollback removes job and event');
 $tenant2 = $publisher->publish($producer202, 'test.echo', ['message' => 'tenant two'], 'idem-0001');
 assertSame(202, $tenant2->tenantId, 'idempotency is tenant scoped');
 assertSame(1, $admin->list(context(101, TaskJobService::RESOURCE_KEY, 'read'), 'queued', 1, 20)['total'], 'tenant 101 list');

@@ -31,7 +31,10 @@ final readonly class PdoTaskJobRepository
         int $maxAttempts,
         int $initialDelaySeconds,
     ): JobRecord {
-        $this->begin();
+        $ownsTransaction = !$this->pdo->inTransaction();
+        if ($ownsTransaction) {
+            $this->begin();
+        }
         try {
             $created = false;
             $statement = $this->pdo->prepare(<<<'SQL'
@@ -66,7 +69,7 @@ SQL);
                 if ($idempotencyKeyHash === null || $exception->getCode() !== '23000') {
                     throw $exception;
                 }
-                $existing = $this->idempotentRow($tenantId, $taskType, $idempotencyKeyHash, true);
+                $existing = $this->idempotentRow($tenantId, $memberId, $taskType, $idempotencyKeyHash, true);
                 if ($existing === null || !hash_equals((string) $existing['request_hash'], $requestHash)) {
                     throw TaskJobException::conflict();
                 }
@@ -84,11 +87,15 @@ SQL);
                     'max_attempts' => $maxAttempts,
                 ]);
             }
-            $this->pdo->commit();
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
 
             return $this->map($row);
         } catch (Throwable $exception) {
-            $this->rollback();
+            if ($ownsTransaction) {
+                $this->rollback();
+            }
             throw $exception;
         }
     }
@@ -96,6 +103,9 @@ SQL);
     /** @return array{items: list<JobRecord>, page: int, page_size: int, total: int} */
     public function list(int $tenantId, string $status, int $page, int $pageSize): array
     {
+        if ($page > 1_000_000) {
+            throw TaskJobException::invalid();
+        }
         $offset = ($page - 1) * $pageSize;
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM pa_task_job WHERE tenant_id = :tenant_id AND status = :status');
         $count->execute(['tenant_id' => $tenantId, 'status' => $status]);
@@ -292,7 +302,6 @@ SQL);
                 || !is_string($row['lease_token_hash'])
                 || !hash_equals($row['lease_token_hash'], $leaseHash)
                 || (int) $row['attempt_count'] !== $claim->attemptNumber
-                || $this->expired((string) $row['lease_expires_at'])
             ) {
                 throw TaskJobException::stateConflict();
             }
@@ -322,7 +331,8 @@ SET status = :status, available_at = TIMESTAMPADD(SECOND, :backoff, UTC_TIMESTAM
     lease_owner_hash = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
     last_error_code = :error_code, completed_at = :completed_at,
     revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
-WHERE id = :id AND tenant_id = :tenant_id AND status = 'running' AND lease_token_hash = :lease_hash
+WHERE id = :id AND tenant_id = :tenant_id AND status = 'running'
+  AND lease_token_hash = :lease_hash AND lease_expires_at > UTC_TIMESTAMP(3)
 SQL);
             $job->execute([
                 'status' => $jobStatus,
@@ -365,6 +375,9 @@ SET status = 'abandoned', error_code = 'TASK_LEASE_EXPIRED', completed_at = UTC_
 WHERE tenant_id = :tenant_id AND job_id = :job_id AND attempt_number = :attempt AND status = 'running'
 SQL);
             $attempt->execute(['tenant_id' => $tenantId, 'job_id' => $row['id'], 'attempt' => $row['attempt_count']]);
+            if ($attempt->rowCount() !== 1) {
+                throw TaskJobException::internal();
+            }
             $update = $this->pdo->prepare(<<<'SQL'
 UPDATE pa_task_job
 SET status = :status, available_at = UTC_TIMESTAMP(3), lease_owner_hash = NULL,
@@ -378,6 +391,9 @@ SQL);
                 'tenant_id' => $tenantId,
                 'id' => $row['id'],
             ]);
+            if ($update->rowCount() !== 1) {
+                throw TaskJobException::stateConflict();
+            }
             $this->insertEvent($tenantId, (int) $row['id'], $dead ? 'tenant.task.dead' : 'tenant.task.lease_recovered', null, [
                 'attempt' => (int) $row['attempt_count'],
                 'error_code' => 'TASK_LEASE_EXPIRED',
@@ -437,14 +453,15 @@ SQL);
     }
 
     /** @return array<string, mixed>|null */
-    private function idempotentRow(int $tenantId, string $taskType, string $keyHash, bool $lock): ?array
+    private function idempotentRow(int $tenantId, int $memberId, string $taskType, string $keyHash, bool $lock): ?array
     {
         $statement = $this->pdo->prepare(<<<SQL
 SELECT * FROM pa_task_job
-WHERE tenant_id = :tenant_id AND task_type = :task_type AND idempotency_key_hash = :key_hash
+WHERE tenant_id = :tenant_id AND created_by_member_id = :member_id
+  AND task_type = :task_type AND idempotency_key_hash = :key_hash
 LIMIT 1{$this->lock($lock)}
 SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'task_type' => $taskType, 'key_hash' => $keyHash]);
+        $statement->execute(['tenant_id' => $tenantId, 'member_id' => $memberId, 'task_type' => $taskType, 'key_hash' => $keyHash]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
         return is_array($row) ? $row : null;
     }
@@ -500,11 +517,6 @@ SQL);
         if ($this->pdo->inTransaction()) {
             $this->pdo->rollBack();
         }
-    }
-
-    private function expired(string $value): bool
-    {
-        return new DateTimeImmutable($value, new DateTimeZone('UTC')) <= new DateTimeImmutable('now', new DateTimeZone('UTC'));
     }
 
     private function now(): string

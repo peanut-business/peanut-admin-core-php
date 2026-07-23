@@ -46,7 +46,7 @@ CREATE TABLE `pa_task_job` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_task_job_key` (`job_key`),
   UNIQUE KEY `uk_task_job_tenant_id` (`tenant_id`, `id`),
-  UNIQUE KEY `uk_task_job_idempotency` (`tenant_id`, `task_type`, `idempotency_key_hash`),
+  UNIQUE KEY `uk_task_job_idempotency` (`tenant_id`, `created_by_member_id`, `task_type`, `idempotency_key_hash`),
   KEY `idx_task_job_claim` (`tenant_id`, `status`, `available_at`, `priority`, `id`),
   KEY `idx_task_job_lease` (`status`, `lease_expires_at`, `id`),
   CONSTRAINT `fk_task_job_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `pa_tenant` (`id`) ON DELETE RESTRICT,
