@@ -71,8 +71,16 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
         $tenant = $this->tenant('admin-precondition');
         foreach ([null, '', '"rev-1"', '*, "rev-1"'] as $precondition) {
             $this->expectReferenceCodeError('PRECONDITION_REQUIRED', 428, fn() => $this->adminService($repository)->create(
-                $definition, $tenant['context'], 'sample-code', 'Label', [], 'active', 0,
-                new DateTimeImmutable('2026-07-20T00:00:00.000Z'), null, $precondition,
+                $definition,
+                $tenant['context'],
+                'sample-code',
+                'Label',
+                [],
+                'active',
+                0,
+                new DateTimeImmutable('2026-07-20T00:00:00.000Z'),
+                null,
+                $precondition,
             ));
         }
     }
@@ -85,7 +93,9 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
         $service = $this->adminService($repository);
         $this->create($service, $definition, $tenant['context']);
         $this->expectReferenceCodeError('REFERENCE_CODE_ALREADY_EXISTS', 412, fn() => $this->create(
-            $service, $definition, $tenant['context'],
+            $service,
+            $definition,
+            $tenant['context'],
         ));
     }
 
@@ -94,7 +104,9 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
         [$definition, $service, $tenant, $created] = $this->createdFixture('admin-recreate');
         $service->retire($definition, $tenant['context'], 'sample-code', $created->etag);
         $this->expectReferenceCodeError('REFERENCE_CODE_RETIRED', 409, fn() => $this->create(
-            $service, $definition, $tenant['context'],
+            $service,
+            $definition,
+            $tenant['context'],
         ));
     }
 
@@ -102,8 +114,16 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
     {
         [$definition, $service, $tenant, $created] = $this->createdFixture('admin-replace');
         $replaced = $service->replace(
-            $definition, $tenant['context'], 'sample-code', 'Changed label', ['flag' => true],
-            'inactive', 9, new DateTimeImmutable('2026-07-20T01:00:00.000Z'), null, $created->etag,
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            'Changed label',
+            ['flag' => true],
+            'inactive',
+            9,
+            new DateTimeImmutable('2026-07-20T01:00:00.000Z'),
+            null,
+            $created->etag,
         );
         self::assertSame(2, $replaced->revision);
         self::assertSame('sample-code', $replaced->code);
@@ -116,13 +136,29 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
         [$definition, $service, $tenant] = $this->createdFixture('admin-stale');
         foreach ([null, '*', 'W/"rev-1"', '"rev-0"', '"rev-1", "rev-2"'] as $invalid) {
             $this->expectReferenceCodeError('PRECONDITION_REQUIRED', 428, fn() => $service->replace(
-                $definition, $tenant['context'], 'sample-code', 'Changed', [], 'active', 0,
-                new DateTimeImmutable('2026-07-20T01:00:00.000Z'), null, $invalid,
+                $definition,
+                $tenant['context'],
+                'sample-code',
+                'Changed',
+                [],
+                'active',
+                0,
+                new DateTimeImmutable('2026-07-20T01:00:00.000Z'),
+                null,
+                $invalid,
             ));
         }
         $this->expectReferenceCodeError('REFERENCE_CODE_REVISION_MISMATCH', 412, fn() => $service->replace(
-            $definition, $tenant['context'], 'sample-code', 'Changed', [], 'active', 0,
-            new DateTimeImmutable('2026-07-20T01:00:00.000Z'), null, '"rev-2"',
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            'Changed',
+            [],
+            'active',
+            0,
+            new DateTimeImmutable('2026-07-20T01:00:00.000Z'),
+            null,
+            '"rev-2"',
         ));
     }
 
@@ -130,8 +166,16 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
     {
         [$definition, $service, $tenant, $created] = $this->createdFixture('admin-retire');
         $changed = $service->replace(
-            $definition, $tenant['context'], 'sample-code', 'Last label', ['marker' => 'safe'],
-            'active', -3, new DateTimeImmutable('2026-07-20T01:00:00.000Z'), null, $created->etag,
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            'Last label',
+            ['marker' => 'safe'],
+            'active',
+            -3,
+            new DateTimeImmutable('2026-07-20T01:00:00.000Z'),
+            null,
+            $created->etag,
         );
         $retired = $service->retire($definition, $tenant['context'], 'sample-code', $changed->etag);
         self::assertSame('retired', $retired->lifecycle);
@@ -148,11 +192,22 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
         [$definition, $service, $tenant, $created] = $this->createdFixture('admin-terminal');
         $retired = $service->retire($definition, $tenant['context'], 'sample-code', $created->etag);
         $this->expectReferenceCodeError('REFERENCE_CODE_RETIRED', 409, fn() => $service->replace(
-            $definition, $tenant['context'], 'sample-code', 'Changed', [], 'active', 0,
-            new DateTimeImmutable('2026-07-20T01:00:00.000Z'), null, $retired->etag,
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            'Changed',
+            [],
+            'active',
+            0,
+            new DateTimeImmutable('2026-07-20T01:00:00.000Z'),
+            null,
+            $retired->etag,
         ));
         $this->expectReferenceCodeError('REFERENCE_CODE_RETIRED', 409, fn() => $service->retire(
-            $definition, $tenant['context'], 'sample-code', $retired->etag,
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            $retired->etag,
         ));
     }
 
@@ -163,7 +218,10 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
         $tenant = $this->tenant('admin-code');
         foreach (['Invalid', 'with_underscore', 'a-', str_repeat('a', 65), ''] as $code) {
             $this->expectReferenceCodeError('REFERENCE_CODE_REQUEST_INVALID', 422, fn() => $this->create(
-                $this->adminService($repository), $definition, $tenant['context'], $code,
+                $this->adminService($repository),
+                $definition,
+                $tenant['context'],
+                $code,
             ));
         }
     }
@@ -180,7 +238,11 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
         self::assertSame('Trimmed label', $created->effective['label']);
         foreach (['   ', str_repeat('x', 161), "invalid\xFF"] as $label) {
             $this->expectReferenceCodeError('REFERENCE_CODE_REQUEST_INVALID', 422, fn() => $this->create(
-                $this->adminService($repository), $definition, $tenant['context'], 'other-' . strlen($label), ['label' => $label],
+                $this->adminService($repository),
+                $definition,
+                $tenant['context'],
+                'other-' . strlen($label),
+                ['label' => $label],
             ));
         }
     }
@@ -209,7 +271,11 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
             array_fill_keys(array_map(static fn(int $i): string => 'key-' . $i, range(1, 33)), true),
         ] as $index => $metadata) {
             $this->expectReferenceCodeError('REFERENCE_CODE_METADATA_INVALID', 422, fn() => $this->create(
-                $this->adminService($repository), $definition, $tenant['context'], 'shape-' . $index, ['metadata' => $metadata],
+                $this->adminService($repository),
+                $definition,
+                $tenant['context'],
+                'shape-' . $index,
+                ['metadata' => $metadata],
             ));
         }
     }
@@ -226,7 +292,11 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
             ['number' => INF],
         ] as $index => $metadata) {
             $this->expectReferenceCodeError('REFERENCE_CODE_METADATA_INVALID', 422, fn() => $this->create(
-                $this->adminService($repository), $definition, $tenant['context'], 'bounds-' . $index, ['metadata' => $metadata],
+                $this->adminService($repository),
+                $definition,
+                $tenant['context'],
+                'bounds-' . $index,
+                ['metadata' => $metadata],
             ));
         }
     }
@@ -245,7 +315,11 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
             $expected = $override['expected'];
             unset($override['expected']);
             $this->expectReferenceCodeError($expected, 422, fn() => $this->create(
-                $this->adminService($repository), $definition, $tenant['context'], 'interval-' . $index, $override,
+                $this->adminService($repository),
+                $definition,
+                $tenant['context'],
+                'interval-' . $index,
+                $override,
             ));
         }
     }

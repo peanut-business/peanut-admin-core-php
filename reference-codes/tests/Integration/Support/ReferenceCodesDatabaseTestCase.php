@@ -55,8 +55,10 @@ abstract class ReferenceCodesDatabaseTestCase extends TestCase
         if (getenv('DB_HOST') !== '127.0.0.1') {
             throw new RuntimeException('DB_HOST must be 127.0.0.1.');
         }
-        if ($this->requiredPort('MYSQL_PORT') !== 33404 || $this->requiredPort('DB_PORT') !== 33404) {
-            throw new RuntimeException('B04 MySQL and DB ports must both be 33404.');
+        $mysqlPort = $this->requiredPort('MYSQL_PORT');
+        $dbPort = $this->requiredPort('DB_PORT');
+        if ($mysqlPort !== $dbPort) {
+            throw new RuntimeException('Reference Codes MYSQL_PORT and DB_PORT must match.');
         }
 
         $this->admin = $this->connect();
@@ -285,6 +287,11 @@ SQL);
             throw new RuntimeException("Missing required environment variable: {$name}.");
         }
 
-        return (int) $value;
+        $port = (int) $value;
+        if ($port < 1 || $port > 65535) {
+            throw new RuntimeException("Invalid port in environment variable: {$name}.");
+        }
+
+        return $port;
     }
 }

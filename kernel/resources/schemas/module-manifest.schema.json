@@ -60,6 +60,7 @@
         "data_conditions": { "$ref": "#/$defs/relativePath" },
         "config_schema": { "$ref": "#/$defs/relativePath" },
         "setting_definitions": { "$ref": "#/$defs/relativePath" },
+        "reference_code_sets": { "$ref": "#/$defs/relativePath" },
         "system_actors": { "$ref": "#/$defs/relativePath" }
       }
     },

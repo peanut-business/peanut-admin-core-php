@@ -32,7 +32,9 @@ final class ReferenceCodesIsolationTest extends ReferenceCodesDatabaseTestCase
         [$definition, $repository, $alpha, $beta] = $this->twoTenants('security-detail');
         $this->create($this->adminService($repository), $definition, $beta['context']);
         $this->expectReferenceCodeError('REFERENCE_CODE_NOT_FOUND', 404, fn() => $this->query($repository)->get(
-            $definition, $alpha['context'], 'sample-code',
+            $definition,
+            $alpha['context'],
+            'sample-code',
         ));
     }
 
@@ -41,7 +43,9 @@ final class ReferenceCodesIsolationTest extends ReferenceCodesDatabaseTestCase
         [$definition, $repository, $alpha, $beta] = $this->twoTenants('security-actor');
         $forged = $this->context($alpha['tenant_id'], $beta['member_id']);
         $this->expectReferenceCodeError('REFERENCE_CODE_NOT_FOUND', 404, fn() => $this->create(
-            $this->adminService($repository), $definition, $forged,
+            $this->adminService($repository),
+            $definition,
+            $forged,
         ));
         self::assertSame(0, (int) $this->scalar('SELECT COUNT(*) FROM pa_reference_code_entry'));
     }
@@ -51,8 +55,16 @@ final class ReferenceCodesIsolationTest extends ReferenceCodesDatabaseTestCase
         [$definition, $repository, $alpha, $beta] = $this->twoTenants('security-replace');
         $created = $this->create($this->adminService($repository), $definition, $beta['context']);
         $this->expectReferenceCodeError('REFERENCE_CODE_NOT_FOUND', 404, fn() => $this->adminService($repository)->replace(
-            $definition, $alpha['context'], 'sample-code', 'Changed', [], 'active', 0,
-            new DateTimeImmutable('2026-07-20T01:00:00.000Z'), null, $created->etag,
+            $definition,
+            $alpha['context'],
+            'sample-code',
+            'Changed',
+            [],
+            'active',
+            0,
+            new DateTimeImmutable('2026-07-20T01:00:00.000Z'),
+            null,
+            $created->etag,
         ));
     }
 
@@ -61,7 +73,10 @@ final class ReferenceCodesIsolationTest extends ReferenceCodesDatabaseTestCase
         [$definition, $repository, $alpha, $beta] = $this->twoTenants('security-retire');
         $created = $this->create($this->adminService($repository), $definition, $beta['context']);
         $this->expectReferenceCodeError('REFERENCE_CODE_NOT_FOUND', 404, fn() => $this->adminService($repository)->retire(
-            $definition, $alpha['context'], 'sample-code', $created->etag,
+            $definition,
+            $alpha['context'],
+            'sample-code',
+            $created->etag,
         ));
     }
 
@@ -70,12 +85,14 @@ final class ReferenceCodesIsolationTest extends ReferenceCodesDatabaseTestCase
         [$definition, $repository, $alpha] = $this->twoTenants('security-set');
         $repository->synchronize(new ReferenceCodeSetRegistry(), new DateTimeImmutable(self::NOW));
         $this->expectReferenceCodeError('REFERENCE_CODE_SET_NOT_FOUND', 404, fn() => $this->query($repository)->list(
-            $definition, $alpha['context'],
+            $definition,
+            $alpha['context'],
         ));
         $changed = $this->definition(name: 'Changed');
         $repository->synchronize($this->registry($changed), new DateTimeImmutable(self::NOW));
         $this->expectReferenceCodeError('REFERENCE_CODE_SET_NOT_FOUND', 404, fn() => $this->query($repository)->list(
-            $definition, $alpha['context'],
+            $definition,
+            $alpha['context'],
         ));
     }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\ReferenceCodes\Tests\Integration\Application;
 
 use DateTimeImmutable;
+use DateTimeZone;
 use PeanutAdmin\ReferenceCodes\Tests\Integration\Support\ReferenceCodesDatabaseTestCase;
 
 require_once dirname(__DIR__) . '/Support/ReferenceCodesDatabaseTestCase.php';
@@ -23,11 +24,15 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
     public function testEffectiveStartBoundaryIsInclusive(): void
     {
         [$definition, $repository, $tenant] = $this->fixture('query-start');
+        $effectiveAt = $this->futureInstant();
         $this->create($this->adminService($repository), $definition, $tenant['context'], override: [
-            'effective_at' => new DateTimeImmutable('2026-07-20T10:00:00.000Z'),
+            'effective_at' => $effectiveAt,
         ]);
         $entry = $this->query($repository)->get(
-            $definition, $tenant['context'], 'sample-code', new DateTimeImmutable('2026-07-20T10:00:00.000Z'),
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            $effectiveAt,
         );
         self::assertNotNull($entry->effective);
         self::assertSame(1, $entry->effective['revision']);
@@ -36,15 +41,23 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
     public function testExpiresBoundaryIsExclusive(): void
     {
         [$definition, $repository, $tenant] = $this->fixture('query-expires');
+        $effectiveAt = $this->futureInstant();
+        $expiresAt = $effectiveAt->modify('+1 hour');
         $this->create($this->adminService($repository), $definition, $tenant['context'], override: [
-            'effective_at' => new DateTimeImmutable('2026-07-20T10:00:00.000Z'),
-            'expires_at' => new DateTimeImmutable('2026-07-20T11:00:00.000Z'),
+            'effective_at' => $effectiveAt,
+            'expires_at' => $expiresAt,
         ]);
         self::assertNotNull($this->query($repository)->get(
-            $definition, $tenant['context'], 'sample-code', new DateTimeImmutable('2026-07-20T10:59:59.999Z'),
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            $expiresAt->modify('-1 millisecond'),
         )->effective);
         self::assertNull($this->query($repository)->get(
-            $definition, $tenant['context'], 'sample-code', new DateTimeImmutable('2026-07-20T11:00:00.000Z'),
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            $expiresAt,
         )->effective);
     }
 
@@ -52,15 +65,27 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
     {
         [$definition, $repository, $tenant] = $this->fixture('query-overlap');
         $service = $this->adminService($repository);
+        $effectiveAt = $this->futureInstant();
         $created = $this->create($service, $definition, $tenant['context'], override: [
-            'label' => 'Older', 'effective_at' => new DateTimeImmutable('2026-07-20T00:00:00.000Z'),
+            'label' => 'Older', 'effective_at' => $effectiveAt,
         ]);
         $service->replace(
-            $definition, $tenant['context'], 'sample-code', 'Newer', [], 'active', 0,
-            new DateTimeImmutable('2026-07-20T00:00:00.000Z'), null, $created->etag,
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            'Newer',
+            [],
+            'active',
+            0,
+            $effectiveAt,
+            null,
+            $created->etag,
         );
         $entry = $this->query($repository)->get(
-            $definition, $tenant['context'], 'sample-code', new DateTimeImmutable('2026-07-20T02:00:00.000Z'),
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            $effectiveAt,
         );
         self::assertNotNull($entry->effective);
         self::assertSame(2, $entry->effective['revision']);
@@ -124,7 +149,10 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
         $asOf = new DateTimeImmutable($retired->retiredAt);
         self::assertCount(0, $this->query($repository)->list($definition, $tenant['context'], asOf: $asOf)['items']);
         self::assertCount(1, $this->query($repository)->list(
-            $definition, $tenant['context'], asOf: $asOf, includeRetired: true,
+            $definition,
+            $tenant['context'],
+            asOf: $asOf,
+            includeRetired: true,
         )['items']);
     }
 
@@ -138,7 +166,10 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
         usleep(2000);
         $service->retire($definition, $tenant['context'], 'sample-code', $created->etag);
         $historical = $this->query($repository)->get(
-            $definition, $tenant['context'], 'sample-code', new DateTimeImmutable($created->createdAt),
+            $definition,
+            $tenant['context'],
+            'sample-code',
+            new DateTimeImmutable($created->createdAt),
         );
         self::assertSame('active', $historical->lifecycle);
         self::assertNotNull($historical->effective);
@@ -190,7 +221,9 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
         $created = $this->create($this->adminService($repository), $definition, $tenant['context']);
         $this->database->exec('UPDATE pa_reference_code_entry SET revision = 2');
         $this->expectReferenceCodeError('INTERNAL_ERROR', 500, fn() => $this->query($repository)->get(
-            $definition, $tenant['context'], 'sample-code',
+            $definition,
+            $tenant['context'],
+            'sample-code',
         ));
         self::assertSame(1, $created->revision);
     }
@@ -202,5 +235,18 @@ final class ReferenceCodeQueryTest extends ReferenceCodesDatabaseTestCase
         $repository = $this->repository($definition);
 
         return [$definition, $repository, $this->tenant($tenantCode)];
+    }
+
+    private function futureInstant(): DateTimeImmutable
+    {
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $millisecond = $now->setTime(
+            (int) $now->format('H'),
+            (int) $now->format('i'),
+            (int) $now->format('s'),
+            (int) $now->format('v') * 1000,
+        );
+
+        return $millisecond->modify('+1 day');
     }
 }
