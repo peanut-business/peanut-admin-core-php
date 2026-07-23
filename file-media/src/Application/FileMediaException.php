@@ -36,6 +36,26 @@ final class FileMediaException extends RuntimeException
         return new self('FILE_STORAGE_UNAVAILABLE', 503, 'Private file storage is unavailable.');
     }
 
+    public static function deliveryDenied(): self
+    {
+        return new self('FILE_DELIVERY_DENIED', 403, 'The requested file delivery is not allowed.');
+    }
+
+    public static function deliveryInvalid(): self
+    {
+        return new self('FILE_DELIVERY_INVALID', 422, 'The file delivery request is invalid.');
+    }
+
+    public static function deliveryUnavailable(): self
+    {
+        return new self('FILE_DELIVERY_UNAVAILABLE', 503, 'File delivery is unavailable.');
+    }
+
+    public static function imageInvalid(): self
+    {
+        return new self('FILE_IMAGE_INVALID', 422, 'The image metadata or variant is invalid.');
+    }
+
     public static function notFound(): self
     {
         return new self('FILE_NOT_FOUND', 404, 'The requested file is unavailable.');
