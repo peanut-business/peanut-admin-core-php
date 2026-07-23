@@ -7,9 +7,6 @@ namespace PeanutAdmin\Kernel\Tests\Unit\Governance;
 use PeanutAdmin\Kernel\Authorization\Governance\GovernanceException;
 use PeanutAdmin\Kernel\Authorization\Governance\GovernancePermission;
 use PeanutAdmin\Kernel\Authorization\Governance\GovernancePermissionCatalog;
-use PeanutAdmin\Kernel\Authorization\Governance\GovernanceResourceOperation;
-use PeanutAdmin\Kernel\Authorization\Governance\RoleDataPolicyGovernance;
-use PeanutAdmin\Kernel\Authorization\Governance\RolePermissionGovernance;
 use PeanutAdmin\Kernel\Audit\GovernanceAuditMetadata;
 use PeanutAdmin\Kernel\Menu\GovernanceRoute;
 use PeanutAdmin\Kernel\Menu\MenuDefinition;
@@ -33,8 +30,8 @@ final class GovernanceWorkbenchTest extends TestCase
                 new MenuDefinition('example.report', 'example.report', 'tenant', 'core.group', 'page', 'Reports', 'example.report.list', '/app/reports', 'example.report.page', 'example.report.read', ['admin-web'], 3, 'Files'),
             ],
             [
-                new GovernanceRoute('tenant.roles.list', '/app/roles', 'tenant', null, ['core.role.read']),
-                new GovernanceRoute('example.report.list', '/app/reports', 'tenant', 'example.report', ['example.report.read']),
+                new GovernanceRoute('tenant.roles.list', '/app/roles', 'tenant', null, ['core.role.read'], 'core.role.list', ['admin-web']),
+                new GovernanceRoute('example.report.list', '/app/reports', 'tenant', 'example.report', ['example.report.read'], 'example.report.page', ['admin-web']),
             ],
             $permissions,
             new MenuIconRegistry(['Shield', 'Files']),
@@ -50,56 +47,41 @@ final class GovernanceWorkbenchTest extends TestCase
         $this->expectException(GovernanceException::class);
         new MenuGovernance(
             [new MenuDefinition('bad', 'core', 'tenant', null, 'page', 'Bad', 'platform.roles.list', '/app/bad', 'bad.page', 'core.role.read', ['admin-web'], 1, 'Shield')],
-            [new GovernanceRoute('platform.roles.list', '/platform/roles', 'platform', null, ['platform.role.read'])],
+            [new GovernanceRoute('platform.roles.list', '/platform/roles', 'platform', null, ['platform.role.read'], 'platform.role.list', ['admin-web'])],
             $permissions,
             new MenuIconRegistry(['Shield']),
         );
     }
 
-    public function testRolePermissionAndDataPolicyChangesRequireDeclaredCatalogAndRevision(): void
+    public function testRouteContractsRejectNonCanonicalAndMismatchedDeclarations(): void
     {
         $permissions = new GovernancePermissionCatalog([
             new GovernancePermission('core.role.read', 'core', 'tenant', true),
             new GovernancePermission('example.report.read', 'example.report', 'tenant', true),
-            new GovernancePermission('platform.role.read', 'platform', 'platform', true),
+            new GovernancePermission('core.role.retired', 'core', 'tenant', false),
         ]);
-        $change = (new RolePermissionGovernance($permissions))->prepare(
-            'tenant',
-            9,
-            4,
-            '"rev-4"',
-            ['example.report.read', 'core.role.read', 'core.role.read'],
-            ['example.report'],
-        );
-        self::assertSame(['core.role.read', 'example.report.read'], $change->permissionKeys);
 
-        $policy = (new RoleDataPolicyGovernance([
-            new GovernanceResourceOperation('example.report', 'list', 'example.report', 'tenant', ['core.tenant_wide', 'core.specified_objects']),
-        ]))->prepare(
-            'tenant',
-            9,
-            7,
-            '"rev-7"',
-            'example.report',
-            'list',
-            ['core.specified_objects'],
-            ['example.report'],
-        );
-        self::assertSame(['core.specified_objects'], $policy->conditionKeys);
-
-        try {
-            (new RolePermissionGovernance($permissions))->prepare('tenant', 9, 4, '"rev-3"', ['core.role.read'], []);
-            self::fail('A stale role revision must fail closed.');
-        } catch (GovernanceException $exception) {
-            self::assertSame('REVISION_MISMATCH', $exception->errorCode);
+        foreach (['/app/../roles', '/app/%2e%2e/roles', '/app/roles?x=1', '/app/roles#x', '/app//roles', '/app\\roles', '/app/roles/', '/platform/roles'] as $path) {
+            $this->assertGovernanceFailure(
+                'GOVERNANCE_ROUTE_INVALID',
+                static fn() => new GovernanceRoute('tenant.roles.invalid', $path, 'tenant', null, ['core.role.read'], 'core.role.list', ['admin-web']),
+            );
         }
 
-        try {
-            (new RolePermissionGovernance($permissions))->prepare('tenant', 9, 4, '"rev-4"', ['platform.role.read'], []);
-            self::fail('Cross-audience permissions must fail closed.');
-        } catch (GovernanceException $exception) {
-            self::assertSame('GOVERNANCE_PERMISSION_AUDIENCE_MISMATCH', $exception->errorCode);
-        }
+        $this->assertGovernanceFailure('GOVERNANCE_ROUTE_CONFLICT', static fn() => new MenuGovernance([], [
+            new GovernanceRoute('tenant.roles.list', '/app/roles', 'tenant', null, ['core.role.read'], 'core.role.list', ['admin-web']),
+            new GovernanceRoute('tenant.roles.alias', '/app/roles', 'tenant', null, ['core.role.read'], 'core.role.list', ['admin-web']),
+        ], $permissions, new MenuIconRegistry([])));
+
+        $this->assertGovernanceFailure('GOVERNANCE_PERMISSION_INACTIVE', static fn() => new MenuGovernance([], [
+            new GovernanceRoute('tenant.roles.retired', '/app/retired', 'tenant', null, ['core.role.retired'], 'core.role.list', ['admin-web']),
+        ], $permissions, new MenuIconRegistry([])));
+
+        $this->assertGovernanceFailure('GOVERNANCE_ROUTE_CONTRACT_MISMATCH', static fn() => new MenuGovernance([
+            new MenuDefinition('core.roles', 'core', 'tenant', null, 'page', 'Roles', 'tenant.roles.list', '/app/roles', 'server.injected', 'core.role.read', ['admin-web'], 1, 'Shield'),
+        ], [
+            new GovernanceRoute('tenant.roles.list', '/app/roles', 'tenant', null, ['core.role.read'], 'core.role.list', ['admin-web']),
+        ], $permissions, new MenuIconRegistry(['Shield'])));
     }
 
     public function testAuditMetadataUsesAnExplicitAllowlist(): void
@@ -117,5 +99,24 @@ final class GovernanceWorkbenchTest extends TestCase
             'sql' => 'SELECT * FROM hidden',
             'raw_target_set' => ['101'],
         ]));
+
+        $this->assertGovernanceFailure(
+            'AUDIT_METADATA_ALLOWLIST_INVALID',
+            static fn() => new GovernanceAuditMetadata(['revision', 'raw_target_set']),
+            \InvalidArgumentException::class,
+        );
+    }
+
+    /** @param callable(): mixed $operation */
+    private function assertGovernanceFailure(string $code, callable $operation, string $class = GovernanceException::class): void
+    {
+        try {
+            $operation();
+            self::fail("Expected {$code}.");
+        } catch (\Throwable $exception) {
+            self::assertInstanceOf($class, $exception);
+            $actual = $exception instanceof GovernanceException ? $exception->errorCode : $exception->getMessage();
+            self::assertSame($code, $actual);
+        }
     }
 }

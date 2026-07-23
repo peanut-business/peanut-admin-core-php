@@ -16,6 +16,9 @@ final class MenuGovernance
     /** @var array<string, GovernanceRoute> */
     private array $routes = [];
 
+    /** @var array<string, true> */
+    private array $routePaths = [];
+
     /**
      * @param list<MenuDefinition> $menus
      * @param list<GovernanceRoute> $routes
@@ -32,10 +35,18 @@ final class MenuGovernance
             throw new GovernanceException('GOVERNANCE_MENU_INVALID', 'The menu catalog is structurally invalid.');
         }
         foreach ($routes as $route) {
-            if (isset($this->routes[$route->name])) {
+            if (isset($this->routes[$route->name]) || isset($this->routePaths[$route->path])) {
                 throw new GovernanceException('GOVERNANCE_ROUTE_CONFLICT', 'A governance route is declared more than once.');
             }
+            $expectedModule = $route->moduleKey ?? ($route->audience === 'platform' ? 'platform' : 'core');
+            foreach ($route->permissionKeys as $permissionKey) {
+                $permission = $this->permissions->require($permissionKey, $route->audience);
+                if ($permission->moduleKey !== $expectedModule) {
+                    throw new GovernanceException('GOVERNANCE_PERMISSION_MODULE_MISMATCH', 'A route Permission belongs to another Module.');
+                }
+            }
             $this->routes[$route->name] = $route;
+            $this->routePaths[$route->path] = true;
         }
         foreach ($menus as $menu) {
             $this->menus[$menu->key] = $menu;
@@ -47,12 +58,25 @@ final class MenuGovernance
                 'GOVERNANCE_ROUTE_UNDECLARED',
                 'A page menu references an undeclared route.',
             );
-            if ($route->audience !== $menu->scope
-                || ($menu->moduleKey === 'core' ? $route->moduleKey !== null : $route->moduleKey !== $menu->moduleKey)) {
+            $expectedModule = $menu->scope === 'platform' && $menu->moduleKey === 'core' ? 'platform' : $menu->moduleKey;
+            $routeModule = $route->moduleKey ?? ($route->audience === 'platform' ? 'platform' : 'core');
+            if ($route->audience !== $menu->scope || $routeModule !== $expectedModule) {
                 throw new GovernanceException('GOVERNANCE_ROUTE_AUDIENCE_MISMATCH', 'A page menu route belongs to another audience or Module.');
             }
+            $menuClients = $menu->clientKeys;
+            $routeClients = $route->clientKeys;
+            sort($menuClients, SORT_STRING);
+            sort($routeClients, SORT_STRING);
+            if ($route->path !== $menu->routePath
+                || $route->componentKey !== $menu->componentKey
+                || $routeClients !== $menuClients) {
+                throw new GovernanceException('GOVERNANCE_ROUTE_CONTRACT_MISMATCH', 'A page menu does not match its trusted route contract.');
+            }
             $permission = $menu->requiredPermission ?? '';
-            $this->permissions->require($permission, $menu->scope);
+            $declaredPermission = $this->permissions->require($permission, $menu->scope);
+            if ($declaredPermission->moduleKey !== $expectedModule) {
+                throw new GovernanceException('GOVERNANCE_PERMISSION_MODULE_MISMATCH', 'A menu Permission belongs to another Module.');
+            }
             if (!in_array($permission, $route->permissionKeys, true)) {
                 throw new GovernanceException('GOVERNANCE_ROUTE_PERMISSION_MISMATCH', 'A page menu and its route declare different access.');
             }
