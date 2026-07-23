@@ -51,7 +51,7 @@ final readonly class CorePermissionCatalogSynchronizer
             $key,
             match (true) {
                 str_contains($key, 'provision-owner') => 'critical',
-                $key === 'core.member.effective-access.read' => 'sensitive',
+                in_array($key, ['core.member.effective-access.read', 'platform.upgrade.read'], true) => 'sensitive',
                 default => 'normal',
             },
             self::MANIFEST_VERSION,

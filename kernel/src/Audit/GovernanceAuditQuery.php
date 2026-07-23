@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Audit;
 
 use PeanutAdmin\Kernel\Auth\TenantContext;
-use PeanutAdmin\Kernel\Auth\ValidatedPlatformSession;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
+use PeanutAdmin\Kernel\Context\PlatformContext;
 
 interface GovernanceAuditQuery
 {
@@ -14,7 +14,7 @@ interface GovernanceAuditQuery
 
     public function tenantDetail(TenantContext $context, string $eventId): GovernanceAuditEvent;
 
-    public function platform(ValidatedPlatformSession $session, GovernanceAuditFilter $filter, PageRequest $page): GovernanceAuditPage;
+    public function platform(PlatformContext $context, GovernanceAuditFilter $filter, PageRequest $page): GovernanceAuditPage;
 
-    public function platformDetail(ValidatedPlatformSession $session, string $eventId): GovernanceAuditEvent;
+    public function platformDetail(PlatformContext $context, string $eventId): GovernanceAuditEvent;
 }

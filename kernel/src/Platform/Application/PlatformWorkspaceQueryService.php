@@ -8,6 +8,9 @@ use PDO;
 use PDOStatement;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
+use PeanutAdmin\Kernel\Audit\GovernanceAuditFilter;
+use PeanutAdmin\Kernel\Audit\GovernanceAuditMetadata;
+use JsonException;
 use RuntimeException;
 
 final readonly class PlatformWorkspaceQueryService
@@ -158,11 +161,12 @@ SQL);
     }
 
     /** @return array{items: list<array<string, mixed>>, total: int} */
-    public function auditEvents(PageRequest $page): array
+    public function auditEvents(PageRequest $page, ?GovernanceAuditFilter $filter = null): array
     {
+        [$where, $parameters] = $this->auditWhere($filter ?? new GovernanceAuditFilter());
         return $this->page(
-            'SELECT COUNT(*) FROM pa_platform_audit_event',
-            <<<'SQL'
+            'SELECT COUNT(*) FROM pa_platform_audit_event pae WHERE ' . $where,
+            <<<SQL
 SELECT pae.id, pae.event_type, pae.action, pae.outcome, pae.reason_code,
        pae.operator_id, pae.account_id,
        COALESCE(po.display_name, a.display_name, 'platform_system') AS operator_label,
@@ -172,22 +176,58 @@ SELECT pae.id, pae.event_type, pae.action, pae.outcome, pae.reason_code,
 FROM pa_platform_audit_event pae
 LEFT JOIN pa_platform_operator po ON po.id = pae.operator_id
 LEFT JOIN pa_account a ON a.id = pae.account_id
+WHERE {$where}
 ORDER BY pae.occurred_at DESC, pae.id DESC
 LIMIT :limit OFFSET :offset
 SQL,
             $page,
+            [],
+            $parameters,
         );
+    }
+
+    /** @return array<string, mixed> */
+    public function auditEvent(string $eventId): array
+    {
+        if (preg_match('/^[1-9][0-9]*$/D', $eventId) !== 1) {
+            throw AdminAccessException::notFound();
+        }
+        $row = $this->one(<<<'SQL'
+SELECT pae.id, pae.event_type, pae.action, pae.outcome, pae.reason_code,
+       pae.operator_id, pae.account_id,
+       COALESCE(po.display_name, a.display_name, 'platform_system') AS operator_label,
+       pae.target_type, pae.target_id,
+       CASE WHEN pae.target_type = 'tenant' THEN pae.target_id ELSE NULL END AS target_tenant_id,
+       pae.request_id, pae.operation_id, pae.metadata_json, pae.occurred_at AS created_at
+FROM pa_platform_audit_event pae
+LEFT JOIN pa_platform_operator po ON po.id = pae.operator_id
+LEFT JOIN pa_account a ON a.id = pae.account_id
+WHERE pae.id = :event_id
+SQL, ['event_id' => $eventId]);
+        $row['metadata'] = $this->auditMetadata($row['metadata_json'] ?? null);
+        unset($row['metadata_json']);
+
+        return $row;
     }
 
     /**
      * @param array<string, string> $csvFields source field => result field
      * @return array{items: list<array<string, mixed>>, total: int}
      */
-    private function page(string $countSql, string $querySql, PageRequest $page, array $csvFields = []): array
+    private function page(
+        string $countSql,
+        string $querySql,
+        PageRequest $page,
+        array $csvFields = [],
+        array $parameters = [],
+    ): array
     {
         $count = $this->statement($countSql);
-        $count->execute();
+        $count->execute($parameters);
         $statement = $this->statement($querySql);
+        foreach ($parameters as $key => $value) {
+            $statement->bindValue(':' . $key, $value, PDO::PARAM_STR);
+        }
         $statement->bindValue(':limit', $page->pageSize, PDO::PARAM_INT);
         $statement->bindValue(':offset', $page->offset(), PDO::PARAM_INT);
         $statement->execute();
@@ -196,6 +236,44 @@ SQL,
             'items' => $this->rows($statement, $csvFields),
             'total' => (int) $count->fetchColumn(),
         ];
+    }
+
+    /** @return array{string, array<string, string>} */
+    private function auditWhere(GovernanceAuditFilter $filter): array
+    {
+        $conditions = ['1 = 1'];
+        $parameters = [];
+        foreach ([
+            'event_type' => $filter->eventType,
+            'action' => $filter->action,
+            'outcome' => $filter->outcome?->value,
+            'request_id' => $filter->requestId,
+            'target_type' => $filter->targetType,
+            'target_id' => $filter->targetId,
+        ] as $column => $value) {
+            if ($value !== null) {
+                $conditions[] = "pae.{$column} = :{$column}";
+                $parameters[$column] = $value;
+            }
+        }
+
+        return [implode(' AND ', $conditions), $parameters];
+    }
+
+    /** @return array<string, bool|int|string|null> */
+    private function auditMetadata(mixed $value): array
+    {
+        try {
+            $decoded = is_string($value) && $value !== ''
+                ? json_decode($value, true, 64, JSON_THROW_ON_ERROR)
+                : [];
+        } catch (JsonException) {
+            $decoded = [];
+        }
+
+        return (new GovernanceAuditMetadata([
+            'revision', 'permission_count', 'role_id', 'module_key', 'resource_key', 'operation', 'status', 'reason',
+        ]))->project(is_array($decoded) ? $decoded : []);
     }
 
     /**

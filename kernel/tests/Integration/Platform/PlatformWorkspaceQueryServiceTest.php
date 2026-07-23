@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Integration\Platform;
 
+use PeanutAdmin\Kernel\Audit\AuditOutcome;
+use PeanutAdmin\Kernel\Audit\GovernanceAuditFilter;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
@@ -60,7 +62,7 @@ final class PlatformWorkspaceQueryServiceTest extends DatabaseTestCase
             'permission_id' => $permissionId,
             'granted_at' => self::NOW,
         ]);
-        $this->insert('pa_platform_audit_event', [
+        $eventId = $this->insert('pa_platform_audit_event', [
             'event_type' => 'tenant.created',
             'action' => 'platform.tenant.create',
             'outcome' => 'success',
@@ -69,6 +71,7 @@ final class PlatformWorkspaceQueryServiceTest extends DatabaseTestCase
             'target_type' => 'tenant',
             'target_id' => (string) $alphaId,
             'request_id' => 'req_platform_workspace',
+            'metadata_json' => '{"role_id":"7","permission_count":3,"password":"hidden"}',
             'occurred_at' => self::NOW,
         ]);
 
@@ -96,10 +99,21 @@ final class PlatformWorkspaceQueryServiceTest extends DatabaseTestCase
             static fn(string $key): bool => !str_starts_with($key, 'platform.'),
         )));
 
-        $audit = $this->service->auditEvents(new PageRequest());
+        $audit = $this->service->auditEvents(new PageRequest(), new GovernanceAuditFilter(
+            'tenant.created',
+            'platform.tenant.create',
+            AuditOutcome::Success,
+            'req_platform_workspace',
+            'tenant',
+            (string) $alphaId,
+        ));
         self::assertSame(1, $audit['total']);
         self::assertSame('Primary Operator', $audit['items'][0]['operator_label']);
         self::assertSame((string) $alphaId, $audit['items'][0]['target_tenant_id']);
+        self::assertSame(
+            ['permission_count' => 3, 'role_id' => '7'],
+            $this->service->auditEvent((string) $eventId)['metadata'],
+        );
     }
 
     public function testDetailQueriesDoNotExposeMissingResources(): void

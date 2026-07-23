@@ -54,6 +54,7 @@ final class CorePermissionCatalog
         'platform.role.permission.assign',
         'platform.permission.read',
         'platform.audit.read',
+        'platform.upgrade.read',
     ];
 
     private function __construct() {}
