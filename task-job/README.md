@@ -14,7 +14,8 @@ scheduler, service manager, or public release.
   resource or operation fails closed.
 - The signed Kernel envelope preserves the producer's Tenant, actor, resource,
   operation, target and trace evidence. `LocalWorker` revalidates it immediately
-  before invoking a registered `TaskHandler`.
+  before invoking a registered `TaskHandler`. Tenant, account, member, resource,
+  operation and normalized typed-target sets must all match the signed envelope.
 - `TaskHandler` receives a worker-built `JobExecution`; it must use the stable
   `jobKey` as its side-effect idempotency key. Payloads cannot override the job
   key, Tenant or attempt number.
@@ -46,6 +47,12 @@ attempt number, Tenant and unexpired lease. Expired attempts become
 20, 40, 80, 160 and then at most 300 seconds. Jobs have 1-10 attempts; an
 explicit retry of a dead job grants one additional attempt but never exceeds
 10.
+
+The canonical provider payload is protected by `payload_hash`. Claim and the
+immediate pre-handler check both reject a payload mismatch. Expired recovery
+locks the job and its current running attempt, then requires their lease-token
+digests to match; a missing or corrupt attempt fails closed without recovering
+the job.
 
 Submission idempotency is scoped by Tenant, producer member, and task type.
 Only the key digest is stored. An exact request returns the existing job; reuse with another

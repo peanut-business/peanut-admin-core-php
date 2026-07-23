@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace PeanutAdmin\TaskJob\Execution;
 
 use PeanutAdmin\Kernel\Async\JobHandlerAdapter;
+use PeanutAdmin\Kernel\Async\VerifiedJobEnvelope;
+use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Persistence\PdoTaskJobRepository;
 use Throwable;
@@ -34,16 +37,12 @@ final readonly class LocalWorker
             return null;
         }
         try {
+            $this->repository->assertExecutable($claim);
             $handler = $this->handlers->require($claim->handlerKey);
             $this->authorization->handle(
                 $claim->trustedEnvelope,
                 function ($context, $envelope) use ($claim, $handler): void {
-                    if ($envelope->tenantId !== $claim->tenantId
-                        || $context->tenantContext->tenantId !== $claim->tenantId
-                        || !hash_equals($envelope->operationId, $claim->jobKey)
-                    ) {
-                        throw TaskJobException::denied();
-                    }
+                    $this->assertAuthorizedContext($claim, $context, $envelope);
                     $handler->handle($context, new JobExecution(
                         $claim->jobKey,
                         $claim->tenantId,
@@ -75,5 +74,40 @@ final readonly class LocalWorker
     private function backoff(int $attempt): int
     {
         return min(300, 5 * (2 ** max(0, $attempt - 1)));
+    }
+
+    private function assertAuthorizedContext(
+        JobClaim $claim,
+        AuthorizedOperationContext $context,
+        VerifiedJobEnvelope $envelope,
+    ): void {
+        if ($envelope->tenantId !== $claim->tenantId
+            || $context->tenantContext->tenantId !== $envelope->tenantId
+            || $context->tenantContext->accountId !== $envelope->accountId
+            || $context->tenantContext->memberId !== $envelope->memberId
+            || !hash_equals($context->resourceKey, $envelope->resourceKey)
+            || !hash_equals($context->operation, $envelope->operation)
+            || !hash_equals($envelope->operationId, $claim->jobKey)
+            || $this->canonicalTargets($context->targets) !== $this->canonicalTargets($envelope->requestedTargets)
+        ) {
+            throw TaskJobException::denied();
+        }
+    }
+
+    /**
+     * @param list<RequestedTargetSet> $sets
+     * @return list<array{target_resource_key: string, target_role: string, target_ids: non-empty-list<string>}>
+     */
+    private function canonicalTargets(array $sets): array
+    {
+        $normalized = array_map(
+            static fn(RequestedTargetSet $set): array => $set->toArray(),
+            $sets,
+        );
+        usort($normalized, static fn(array $left, array $right): int => strcmp(
+            json_encode($left, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            json_encode($right, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+        ));
+        return $normalized;
     }
 }

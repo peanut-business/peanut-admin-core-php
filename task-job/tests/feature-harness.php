@@ -10,6 +10,7 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Application\TaskJobService;
 use PeanutAdmin\TaskJob\Database\Schema;
@@ -55,9 +56,28 @@ final class HarnessProvider implements TaskSubmissionProvider
 
 final class HarnessRevalidator implements AsyncAuthorizationRevalidator
 {
+    public function __construct(private readonly ?string $drift = null) {}
+
     public function reauthorize(VerifiedJobEnvelope $envelope): AuthorizedOperationContext
     {
-        return context($envelope->tenantId, $envelope->resourceKey, $envelope->operation, $envelope->memberId);
+        $tenantId = $envelope->tenantId;
+        $accountId = $envelope->accountId;
+        $memberId = $envelope->memberId;
+        $resource = $envelope->resourceKey;
+        $operation = $envelope->operation;
+        $targets = $envelope->requestedTargets;
+        match ($this->drift) {
+            'tenant' => $tenantId += 1,
+            'account' => $accountId += 1,
+            'member' => $memberId += 1,
+            'resource' => $resource .= '.drift',
+            'operation' => $operation .= '.drift',
+            'targets' => $targets[] = new RequestedTargetSet('test.object', ['object-b', 'object-a']),
+            'reorder_targets' => $targets = array_reverse($targets),
+            null => null,
+            default => throw new RuntimeException('Unknown harness drift.'),
+        };
+        return context($tenantId, $resource, $operation, $memberId, $accountId, $targets);
     }
 }
 
@@ -77,13 +97,28 @@ final class HarnessHandler implements TaskHandler
     }
 }
 
-function context(int $tenantId, string $resource, string $operation, int $memberId = 501): AuthorizedOperationContext
+final class HarnessSuccessHandler implements TaskHandler
+{
+    public int $calls = 0;
+    public function key(): string { return 'test.echo'; }
+    public function handle(AuthorizedOperationContext $context, JobExecution $execution): void { ++$this->calls; }
+}
+
+/** @param list<RequestedTargetSet> $targets */
+function context(
+    int $tenantId,
+    string $resource,
+    string $operation,
+    int $memberId = 501,
+    ?int $accountId = null,
+    array $targets = [],
+): AuthorizedOperationContext
 {
     $tenant = TenantContext::fromValidatedSession(new ValidatedTenantSession(
-        $tenantId, 'session-' . $tenantId, $tenantId, $tenantId + 10, $memberId,
+        $tenantId, 'session-' . $tenantId, $tenantId, $accountId ?? $tenantId + 10, $memberId,
         'admin-web', new DateTimeImmutable('2026-07-24T00:00:00Z'), 1,
     ), 'request-' . $tenantId);
-    return AuthorizedOperationContext::fromDecision(AuthorizationDecision::allow($tenant, $resource, $operation, [], 'basis-' . $tenantId));
+    return AuthorizedOperationContext::fromDecision(AuthorizationDecision::allow($tenant, $resource, $operation, $targets, 'basis-' . $tenantId));
 }
 
 function assertSame(mixed $expected, mixed $actual, string $label): void
@@ -171,6 +206,61 @@ assertSame(2, $recovered?->attemptNumber, 'expired lease is recovered as a new a
 expectProblem('TASK_STATE_CONFLICT', fn() => $repository->succeed($claim), 'stale lease token is fenced');
 $repository->succeed($recovered);
 
+foreach (['tenant', 'account', 'member', 'resource', 'operation', 'targets'] as $drift) {
+    $driftJob = $publisher->publish($producer101, 'test.echo', ['message' => 'drift-' . $drift], 'idem-drift-' . $drift);
+    $beforeCalls = $handler->calls;
+    $driftWorker = new LocalWorker(
+        101,
+        'worker-drift-' . $drift,
+        $repository,
+        new TaskHandlerRegistry([$handler]),
+        new JobHandlerAdapter($codec, new HarnessRevalidator($drift)),
+        30,
+    );
+    assertSame('dead', $driftWorker->runOnce(), 'revalidated ' . $drift . ' drift fails closed');
+    assertSame($beforeCalls, $handler->calls, $drift . ' drift never reaches handler');
+    assertSame('TASK_PERMISSION_DENIED', $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $driftJob->jobKey)->lastErrorCode, $drift . ' drift error');
+}
+
+$targetContext = context(101, 'test.message', 'send', 501, 111, [
+    new RequestedTargetSet('test.second', ['b', 'a']),
+    new RequestedTargetSet('test.first', ['2', '1']),
+]);
+$targetJob = $publisher->publish($targetContext, 'test.echo', ['message' => 'target-order'], 'idem-target-order');
+$successHandler = new HarnessSuccessHandler();
+$targetWorker = new LocalWorker(
+    101,
+    'worker-target-order',
+    $repository,
+    new TaskHandlerRegistry([$successHandler]),
+    new JobHandlerAdapter($codec, new HarnessRevalidator('reorder_targets')),
+    30,
+);
+assertSame('succeeded', $targetWorker->runOnce(), 'target set ordering is normalized');
+assertSame(1, $successHandler->calls, 'normalized target context reaches handler');
+assertSame('succeeded', $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $targetJob->jobKey)->status, 'normalized target job');
+
+$payloadCorrupt = $publisher->publish($producer101, 'test.echo', ['message' => 'integrity'], 'idem-payload-integrity');
+$pdo->exec("UPDATE pa_task_job SET payload_json = JSON_OBJECT('message', 'tampered') WHERE job_key = " . $pdo->quote($payloadCorrupt->jobKey));
+expectProblem('TASK_INTERNAL_ERROR', fn() => $repository->claim(101, 'worker-payload-corrupt', 30), 'payload digest corruption fails claim');
+assertSame('queued', $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $payloadCorrupt->jobKey)->status, 'payload corruption does not claim job');
+$pdo->exec("UPDATE pa_task_job SET payload_json = JSON_OBJECT('message', 'integrity') WHERE job_key = " . $pdo->quote($payloadCorrupt->jobKey));
+$payloadClaim = $repository->claim(101, 'worker-payload-repaired', 30);
+assertSame($payloadCorrupt->jobKey, $payloadClaim?->jobKey, 'repaired payload is claimable');
+$repository->succeed($payloadClaim);
+
+$attemptCorrupt = $publisher->publish($producer101, 'test.echo', ['message' => 'attempt-integrity'], 'idem-attempt-integrity');
+$attemptClaim = $repository->claim(101, 'worker-attempt-corrupt', 30);
+assertSame($attemptCorrupt->jobKey, $attemptClaim?->jobKey, 'attempt corruption fixture claimed');
+$pdo->exec("UPDATE pa_task_job SET lease_expires_at = TIMESTAMPADD(SECOND, -1, UTC_TIMESTAMP(3)) WHERE id = {$attemptClaim->id}");
+$pdo->exec("UPDATE pa_task_job_attempt SET lease_token_hash = REPEAT('b', 64) WHERE job_id = {$attemptClaim->id} AND attempt_number = {$attemptClaim->attemptNumber}");
+expectProblem('TASK_INTERNAL_ERROR', fn() => $repository->claim(101, 'worker-attempt-mismatch', 30), 'job and attempt lease digest mismatch fails recovery');
+assertSame('running', $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $attemptCorrupt->jobKey)->status, 'attempt mismatch does not recover job');
+$pdo->exec("UPDATE pa_task_job_attempt attempt JOIN pa_task_job job ON job.id = attempt.job_id SET attempt.lease_token_hash = job.lease_token_hash WHERE job.id = {$attemptClaim->id} AND attempt.attempt_number = {$attemptClaim->attemptNumber}");
+$attemptRecovered = $repository->claim(101, 'worker-attempt-repaired', 30);
+assertSame(2, $attemptRecovered?->attemptNumber, 'matching lease digests allow expired recovery');
+$repository->succeed($attemptRecovered);
+
 $missing = $publisher->publish($producer101, 'test.missing', ['message' => 'missing'], 'idem-missing');
 $missingWorker = new LocalWorker(101, 'worker-missing', $repository, new TaskHandlerRegistry(), new JobHandlerAdapter($codec, new HarnessRevalidator()), 30);
 assertSame('dead', $missingWorker->runOnce(), 'unknown handler fails closed');
@@ -186,7 +276,7 @@ if (str_contains($raw, 'trusted_envelope') || str_contains($raw, 'payload') || s
     throw new RuntimeException('Audit events exposed internal payload or idempotency material.');
 }
 assertSame(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_task_job_attempt WHERE job_id = (SELECT id FROM pa_task_job WHERE job_key = " . $pdo->quote($job->jobKey) . ')')->fetchColumn(), 'retry attempt ledger');
-assertSame(1, (int) $pdo->query("SELECT COUNT(*) FROM pa_task_job_attempt WHERE status = 'abandoned'")->fetchColumn(), 'expired attempt ledger');
+assertSame(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_task_job_attempt WHERE status = 'abandoned'")->fetchColumn(), 'expired attempt ledger');
 
 foreach (array_reverse(Schema::tableNames()) as $table) $pdo->exec(Schema::dropSql($table));
 $pdo->exec('DROP TABLE pa_tenant_member, pa_tenant');

@@ -204,6 +204,8 @@ SQL);
                 $this->pdo->commit();
                 return null;
             }
+            $payload = $this->payload((string) $row['payload_json']);
+            $this->assertPayloadHash($row, $payload);
             $leaseToken = bin2hex(random_bytes(32));
             $leaseHash = hash('sha256', $leaseToken);
             $workerHash = hash('sha256', $workerId);
@@ -239,7 +241,6 @@ SQL);
                 'lease_hash' => $leaseHash,
             ]);
             $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.claimed', null, ['attempt' => $attempt]);
-            $payload = $this->payload((string) $row['payload_json']);
             $this->pdo->commit();
 
             return new JobClaim(
@@ -275,6 +276,45 @@ SQL);
         ]);
         if ($statement->rowCount() !== 1) {
             throw TaskJobException::stateConflict();
+        }
+    }
+
+    public function assertExecutable(JobClaim $claim): void
+    {
+        $statement = $this->pdo->prepare(<<<'SQL'
+SELECT job.job_key, job.handler_key, job.attempt_count, job.payload_json, job.payload_hash,
+       job.lease_token_hash AS job_lease_token_hash,
+       attempt.lease_token_hash AS attempt_lease_token_hash,
+       job.lease_expires_at > UTC_TIMESTAMP(3) AS lease_valid
+FROM pa_task_job job
+JOIN pa_task_job_attempt attempt
+  ON attempt.tenant_id = job.tenant_id
+ AND attempt.job_id = job.id
+ AND attempt.attempt_number = job.attempt_count
+ AND attempt.status = 'running'
+WHERE job.id = :id AND job.tenant_id = :tenant_id AND job.status = 'running'
+  AND job.attempt_count = :attempt
+SQL);
+        $statement->execute(['id' => $claim->id, 'tenant_id' => $claim->tenantId, 'attempt' => $claim->attemptNumber]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $leaseHash = hash('sha256', $claim->leaseToken);
+        if (!is_array($row)
+            || (int) $row['lease_valid'] !== 1
+            || !is_string($row['job_lease_token_hash'])
+            || !is_string($row['attempt_lease_token_hash'])
+            || !is_string($row['job_key'])
+            || !is_string($row['handler_key'])
+            || !hash_equals($claim->jobKey, $row['job_key'])
+            || !hash_equals($claim->handlerKey, $row['handler_key'])
+            || !hash_equals($leaseHash, $row['job_lease_token_hash'])
+            || !hash_equals($leaseHash, $row['attempt_lease_token_hash'])
+        ) {
+            throw TaskJobException::stateConflict();
+        }
+        $payload = $this->payload((string) $row['payload_json']);
+        $this->assertPayloadHash($row, $payload);
+        if (!hash_equals($this->payloadHash($claim->payload), $this->payloadHash($payload))) {
+            throw TaskJobException::internal();
         }
     }
 
@@ -362,19 +402,40 @@ SQL);
     private function recoverExpired(int $tenantId): void
     {
         $statement = $this->pdo->prepare(<<<'SQL'
-SELECT id, attempt_count, max_attempts FROM pa_task_job
-WHERE tenant_id = :tenant_id AND status = 'running' AND lease_expires_at <= UTC_TIMESTAMP(3)
-ORDER BY id ASC FOR UPDATE
+SELECT job.id, job.attempt_count, job.max_attempts,
+       job.lease_token_hash AS job_lease_token_hash,
+       attempt.lease_token_hash AS attempt_lease_token_hash
+FROM pa_task_job job
+LEFT JOIN pa_task_job_attempt attempt
+  ON attempt.tenant_id = job.tenant_id
+ AND attempt.job_id = job.id
+ AND attempt.attempt_number = job.attempt_count
+ AND attempt.status = 'running'
+WHERE job.tenant_id = :tenant_id AND job.status = 'running'
+  AND job.lease_expires_at <= UTC_TIMESTAMP(3)
+ORDER BY job.id ASC FOR UPDATE
 SQL);
         $statement->execute(['tenant_id' => $tenantId]);
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if (!is_string($row['job_lease_token_hash'])
+                || !is_string($row['attempt_lease_token_hash'])
+                || !hash_equals($row['job_lease_token_hash'], $row['attempt_lease_token_hash'])
+            ) {
+                throw TaskJobException::internal();
+            }
             $dead = (int) $row['attempt_count'] >= (int) $row['max_attempts'];
             $attempt = $this->pdo->prepare(<<<'SQL'
 UPDATE pa_task_job_attempt
 SET status = 'abandoned', error_code = 'TASK_LEASE_EXPIRED', completed_at = UTC_TIMESTAMP(3)
-WHERE tenant_id = :tenant_id AND job_id = :job_id AND attempt_number = :attempt AND status = 'running'
+WHERE tenant_id = :tenant_id AND job_id = :job_id AND attempt_number = :attempt
+  AND status = 'running' AND lease_token_hash = :lease_hash
 SQL);
-            $attempt->execute(['tenant_id' => $tenantId, 'job_id' => $row['id'], 'attempt' => $row['attempt_count']]);
+            $attempt->execute([
+                'tenant_id' => $tenantId,
+                'job_id' => $row['id'],
+                'attempt' => $row['attempt_count'],
+                'lease_hash' => $row['job_lease_token_hash'],
+            ]);
             if ($attempt->rowCount() !== 1) {
                 throw TaskJobException::internal();
             }
@@ -384,12 +445,14 @@ SET status = :status, available_at = UTC_TIMESTAMP(3), lease_owner_hash = NULL,
     lease_token_hash = NULL, lease_expires_at = NULL, last_error_code = 'TASK_LEASE_EXPIRED',
     completed_at = :completed_at, revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
 WHERE tenant_id = :tenant_id AND id = :id AND status = 'running'
+  AND lease_token_hash = :lease_hash AND lease_expires_at <= UTC_TIMESTAMP(3)
 SQL);
             $update->execute([
                 'status' => $dead ? 'dead' : 'queued',
                 'completed_at' => $dead ? $this->now() : null,
                 'tenant_id' => $tenantId,
                 'id' => $row['id'],
+                'lease_hash' => $row['job_lease_token_hash'],
             ]);
             if ($update->rowCount() !== 1) {
                 throw TaskJobException::stateConflict();
@@ -501,6 +564,42 @@ SQL);
         }
         if (!is_array($value) || array_is_list($value)) {
             throw TaskJobException::internal();
+        }
+        return $value;
+    }
+
+    /** @param array<string, mixed> $row @param array<string, mixed> $payload */
+    private function assertPayloadHash(array $row, array $payload): void
+    {
+        $stored = $row['payload_hash'] ?? null;
+        if (!is_string($stored)
+            || preg_match('/^[0-9a-f]{64}$/D', $stored) !== 1
+            || !hash_equals($stored, $this->payloadHash($payload))
+        ) {
+            throw TaskJobException::internal();
+        }
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function payloadHash(array $payload): string
+    {
+        try {
+            return hash('sha256', json_encode($this->normalizePayload($payload), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        } catch (JsonException) {
+            throw TaskJobException::internal();
+        }
+    }
+
+    private function normalizePayload(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+        if (!array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+        foreach ($value as $key => $item) {
+            $value[$key] = $this->normalizePayload($item);
         }
         return $value;
     }
