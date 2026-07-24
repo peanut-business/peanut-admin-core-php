@@ -48,6 +48,7 @@ final readonly class OpsStatusSnapshot
         Contract::stableCode($upgradeCode);
         Contract::commit($sourceCommit);
         Contract::commit($targetCommit);
+        $criticalCheckDown = false;
         foreach ($checks as $check) {
             if (array_keys($check) !== ['key', 'status', 'critical', 'latency_ms']
                 || !in_array($check['status'], ['up', 'down'], true)
@@ -58,6 +59,12 @@ final readonly class OpsStatusSnapshot
                 throw new InvalidArgumentException('Invalid health check.');
             }
             Contract::qualifiedKey($check['key'], 64);
+            $criticalCheckDown = $criticalCheckDown || ($check['critical'] && $check['status'] === 'down');
+        }
+        if (($health === 'healthy' && ($criticalCheckDown || $migrationDrift || $pendingMigrations > 0))
+            || ($upgradeState === 'succeeded' && (!$repositoryClean || !$backupVerified || !$sourceEvidenceMatches))
+        ) {
+            throw new InvalidArgumentException('Inconsistent operations status.');
         }
     }
 

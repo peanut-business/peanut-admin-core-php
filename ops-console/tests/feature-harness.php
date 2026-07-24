@@ -69,6 +69,16 @@ function expectCode(string $code, callable $operation, string $label): void
     throw new RuntimeException($label . ' did not fail');
 }
 
+function expectInvalidArgument(callable $operation, string $label): void
+{
+    try {
+        $operation();
+    } catch (InvalidArgumentException) {
+        return;
+    }
+    throw new RuntimeException($label . ' did not fail');
+}
+
 function context(): PlatformContext
 {
     return PlatformContext::fromValidatedSession(new ValidatedPlatformSession(
@@ -84,6 +94,31 @@ function task(int $number, string $type = Package::BACKUP_TASK_TYPE): OpsTask
         0, 3, 1, null, '2026-07-24T01:00:00.000Z', '2026-07-24T01:00:00.000Z',
         '2026-07-24T01:00:00.000Z', null,
     );
+}
+
+/** @param array<string, mixed> $overrides */
+function statusSnapshot(array $overrides = []): OpsStatusSnapshot
+{
+    return new OpsStatusSnapshot(...array_merge([
+        'health' => 'healthy',
+        'checks' => [['key' => 'database', 'status' => 'up', 'critical' => true, 'latency_ms' => 1.25]],
+        'commit' => str_repeat('a', 40),
+        'tree' => str_repeat('b', 40),
+        'releaseKey' => 'starter-v1.stage-c',
+        'builtAt' => '2026-07-24T00:00:00.000Z',
+        'appliedMigrations' => 12,
+        'targetMigrations' => 12,
+        'pendingMigrations' => 0,
+        'migrationDigest' => str_repeat('c', 64),
+        'migrationDrift' => false,
+        'upgradeState' => 'ready',
+        'upgradeCode' => 'UPGRADE_PREFLIGHT_READY',
+        'sourceCommit' => str_repeat('d', 40),
+        'targetCommit' => str_repeat('a', 40),
+        'repositoryClean' => true,
+        'backupVerified' => true,
+        'sourceEvidenceMatches' => true,
+    ], $overrides));
 }
 
 final class Permissions implements PlatformPermissionChecker
@@ -103,12 +138,7 @@ final class StatusProvider implements RuntimeStatusProvider
     public function snapshot(PlatformContext $context): OpsStatusSnapshot
     {
         if ($this->fail) throw new RuntimeException('mysql://root:password@host/database');
-        return new OpsStatusSnapshot(
-            'healthy', [['key' => 'database', 'status' => 'up', 'critical' => true, 'latency_ms' => 1.25]],
-            str_repeat('a', 40), str_repeat('b', 40), 'starter-v1.stage-c', '2026-07-24T00:00:00.000Z',
-            10, 12, 2, str_repeat('c', 64), false, 'ready', 'UPGRADE_PREFLIGHT_READY',
-            str_repeat('d', 40), str_repeat('a', 40), true, true, true,
-        );
+        return statusSnapshot();
     }
 }
 
@@ -120,6 +150,24 @@ final class Provider implements BackupRestoreProvider
     public function restoreHandlerKey(): string { return 'ops.restore.reference'; }
     public function restoreTargetKeys(): array { return $this->targets; }
     public function maximumAttempts(): int { return 3; }
+}
+
+final class MutableProvider implements BackupRestoreProvider
+{
+    /** @var array<string, int> */
+    public array $calls = ['key' => 0, 'backup' => 0, 'restore' => 0, 'targets' => 0, 'attempts' => 0];
+    public string $providerKey = 'snapshot.mysql';
+    public string $backupHandler = 'ops.backup.snapshot';
+    public string $restoreHandler = 'ops.restore.snapshot';
+    /** @var list<string> */
+    public array $targets = ['verification'];
+    public int $attempts = 3;
+
+    public function key(): string { ++$this->calls['key']; return $this->providerKey; }
+    public function backupHandlerKey(): string { ++$this->calls['backup']; return $this->backupHandler; }
+    public function restoreHandlerKey(): string { ++$this->calls['restore']; return $this->restoreHandler; }
+    public function restoreTargetKeys(): array { ++$this->calls['targets']; return $this->targets; }
+    public function maximumAttempts(): int { ++$this->calls['attempts']; return $this->attempts; }
 }
 
 final class Dispatcher implements OpsTaskDispatcher
@@ -208,12 +256,12 @@ final class MaintenanceStore implements MaintenanceWindowStore
 
 final class LogProvider implements RuntimeLogProvider
 {
-    public function __construct(private bool $fail = false) {}
+    public function __construct(private bool $fail = false, private ?StructuredLogBatch $batch = null) {}
     public function sourceKey(): string { return 'application'; }
     public function read(PlatformContext $context, RuntimeLogQuery $query): StructuredLogBatch
     {
         if ($this->fail) throw new RuntimeException('Stack trace #0 /private/app.php password=secret');
-        return new StructuredLogBatch([
+        return $this->batch ?? new StructuredLogBatch([
             new StructuredLogRecord('runtime.request.failed', 'error', 'http.runtime', '2026-07-24T02:00:00.000Z', 'req_ops_console_0002', 2),
             new StructuredLogRecord('runtime.unknown', 'warning', 'worker.runtime', '2026-07-24T02:01:00.000Z', null, 1),
         ], 'cursor_12345678');
@@ -229,15 +277,46 @@ $none = new Permissions([]);
 
 $status = (new OpsStatusService($all, new StatusProvider()))->read($platform)->toPublicArray();
 same('healthy', $status['health']['status'], 'health evidence');
-same(2, $status['migrations']['pending'], 'migration evidence');
+same(0, $status['migrations']['pending'], 'migration evidence');
 truth(!str_contains(json_encode($status, JSON_THROW_ON_ERROR), '/'), 'status has no path');
 expectCode('OPS_PERMISSION_DENIED', fn() => (new OpsStatusService($none, new StatusProvider()))->read($platform), 'status permission');
 expectCode('OPS_STATUS_UNAVAILABLE', fn() => (new OpsStatusService($all, new StatusProvider(true)))->read($platform), 'status failure');
+expectInvalidArgument(fn() => statusSnapshot([
+    'checks' => [['key' => 'database', 'status' => 'down', 'critical' => true, 'latency_ms' => 1.25]],
+]), 'healthy status with critical check down');
+expectInvalidArgument(fn() => statusSnapshot(['migrationDrift' => true]), 'healthy status with migration drift');
+expectInvalidArgument(fn() => statusSnapshot([
+    'appliedMigrations' => 11, 'targetMigrations' => 12, 'pendingMigrations' => 1,
+]), 'healthy status with pending migrations');
+foreach (['repositoryClean', 'backupVerified', 'sourceEvidenceMatches'] as $evidence) {
+    expectInvalidArgument(fn() => statusSnapshot(['upgradeState' => 'succeeded', $evidence => false]), 'succeeded upgrade without ' . $evidence);
+}
 
 try {
     new BackupRestoreProviderRegistry([new Provider(targets: ['production'])]);
     throw new RuntimeException('unsafe target registration did not fail');
 } catch (InvalidArgumentException) {}
+
+$mutableProvider = new MutableProvider();
+$snapshotRegistry = new BackupRestoreProviderRegistry([$mutableProvider]);
+same(['key' => 1, 'backup' => 1, 'restore' => 1, 'targets' => 1, 'attempts' => 1], $mutableProvider->calls, 'provider metadata snapshotted once');
+same($mutableProvider, $snapshotRegistry->require('snapshot.mysql')->providerReference(), 'opaque provider reference retained');
+$mutableProvider->providerKey = 'changed.mysql';
+$mutableProvider->backupHandler = 'ops.backup.changed';
+$mutableProvider->restoreHandler = 'ops.restore.changed';
+$mutableProvider->targets = ['production'];
+$mutableProvider->attempts = 10;
+$snapshotDispatcher = new Dispatcher();
+$snapshotTasks = new OpsTaskService($all, $snapshotRegistry, $snapshotDispatcher);
+$snapshotTasks->submitBackup($platform, 'snapshot.mysql', 'snapshot-backup-0001');
+$snapshotTasks->submitRestore($platform, 'snapshot.mysql', 'backup_12345678', 'verification', 'snapshot-restore-0001');
+same('snapshot.mysql', $snapshotDispatcher->submissions[0]->payload['provider_key'], 'snapshotted provider key');
+same('ops.backup.snapshot', $snapshotDispatcher->submissions[0]->handlerKey, 'snapshotted backup handler');
+same('ops.restore.snapshot', $snapshotDispatcher->submissions[1]->handlerKey, 'snapshotted restore handler');
+same(3, $snapshotDispatcher->submissions[0]->maximumAttempts, 'snapshotted maximum attempts');
+expectCode('OPS_PROVIDER_NOT_FOUND', fn() => $snapshotTasks->submitBackup($platform, 'changed.mysql', 'snapshot-backup-0002'), 'mutated provider key unavailable');
+expectCode('OPS_RESTORE_TARGET_INVALID', fn() => $snapshotTasks->submitRestore($platform, 'snapshot.mysql', 'backup_12345678', 'production', 'snapshot-restore-0002'), 'mutated unsafe target unavailable');
+same(['key' => 1, 'backup' => 1, 'restore' => 1, 'targets' => 1, 'attempts' => 1], $mutableProvider->calls, 'task service uses only provider snapshot');
 
 $dispatcher = new Dispatcher();
 $tasks = new OpsTaskService($all, new BackupRestoreProviderRegistry([new Provider()]), $dispatcher);
@@ -265,18 +344,31 @@ $job = new JobRecord(1, 'job_' . str_repeat('a', 32), 999, Package::BACKUP_TASK_
 same(Package::BACKUP_TASK_TYPE, TaskJobStatusProjection::fromRecord($job)->taskType, 'TaskJob status projection');
 $tenantJob = new JobRecord(2, 'job_' . str_repeat('b', 32), 1, 'tenant.export', 'queued', 0, 3, 1, null, '2026-07-24T00:00:00.000Z', '2026-07-24T00:00:00.000Z', '2026-07-24T00:00:00.000Z', null);
 expectCode('OPS_TASK_NOT_FOUND', fn() => TaskJobStatusProjection::fromRecord($tenantJob), 'Tenant task does not cross audience');
+expectInvalidArgument(fn() => task(3, 'ops.arbitrary'), 'OpsTask exact type allowlist');
+$arbitraryJob = new JobRecord(3, 'job_' . str_repeat('c', 32), 999, 'ops.arbitrary', 'queued', 0, 3, 1, null, '2026-07-24T00:00:00.000Z', '2026-07-24T00:00:00.000Z', '2026-07-24T00:00:00.000Z', null);
+expectCode('OPS_TASK_NOT_FOUND', fn() => TaskJobStatusProjection::fromRecord($arbitraryJob), 'TaskJob projection exact type allowlist');
 
 $maintenanceStore = new MaintenanceStore();
 $maintenance = new MaintenanceService($all, new MaintenanceReasonRegistry(['upgrade', 'restore-verification']), $maintenanceStore);
 $window = $maintenance->schedule($platform, 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-24T04:00:00.000Z', 0, 'maintenance-request-0001');
 $windowReplay = $maintenance->schedule($platform, 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-24T04:00:00.000Z', 0, 'maintenance-request-0001');
 same($window->maintenanceKey, $windowReplay->maintenanceKey, 'maintenance exact replay');
+$currentWindow = $maintenance->current($platform);
+truth($currentWindow !== $window && $currentWindow?->maintenanceKey === $window->maintenanceKey, 'maintenance current is reconstructed');
+$serializedWindow = serialize($window);
+$forgedWindow = unserialize(str_replace('T04:00:00.000Z', 'T02:00:00.000Z', $serializedWindow), ['allowed_classes' => [MaintenanceWindow::class]]);
+truth($forgedWindow instanceof MaintenanceWindow, 'forged maintenance fixture');
+$maintenanceStore->window = $forgedWindow;
+expectCode('OPS_INTERNAL_ERROR', fn() => $maintenance->current($platform), 'invalid stored maintenance fails closed');
+$maintenanceStore->window = $window;
 expectCode('OPS_IDEMPOTENCY_CONFLICT', fn() => $maintenance->schedule($platform, 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-24T05:00:00.000Z', 0, 'maintenance-request-0001'), 'maintenance idempotency conflict');
 expectCode('OPS_REVISION_CONFLICT', fn() => $maintenance->close($platform, $window->maintenanceKey, 2, 'maintenance-close-0001'), 'maintenance stale revision');
 $closed = $maintenance->close($platform, $window->maintenanceKey, 1, 'maintenance-close-0002');
 same('closed', $closed->state, 'maintenance close');
 same(2, count($maintenanceStore->audits), 'maintenance audits commit with writes');
 expectCode('OPS_MAINTENANCE_INVALID', fn() => $maintenance->schedule($platform, 'upgrade', '2026-07-24T00:00:00.000Z', '2026-07-26T00:00:00.000Z', 2, 'maintenance-request-0002'), 'maintenance duration');
+expectInvalidArgument(fn() => new MaintenanceWindow('maintenance_' . str_repeat('3', 32), 'scheduled', 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-24T03:00:00.000Z', 1), 'maintenance requires positive duration');
+expectInvalidArgument(fn() => new MaintenanceWindow('maintenance_' . str_repeat('4', 32), 'scheduled', 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-25T03:00:00.001Z', 1), 'maintenance rejects 24 hours plus one millisecond');
 
 try {
     new SafeLogMessageCatalog(['runtime.request.failed' => 'password=secret']);
@@ -291,5 +383,15 @@ $encodedLogs = json_encode($page, JSON_THROW_ON_ERROR);
 truth(!preg_match('/password=|Stack trace|\/private\/|mysql:/i', $encodedLogs), 'logs contain no raw evidence');
 expectCode('OPS_PERMISSION_DENIED', fn() => (new RuntimeLogService($none, new RuntimeLogProviderRegistry([new LogProvider()]), $catalog))->read($platform, new RuntimeLogQuery('application', 'info', null, 20)), 'logs permission');
 expectCode('OPS_LOGS_UNAVAILABLE', fn() => (new RuntimeLogService($all, new RuntimeLogProviderRegistry([new LogProvider(true)]), $catalog))->read($platform, new RuntimeLogQuery('application', 'info', null, 20)), 'logs provider failure');
+$oneRecord = new StructuredLogRecord('runtime.request.failed', 'warning', 'http.runtime', '2026-07-24T02:00:00.000Z', null, 1);
+expectCode('OPS_LOGS_UNAVAILABLE', fn() => (new RuntimeLogService($all, new RuntimeLogProviderRegistry([
+    new LogProvider(batch: new StructuredLogBatch([$oneRecord, $oneRecord], null)),
+]), $catalog))->read($platform, new RuntimeLogQuery('application', 'info', null, 1)), 'logs provider exceeds requested page size');
+expectCode('OPS_LOGS_UNAVAILABLE', fn() => (new RuntimeLogService($all, new RuntimeLogProviderRegistry([
+    new LogProvider(batch: new StructuredLogBatch([$oneRecord], null)),
+]), $catalog))->read($platform, new RuntimeLogQuery('application', 'error', null, 20)), 'logs provider violates minimum severity');
+expectCode('OPS_LOGS_UNAVAILABLE', fn() => (new RuntimeLogService($all, new RuntimeLogProviderRegistry([
+    new LogProvider(batch: new StructuredLogBatch([$oneRecord], 'cursor_12345678')),
+]), $catalog))->read($platform, new RuntimeLogQuery('application', 'info', 'cursor_12345678', 20)), 'logs provider repeats input cursor');
 
 echo "Ops Console PHP feature: OK\n";

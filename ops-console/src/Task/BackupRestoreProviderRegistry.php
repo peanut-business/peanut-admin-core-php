@@ -10,7 +10,7 @@ use PeanutAdmin\OpsConsole\Support\Contract;
 
 final class BackupRestoreProviderRegistry
 {
-    /** @var array<string, BackupRestoreProvider> */
+    /** @var array<string, BackupRestoreProviderDescriptor> */
     private array $providers = [];
 
     /** @param iterable<BackupRestoreProvider> $providers */
@@ -21,29 +21,21 @@ final class BackupRestoreProviderRegistry
 
     public function register(BackupRestoreProvider $provider): void
     {
-        $key = Contract::qualifiedKey($provider->key());
-        Contract::qualifiedKey($provider->backupHandlerKey());
-        Contract::qualifiedKey($provider->restoreHandlerKey());
-        $targets = $provider->restoreTargetKeys();
-        if (isset($this->providers[$key]) || $targets === [] || count($targets) > 32
-            || $provider->maximumAttempts() < 1 || $provider->maximumAttempts() > 10
-        ) {
+        $descriptor = new BackupRestoreProviderDescriptor(
+            $provider,
+            $provider->key(),
+            $provider->backupHandlerKey(),
+            $provider->restoreHandlerKey(),
+            array_values($provider->restoreTargetKeys()),
+            $provider->maximumAttempts(),
+        );
+        if (isset($this->providers[$descriptor->key])) {
             throw new InvalidArgumentException('Invalid operations provider registration.');
         }
-        $unique = [];
-        foreach ($targets as $target) {
-            Contract::qualifiedKey($target, 64);
-            if (preg_match('/(?:^|[.-])(?:active|current|primary|prod|production)(?:$|[.-])/', $target) === 1
-                || isset($unique[$target])
-            ) {
-                throw new InvalidArgumentException('Unsafe restore target registration.');
-            }
-            $unique[$target] = true;
-        }
-        $this->providers[$key] = $provider;
+        $this->providers[$descriptor->key] = $descriptor;
     }
 
-    public function require(string $key): BackupRestoreProvider
+    public function require(string $key): BackupRestoreProviderDescriptor
     {
         try {
             Contract::qualifiedKey($key);

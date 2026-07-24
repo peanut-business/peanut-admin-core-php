@@ -12,7 +12,7 @@ final class TaskJobStatusProjection
 {
     public static function fromRecord(JobRecord $record): OpsTask
     {
-        if (!str_starts_with($record->taskType, 'ops.')) {
+        if (!OpsTask::supportsTaskType($record->taskType)) {
             throw OpsConsoleException::taskNotFound();
         }
         try {

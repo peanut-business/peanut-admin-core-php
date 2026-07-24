@@ -25,8 +25,8 @@ final readonly class OpsTaskService
         $this->assertAllowed($context, Package::BACKUP_PERMISSION);
         $provider = $this->providers->require($providerKey);
         return $this->dispatch($context, $provider, Package::BACKUP_TASK_TYPE, [
-            'provider_key' => $provider->key(),
-        ], $provider->backupHandlerKey(), $idempotencyKey, 'platform.ops.backup.submitted', 'backup.submit');
+            'provider_key' => $provider->key,
+        ], $provider->backupHandlerKey, $idempotencyKey, 'platform.ops.backup.submitted', 'backup.submit');
     }
 
     public function submitRestore(
@@ -44,14 +44,14 @@ final readonly class OpsTaskService
         } catch (InvalidArgumentException) {
             throw OpsConsoleException::restoreTargetInvalid();
         }
-        if (!in_array($targetKey, $provider->restoreTargetKeys(), true)) {
+        if (!in_array($targetKey, $provider->restoreTargetKeys, true)) {
             throw OpsConsoleException::restoreTargetInvalid();
         }
         return $this->dispatch($context, $provider, Package::RESTORE_TASK_TYPE, [
-            'provider_key' => $provider->key(),
+            'provider_key' => $provider->key,
             'backup_reference_key' => $backupReferenceKey,
             'target_key' => $targetKey,
-        ], $provider->restoreHandlerKey(), $idempotencyKey, 'platform.ops.restore.submitted', 'restore.submit');
+        ], $provider->restoreHandlerKey, $idempotencyKey, 'platform.ops.restore.submitted', 'restore.submit');
     }
 
     public function task(PlatformContext $context, string $taskKey): OpsTask
@@ -72,7 +72,7 @@ final readonly class OpsTaskService
     /** @param array<string, string> $payload */
     private function dispatch(
         PlatformContext $context,
-        BackupRestoreProvider $provider,
+        BackupRestoreProviderDescriptor $provider,
         string $taskType,
         array $payload,
         string $handlerKey,
@@ -91,7 +91,7 @@ final readonly class OpsTaskService
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
         ));
         $audit = new OpsAuditEvent($eventType, $action, array_filter([
-            'provider_key' => $provider->key(),
+            'provider_key' => $provider->key,
             'target_key' => $payload['target_key'] ?? null,
             'idempotency_digest' => $idempotencyDigest,
             'request_digest' => $requestDigest,
@@ -99,7 +99,7 @@ final readonly class OpsTaskService
         try {
             return $this->dispatcher->dispatch($context, new OpsTaskSubmission(
                 $taskType, $handlerKey, $payload, $idempotencyDigest, $requestDigest,
-                $taskType . '.' . $provider->key(), $provider->maximumAttempts(), $audit,
+                $taskType . '.' . $provider->key, $provider->maximumAttempts, $audit,
             ));
         } catch (OpsConsoleException $exception) {
             throw $exception;

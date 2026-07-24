@@ -25,7 +25,15 @@ final readonly class MaintenanceService
     {
         $this->assertAllowed($context, Package::READ_PERMISSION);
         try {
-            return $this->store->current($context);
+            $window = $this->store->current($context);
+            return $window === null ? null : new MaintenanceWindow(
+                $window->maintenanceKey,
+                $window->state,
+                $window->reasonKey,
+                $window->startsAt,
+                $window->endsAt,
+                $window->revision,
+            );
         } catch (OpsConsoleException $exception) {
             throw $exception;
         } catch (Throwable) {
@@ -52,8 +60,10 @@ final readonly class MaintenanceService
         } catch (Throwable) {
             throw OpsConsoleException::maintenanceInvalid();
         }
-        $duration = $end->getTimestamp() - $start->getTimestamp();
-        if ($duration < 1 || $duration > 86400) throw OpsConsoleException::maintenanceInvalid();
+        $startMilliseconds = $start->getTimestamp() * 1000 + (int) $start->format('v');
+        $endMilliseconds = $end->getTimestamp() * 1000 + (int) $end->format('v');
+        $duration = $endMilliseconds - $startMilliseconds;
+        if ($duration < 1 || $duration > 86400000) throw OpsConsoleException::maintenanceInvalid();
         [$idempotencyDigest, $requestDigest] = $this->digests($idempotencyKey, [
             'reason_key' => $reason, 'starts_at' => $startsAt, 'ends_at' => $endsAt,
             'expected_revision' => $expectedRevision,

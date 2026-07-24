@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\OpsConsole\Task;
 
 use InvalidArgumentException;
+use PeanutAdmin\OpsConsole\Package;
 use PeanutAdmin\OpsConsole\Support\Contract;
 
 final readonly class OpsTask
@@ -23,8 +24,8 @@ final readonly class OpsTask
         public ?string $completedAt,
     ) {
         Contract::opaqueKey($taskKey, 'job_');
-        Contract::qualifiedKey($taskType);
-        if (!in_array($status, ['queued', 'running', 'succeeded', 'dead', 'cancelled'], true)
+        if (!self::supportsTaskType($taskType)
+            || !in_array($status, ['queued', 'running', 'succeeded', 'dead', 'cancelled'], true)
             || $attemptCount < 0 || $maximumAttempts < 1 || $maximumAttempts > 10
             || $attemptCount > $maximumAttempts || $revision < 1
             || (in_array($status, ['succeeded', 'dead', 'cancelled'], true) !== ($completedAt !== null))
@@ -36,6 +37,11 @@ final readonly class OpsTask
         Contract::instant($createdAt);
         Contract::instant($updatedAt);
         if ($completedAt !== null) Contract::instant($completedAt);
+    }
+
+    public static function supportsTaskType(string $taskType): bool
+    {
+        return in_array($taskType, [Package::BACKUP_TASK_TYPE, Package::RESTORE_TASK_TYPE], true);
     }
 
     /** @return array<string, int|string|null> */
