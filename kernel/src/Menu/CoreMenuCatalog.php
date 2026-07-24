@@ -25,6 +25,7 @@ final class CoreMenuCatalog
             new MenuDefinition('platform.governance.workbench', 'platform', 'platform', 'platform.governance', 'page', '权限治理', 'platform.governance.workbench', '/platform/governance', 'platform.governance.workbench', 'platform.role.read', ['platform-web'], 14, 'SlidersHorizontal'),
             new MenuDefinition('platform.audit.list', 'platform', 'platform', 'platform.governance', 'page', '平台审计', 'platform.audit.list', '/platform/audit', 'platform.audit.list', 'platform.audit.read', ['platform-web'], 15, 'ScrollText'),
             new MenuDefinition('platform.upgrade.status', 'platform', 'platform', 'platform.governance', 'page', '版本与升级', 'platform.upgrade.status', '/platform/upgrade', 'platform.upgrade.status', 'platform.upgrade.read', ['platform-web'], 16, 'ArrowUpCircle'),
+            new MenuDefinition('platform.ops.console', 'platform', 'platform', 'platform.governance', 'page', '运维控制台', 'platform.ops.console', '/platform/ops', 'platform.ops.console', 'platform.ops.read', ['platform-web'], 17, 'Activity'),
         ];
     }
 

@@ -142,7 +142,7 @@ final readonly class AtomicOperationAdapter
             $this->idempotency->completeTenant(
                 $record->id,
                 $result->status,
-                $result->body,
+                $result->idempotencyBody ?? $result->body,
                 $result->resourceType,
                 $result->resourceId,
             );
@@ -151,7 +151,7 @@ final readonly class AtomicOperationAdapter
         $this->idempotency->completePlatform(
             $record->id,
             $result->status,
-            $result->body,
+            $result->idempotencyBody ?? $result->body,
             $result->resourceType,
             $result->resourceId,
         );

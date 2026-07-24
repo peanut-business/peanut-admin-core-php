@@ -11,6 +11,9 @@ final readonly class ExternalOperationResult
     /** @var array<string, bool|int|string|null> */
     public array $auditMetadata;
 
+    /** @var array<string, string> */
+    public array $responseHeaders;
+
     /**
      * @param array<string, mixed> $body
      * @param array<string, mixed> $auditMetadata
@@ -23,6 +26,8 @@ final readonly class ExternalOperationResult
         array $auditMetadata = [],
         public ?string $resourceType = null,
         public ?string $resourceId = null,
+        public ?array $idempotencyBody = null,
+        array $responseHeaders = [],
     ) {
         if ($status < 200 || $status > 299) {
             throw new InvalidArgumentException('Atomic operation result must be successful.');
@@ -41,10 +46,17 @@ final readonly class ExternalOperationResult
             $normalized[$key] = $value;
         }
         $this->auditMetadata = $normalized;
+        foreach ($responseHeaders as $name => $value) {
+            if (!is_string($name) || !is_string($value) || preg_match('/^[A-Za-z][A-Za-z0-9-]*$/D', $name) !== 1
+                || preg_match('/[\r\n]/', $value) === 1) {
+                throw new InvalidArgumentException('Invalid atomic operation response header.');
+            }
+        }
+        $this->responseHeaders = $responseHeaders;
     }
 
     public function response(): ExternalOperationResponse
     {
-        return new ExternalOperationResponse($this->status, $this->body);
+        return new ExternalOperationResponse($this->status, $this->body, headers: $this->responseHeaders);
     }
 }

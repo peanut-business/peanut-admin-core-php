@@ -55,6 +55,11 @@ final class CorePermissionCatalog
         'platform.permission.read',
         'platform.audit.read',
         'platform.upgrade.read',
+        'platform.ops.read',
+        'platform.ops.backup.manage',
+        'platform.ops.restore.manage',
+        'platform.ops.maintenance.manage',
+        'platform.ops.logs.read',
     ];
 
     private function __construct() {}

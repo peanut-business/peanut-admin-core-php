@@ -527,6 +527,62 @@ CREATE TABLE `pa_auth_security_event` (
   CONSTRAINT `chk_auth_event_outcome` CHECK (`outcome` IN ('success', 'denied', 'error'))
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 SQL,
+        'pa_ops_task' => <<<'SQL'
+CREATE TABLE `pa_ops_task` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `task_key` CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `task_type` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `handler_key` VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `payload_json` JSON NOT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'queued',
+  `attempt_count` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `max_attempts` TINYINT UNSIGNED NOT NULL,
+  `revision` BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  `last_error_code` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  `idempotency_digest` CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `request_digest` CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `concurrency_key` VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `submitted_by_operator_id` BIGINT UNSIGNED NOT NULL,
+  `available_at` DATETIME(3) NOT NULL,
+  `created_at` DATETIME(3) NOT NULL,
+  `updated_at` DATETIME(3) NOT NULL,
+  `completed_at` DATETIME(3) NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_ops_task_key` (`task_key`),
+  UNIQUE KEY `uk_ops_task_idempotency` (`submitted_by_operator_id`, `idempotency_digest`),
+  KEY `idx_ops_task_status` (`status`, `available_at`, `id`),
+  KEY `idx_ops_task_concurrency` (`concurrency_key`, `status`, `id`),
+  CONSTRAINT `fk_ops_task_operator` FOREIGN KEY (`submitted_by_operator_id`) REFERENCES `pa_platform_operator` (`id`) ON DELETE RESTRICT,
+  CONSTRAINT `chk_ops_task_type` CHECK (`task_type` IN ('ops.backup.create','ops.restore.verify')),
+  CONSTRAINT `chk_ops_task_status` CHECK (`status` IN ('queued','running','succeeded','dead','cancelled')),
+  CONSTRAINT `chk_ops_task_attempts` CHECK (`max_attempts` BETWEEN 1 AND 10 AND `attempt_count` <= `max_attempts`),
+  CONSTRAINT `chk_ops_task_completion` CHECK ((`status` IN ('succeeded','dead','cancelled')) = (`completed_at` IS NOT NULL))
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+SQL,
+        'pa_ops_maintenance_window' => <<<'SQL'
+CREATE TABLE `pa_ops_maintenance_window` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `maintenance_key` CHAR(44) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `state` VARCHAR(16) NOT NULL,
+  `reason_key` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `starts_at` DATETIME(3) NOT NULL,
+  `ends_at` DATETIME(3) NOT NULL,
+  `revision` BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  `idempotency_digest` CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `request_digest` CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `created_by_operator_id` BIGINT UNSIGNED NOT NULL,
+  `created_at` DATETIME(3) NOT NULL,
+  `updated_at` DATETIME(3) NOT NULL,
+  `closed_at` DATETIME(3) NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_ops_maintenance_key` (`maintenance_key`),
+  UNIQUE KEY `uk_ops_maintenance_idempotency` (`created_by_operator_id`, `idempotency_digest`),
+  KEY `idx_ops_maintenance_state` (`state`, `starts_at`, `id`),
+  CONSTRAINT `fk_ops_maintenance_operator` FOREIGN KEY (`created_by_operator_id`) REFERENCES `pa_platform_operator` (`id`) ON DELETE RESTRICT,
+  CONSTRAINT `chk_ops_maintenance_state` CHECK (`state` IN ('scheduled','active','closed')),
+  CONSTRAINT `chk_ops_maintenance_range` CHECK (`ends_at` > `starts_at`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+SQL,
     ];
 
     private function __construct() {}
