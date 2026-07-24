@@ -8,8 +8,11 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityException;
+use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityPage;
 use PeanutAdmin\IntegrationSecurity\Application\MachineIdentity;
 use PeanutAdmin\IntegrationSecurity\Application\SessionDevice;
+use PeanutAdmin\IntegrationSecurity\Application\WebhookAttemptRecord;
+use PeanutAdmin\IntegrationSecurity\Application\WebhookDeliveryRecord;
 use PeanutAdmin\IntegrationSecurity\Application\WebhookEndpoint;
 use PeanutAdmin\IntegrationSecurity\Webhook\TrustedWebhookEvent;
 use PeanutAdmin\IntegrationSecurity\Webhook\WebhookDelivery;
@@ -229,9 +232,21 @@ SQL, [
     {
         if ($leaseSeconds < 5 || $leaseSeconds > 300 || preg_match('/^[0-9a-f]{64}$/D', $leaseDigest) !== 1) throw IntegrationSecurityException::invalid();
         return $this->transaction(function () use ($tenantId, $leaseDigest, $leaseSeconds, $now): ?WebhookDelivery {
-            $this->execute("UPDATE pa_integration_webhook_delivery SET status = 'retryable', lease_digest = NULL, lease_expires_at = NULL, last_error_code = 'WEBHOOK_LEASE_EXPIRED', available_at = :available_at, updated_at = :updated_at WHERE tenant_id = :tenant_id AND status = 'delivering' AND lease_expires_at <= :lease_cutoff", [
-                'tenant_id' => $tenantId, 'available_at' => $this->format($now), 'updated_at' => $this->format($now), 'lease_cutoff' => $this->format($now),
+            $expired = $this->fetchAll('SELECT id, attempt_count FROM pa_integration_webhook_delivery WHERE tenant_id = :tenant_id AND status = \'delivering\' AND lease_expires_at <= :lease_cutoff ORDER BY id FOR UPDATE', [
+                'tenant_id' => $tenantId, 'lease_cutoff' => $this->format($now),
             ]);
+            foreach ($expired as $lease) {
+                $attempt = (int) $lease['attempt_count'];
+                $status = $attempt < 8 ? 'retryable' : 'permanent_failed';
+                $this->execute('INSERT INTO pa_integration_webhook_attempt (tenant_id, delivery_id, attempt_number, outcome, response_status, error_code, duration_ms, attempted_at) VALUES (:tenant_id, :delivery_id, :attempt, :outcome, NULL, \'WEBHOOK_LEASE_EXPIRED\', 0, :now)', [
+                    'tenant_id' => $tenantId, 'delivery_id' => $lease['id'], 'attempt' => $attempt,
+                    'outcome' => $status, 'now' => $this->format($now),
+                ]);
+                $this->execute('UPDATE pa_integration_webhook_delivery SET status = :status, lease_digest = NULL, lease_expires_at = NULL, last_error_code = \'WEBHOOK_LEASE_EXPIRED\', available_at = :available_at, updated_at = :updated_at WHERE tenant_id = :tenant_id AND id = :id AND status = \'delivering\'', [
+                    'status' => $status, 'available_at' => $this->format($now), 'updated_at' => $this->format($now),
+                    'tenant_id' => $tenantId, 'id' => $lease['id'],
+                ]);
+            }
             $row = $this->fetchOne(<<<'SQL'
 SELECT d.*, e.endpoint_key, e.url, e.secret_ciphertext, e.secret_key_id
 FROM pa_integration_webhook_delivery d
@@ -300,6 +315,58 @@ SQL, ['tenant_id' => $tenantId, 'now' => $this->format($now)]);
             $deliveries = $this->execute("DELETE FROM pa_integration_webhook_delivery WHERE status IN ('delivered', 'permanent_failed') AND updated_at <= :cutoff", ['cutoff' => $this->format($evidenceCutoff)]);
             return ['payloads_cleared' => $payloads, 'attempts_deleted' => $attempts, 'deliveries_deleted' => $deliveries];
         });
+    }
+
+    public function deliveryRecords(int $tenantId, int $page, int $pageSize): IntegrationSecurityPage
+    {
+        $offset = ($page - 1) * $pageSize;
+        $count = $this->pdo->prepare('SELECT COUNT(*) FROM pa_integration_webhook_delivery WHERE tenant_id = :tenant_id');
+        $count->execute(['tenant_id' => $tenantId]);
+        $statement = $this->pdo->prepare(<<<'SQL'
+SELECT d.delivery_key, e.endpoint_key, d.event_type, d.status, d.attempt_count,
+       d.last_status_code, d.last_error_code, d.created_at, d.updated_at, d.delivered_at
+FROM pa_integration_webhook_delivery d
+JOIN pa_integration_webhook_endpoint e ON e.tenant_id = d.tenant_id AND e.id = d.endpoint_id
+WHERE d.tenant_id = :tenant_id
+ORDER BY d.created_at DESC, d.id DESC
+LIMIT :page_size OFFSET :offset
+SQL);
+        $statement->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
+        $statement->bindValue(':page_size', $pageSize, PDO::PARAM_INT);
+        $statement->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $statement->execute();
+        $items = array_map(fn(array $row): WebhookDeliveryRecord => new WebhookDeliveryRecord(
+            (string) $row['delivery_key'], (string) $row['endpoint_key'], (string) $row['event_type'],
+            (string) $row['status'], (int) $row['attempt_count'],
+            $row['last_status_code'] === null ? null : (int) $row['last_status_code'],
+            $row['last_error_code'] === null ? null : (string) $row['last_error_code'],
+            $this->instant((string) $row['created_at']), $this->instant((string) $row['updated_at']),
+            $row['delivered_at'] === null ? null : $this->instant((string) $row['delivered_at']),
+        ), $statement->fetchAll(PDO::FETCH_ASSOC));
+        return new IntegrationSecurityPage($items, $page, $pageSize, (int) $count->fetchColumn());
+    }
+
+    public function deliveryAttemptRecords(int $tenantId, string $deliveryKey, int $page, int $pageSize): IntegrationSecurityPage
+    {
+        $delivery = $this->fetchOne('SELECT id FROM pa_integration_webhook_delivery WHERE tenant_id = :tenant_id AND delivery_key = :delivery_key', [
+            'tenant_id' => $tenantId, 'delivery_key' => $deliveryKey,
+        ]);
+        if ($delivery === null) return new IntegrationSecurityPage([], $page, $pageSize, 0);
+        $count = $this->pdo->prepare('SELECT COUNT(*) FROM pa_integration_webhook_attempt WHERE tenant_id = :tenant_id AND delivery_id = :delivery_id');
+        $count->execute(['tenant_id' => $tenantId, 'delivery_id' => $delivery['id']]);
+        $statement = $this->pdo->prepare('SELECT attempt_number, outcome, response_status, error_code, duration_ms, attempted_at FROM pa_integration_webhook_attempt WHERE tenant_id = :tenant_id AND delivery_id = :delivery_id ORDER BY attempt_number DESC LIMIT :page_size OFFSET :offset');
+        $statement->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
+        $statement->bindValue(':delivery_id', (int) $delivery['id'], PDO::PARAM_INT);
+        $statement->bindValue(':page_size', $pageSize, PDO::PARAM_INT);
+        $statement->bindValue(':offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
+        $statement->execute();
+        $items = array_map(fn(array $row): WebhookAttemptRecord => new WebhookAttemptRecord(
+            (int) $row['attempt_number'], (string) $row['outcome'],
+            $row['response_status'] === null ? null : (int) $row['response_status'],
+            $row['error_code'] === null ? null : (string) $row['error_code'],
+            (int) $row['duration_ms'], $this->instant((string) $row['attempted_at']),
+        ), $statement->fetchAll(PDO::FETCH_ASSOC));
+        return new IntegrationSecurityPage($items, $page, $pageSize, (int) $count->fetchColumn());
     }
 
     public function sessionDevices(int $tenantId, int $accountId, string $currentSessionKey): array
@@ -425,5 +492,11 @@ SQL, ['tenant_id' => $tenantId, 'now' => $this->format($now)]);
     private function fetchOne(string $sql, array $parameters): ?array
     {
         $statement = $this->pdo->prepare($sql); $statement->execute($parameters); $row = $statement->fetch(PDO::FETCH_ASSOC); return is_array($row) ? $row : null;
+    }
+
+    /** @param array<string, mixed> $parameters @return list<array<string, mixed>> */
+    private function fetchAll(string $sql, array $parameters): array
+    {
+        $statement = $this->pdo->prepare($sql); $statement->execute($parameters); return $statement->fetchAll(PDO::FETCH_ASSOC);
     }
 }

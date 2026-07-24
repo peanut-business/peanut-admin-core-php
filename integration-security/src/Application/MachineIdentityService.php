@@ -11,13 +11,17 @@ use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 
 final readonly class MachineIdentityService
 {
-    public function __construct(private IntegrationSecurityRepository $repository) {}
+    public function __construct(
+        private IntegrationSecurityRepository $repository,
+        private MachineScopeGrantPolicy $scopePolicy,
+    ) {}
 
     /** @param list<string> $scopes */
     public function create(AuthorizedOperationContext $context, string $name, array $scopes, ?DateTimeImmutable $expiresAt): ProvisionedMachineIdentity
     {
         $this->assertOperation($context, 'machine-manage');
         [$name, $scopes, $expiresAt] = $this->validate($name, $scopes, $expiresAt);
+        $this->scopePolicy->assertGrantable($context, $scopes);
         $token = self::token();
         $identityKey = 'machine_' . bin2hex(random_bytes(16));
         $identity = $this->repository->createMachine(
@@ -51,6 +55,7 @@ final readonly class MachineIdentityService
             if (hash_equals($identity->identityKey, $identityKey)) $current = $identity;
         }
         if (!$current instanceof MachineIdentity) throw IntegrationSecurityException::machineNotFound();
+        $this->scopePolicy->assertGrantable($context, $current->scopes);
         $token = self::token();
         $successor = $this->repository->rotateMachine(
             $context->tenantContext,
@@ -80,6 +85,7 @@ final readonly class MachineIdentityService
     {
         if (preg_match('/^pa_mi_[A-Za-z0-9_-]{43}$/D', $token) !== 1) throw IntegrationSecurityException::tokenInvalid();
         $requiredScopes = $this->scopes($requiredScopes, true);
+        $this->scopePolicy->assertKnown($requiredScopes);
         $digest = hash('sha256', $token);
         $row = $this->repository->machineByDigest($digest);
         if ($row === null || $row['status'] !== 'active') throw IntegrationSecurityException::tokenInvalid();

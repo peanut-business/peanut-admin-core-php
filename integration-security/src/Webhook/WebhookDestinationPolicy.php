@@ -8,6 +8,21 @@ use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityException;
 
 final readonly class WebhookDestinationPolicy
 {
+    /** @var list<array{string,int}> */
+    private const DENIED_V4 = [
+        ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+        ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+        ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
+        ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
+    ];
+
+    /** @var list<array{string,int}> */
+    private const DENIED_V6 = [
+        ['::', 96], ['::ffff:0:0', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48],
+        ['100::', 64], ['2001::', 23], ['2001:db8::', 32], ['2002::', 16],
+        ['3fff::', 20], ['5f00::', 16], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8],
+    ];
+
     public function __construct(private HostAddressResolver $resolver) {}
 
     public function approve(string $url): WebhookDestination
@@ -25,6 +40,9 @@ final readonly class WebhookDestinationPolicy
             throw IntegrationSecurityException::destinationDenied();
         }
         $host = strtolower(rtrim($parts['host'], '.'));
+        if (str_starts_with($host, '[') && str_ends_with($host, ']')) {
+            $host = substr($host, 1, -1);
+        }
         if ($host === '' || strlen($host) > 253 || str_contains($host, '%')) {
             throw IntegrationSecurityException::destinationDenied();
         }
@@ -67,14 +85,32 @@ final readonly class WebhookDestinationPolicy
 
     private function publicAddress(string $address): string
     {
-        $canonical = filter_var($address, FILTER_VALIDATE_IP);
-        if (!is_string($canonical)) {
+        $address = trim($address);
+        if (str_starts_with($address, '[') && str_ends_with($address, ']')) $address = substr($address, 1, -1);
+        $packed = @inet_pton($address);
+        if (!is_string($packed)) {
             throw IntegrationSecurityException::destinationDenied();
         }
-        $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
-        if (filter_var($canonical, FILTER_VALIDATE_IP, $flags) === false) {
-            throw IntegrationSecurityException::destinationDenied();
+        $ranges = strlen($packed) === 4 ? self::DENIED_V4 : self::DENIED_V6;
+        foreach ($ranges as [$network, $prefix]) {
+            $networkPacked = inet_pton($network);
+            if (is_string($networkPacked) && $this->matchesPrefix($packed, $networkPacked, $prefix)) {
+                throw IntegrationSecurityException::destinationDenied();
+            }
         }
+        $canonical = inet_ntop($packed);
+        if (!is_string($canonical)) throw IntegrationSecurityException::destinationDenied();
         return strtolower($canonical);
+    }
+
+    private function matchesPrefix(string $address, string $network, int $prefix): bool
+    {
+        if (strlen($address) !== strlen($network)) return false;
+        $wholeBytes = intdiv($prefix, 8);
+        if ($wholeBytes > 0 && substr($address, 0, $wholeBytes) !== substr($network, 0, $wholeBytes)) return false;
+        $remaining = $prefix % 8;
+        if ($remaining === 0) return true;
+        $mask = (0xff << (8 - $remaining)) & 0xff;
+        return (ord($address[$wholeBytes]) & $mask) === (ord($network[$wholeBytes]) & $mask);
     }
 }

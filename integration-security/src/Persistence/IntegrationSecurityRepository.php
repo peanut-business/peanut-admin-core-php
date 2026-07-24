@@ -6,6 +6,7 @@ namespace PeanutAdmin\IntegrationSecurity\Persistence;
 
 use DateTimeImmutable;
 use PeanutAdmin\IntegrationSecurity\Application\MachineIdentity;
+use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityPage;
 use PeanutAdmin\IntegrationSecurity\Application\SessionDevice;
 use PeanutAdmin\IntegrationSecurity\Application\WebhookEndpoint;
 use PeanutAdmin\IntegrationSecurity\Webhook\TrustedWebhookEvent;
@@ -40,6 +41,8 @@ interface IntegrationSecurityRepository
     public function completeDelivery(WebhookDelivery $delivery, int $statusCode, int $durationMs, DateTimeImmutable $now): void;
     public function failDelivery(WebhookDelivery $delivery, string $safeCode, bool $retryable, ?int $statusCode, int $durationMs, DateTimeImmutable $now): void;
     public function purgeExpiredDeliveryData(DateTimeImmutable $payloadCutoff, DateTimeImmutable $evidenceCutoff): array;
+    public function deliveryRecords(int $tenantId, int $page, int $pageSize): IntegrationSecurityPage;
+    public function deliveryAttemptRecords(int $tenantId, string $deliveryKey, int $page, int $pageSize): IntegrationSecurityPage;
 
     /** @return list<SessionDevice> */
     public function sessionDevices(int $tenantId, int $accountId, string $currentSessionKey): array;

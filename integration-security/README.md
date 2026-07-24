@@ -20,6 +20,7 @@ that context. I05 binds these operations to dedicated permissions:
 | `machine-manage` | `peanut.integration-security.machine.manage` |
 | `webhook-read` | `peanut.integration-security.webhook.read` |
 | `webhook-manage` | `peanut.integration-security.webhook.manage` |
+| `delivery-read` | `peanut.integration-security.delivery.read` |
 | `session-read` | `peanut.integration-security.session.read` |
 | `session-revoke` | `peanut.integration-security.session.revoke` |
 
@@ -37,6 +38,8 @@ I05 exposes only these Tenant-audience operations under `/api/v1`:
 - `GET|POST /integration-security/webhooks`,
   `POST /integration-security/webhooks/{endpoint_key}/rotate-secret`, and
   `DELETE /integration-security/webhooks/{endpoint_key}`;
+- `GET /integration-security/deliveries` and
+  `GET /integration-security/deliveries/{delivery_key}/attempts`;
 - `GET /integration-security/sessions` and
   `POST /integration-security/sessions/{session_key}/revoke`.
 
@@ -47,6 +50,9 @@ existing same-PDO idempotency primitive; exact replay returns the original
 safe response, while a changed payload conflicts. A replay response can never
 re-disclose a machine token or signing secret, so credential creation/rotation
 requires the original successful response to be captured by the caller.
+The Admin route uses `peanut.integration-security.access`; machine, Webhook,
+delivery, and session data then load independently under their own read
+permissions, so denial or failure of one surface cannot block the others.
 
 ## Schema and lifecycle
 
@@ -68,7 +74,9 @@ Module-owned migration using `Database\\Schema`.
   canonical payload, digest, state, bounded attempt count, availability/lease,
   safe result code, payload expiry, and timestamps. States are
   `pending -> delivering -> delivered`, `delivering -> retryable -> delivering`,
-  or `delivering -> permanent_failed`; an expired lease becomes `retryable`.
+  or `delivering -> permanent_failed`. An expired lease records a redacted
+  `WEBHOOK_LEASE_EXPIRED` attempt in the same transaction; attempts below eight
+  become retryable and attempt eight becomes terminal.
   Maximum attempts are eight. `(tenant_id, endpoint_id, event_key)` is unique.
 - `pa_integration_webhook_attempt`: immutable redacted attempt evidence with
   outcome, HTTP status, safe error code, duration, and timestamp. It contains no
@@ -91,7 +99,11 @@ create or rotation; only a SHA-256 digest, non-secret prefix, and last four are
 persisted. Authentication checks format, active state, expiry, Tenant-bound
 machine audience, and every requested scope. Rotation atomically creates the
 successor and terminally rotates the predecessor; revoke terminally invalidates
-the digest. Tokens and secrets are never serializable through ordinary records.
+the digest. A trusted feature scope catalog rejects unknown scopes, while a
+Host-composed `MachineScopeGrantResolver` derives the scopes the current Tenant
+member may grant. Callers never submit a grant list, and create and rotation
+both re-evaluate current issuer grants. Tokens and secrets are never
+serializable through ordinary records.
 
 Webhook URLs require HTTPS on port 443, contain no userinfo or fragment, and
 use an ASCII DNS name or IP literal. `localhost`, local/internal suffixes,
@@ -101,6 +113,10 @@ answers must be public. A validated destination carries the approved IP set to
 the transport; adapters must connect only to that set with the original Host
 and TLS SNI, disable redirects, and perform no independent fallback lookup.
 Every send revalidates DNS. A 3xx response is a permanent security failure.
+Address classification uses explicit IPv4 and IPv6 CIDR deny ranges covering
+loopback, private, link-local, metadata, carrier NAT, translation,
+documentation, benchmark, multicast, reserved, and unspecified space. One
+unacceptable DNS answer rejects the entire destination.
 
 The signature input is `v1.<unix_timestamp>.<delivery_key>.<payload_sha256>` and
 the header is `v1=<lowercase HMAC-SHA256>`. The delivery key is also the

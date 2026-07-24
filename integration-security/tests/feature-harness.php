@@ -18,6 +18,10 @@ spl_autoload_register(static function (string $class) use ($root): void {
 use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityException;
 use PeanutAdmin\IntegrationSecurity\Application\MachineIdentity;
 use PeanutAdmin\IntegrationSecurity\Application\MachineIdentityService;
+use PeanutAdmin\IntegrationSecurity\Application\MachineScopeCatalog;
+use PeanutAdmin\IntegrationSecurity\Application\MachineScopeGrantPolicy;
+use PeanutAdmin\IntegrationSecurity\Application\MachineScopeGrantResolver;
+use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityPage;
 use PeanutAdmin\IntegrationSecurity\Application\SessionDevice;
 use PeanutAdmin\IntegrationSecurity\Application\SessionSecurityService;
 use PeanutAdmin\IntegrationSecurity\Application\WebhookEndpoint;
@@ -111,6 +115,8 @@ final class MemoryRepository implements IntegrationSecurityRepository
     public function completeDelivery(WebhookDelivery $delivery, int $statusCode, int $durationMs, DateTimeImmutable $now): void { $this->completed = true; }
     public function failDelivery(WebhookDelivery $delivery, string $safeCode, bool $retryable, ?int $statusCode, int $durationMs, DateTimeImmutable $now): void { $this->failure = [$safeCode, $retryable, $statusCode]; }
     public function purgeExpiredDeliveryData(DateTimeImmutable $payloadCutoff, DateTimeImmutable $evidenceCutoff): array { return []; }
+    public function deliveryRecords(int $tenantId, int $page, int $pageSize): IntegrationSecurityPage { return new IntegrationSecurityPage([], $page, $pageSize, 0); }
+    public function deliveryAttemptRecords(int $tenantId, string $deliveryKey, int $page, int $pageSize): IntegrationSecurityPage { return new IntegrationSecurityPage([], $page, $pageSize, 0); }
     public function sessionDevices(int $tenantId, int $accountId, string $currentSessionKey): array { return [new SessionDevice($currentSessionKey, 'admin-web', 'active', true, '203.0.113.*', str_repeat('a', 12), '2026-07-24T10:00:00.000Z', '2026-07-24T10:00:00.000Z', '2026-07-25T10:00:00.000Z', null)]; }
     public function revokeOwnSession(TenantContext $context, string $sessionKey): SessionDevice { return new SessionDevice($sessionKey, 'admin-web', 'revoked', hash_equals($context->sessionKey, $sessionKey), null, null, '2026-07-24T10:00:00.000Z', '2026-07-24T10:00:00.000Z', '2026-07-25T10:00:00.000Z', '2026-07-24T10:01:00.000Z'); }
 }
@@ -123,6 +129,15 @@ expectCode('WEBHOOK_DESTINATION_DENIED', fn() => $policy->approve('http://hooks.
 expectCode('WEBHOOK_DESTINATION_DENIED', fn() => $policy->approve('https://localhost/'), 'localhost denied');
 expectCode('WEBHOOK_DESTINATION_DENIED', fn() => $policy->approve('https://169.254.169.254/latest/meta-data'), 'metadata address denied');
 expectCode('WEBHOOK_DESTINATION_DENIED', fn() => $policy->approve('https://mixed.example.com/'), 'mixed DNS denied');
+foreach ([
+    '0.1.2.3', '10.1.2.3', '100.64.0.1', '127.0.0.1', '169.254.169.254', '172.31.0.1',
+    '192.0.0.1', '192.0.2.1', '192.88.99.1', '192.168.1.1', '198.18.0.1', '198.51.100.1',
+    '203.0.113.1', '224.0.0.1', '240.0.0.1', '::1', '::ffff:192.0.2.1', '64:ff9b::0808:0808',
+    '64:ff9b:1::1', '100::1', '2001::1', '2001:db8::1', '2002::1', '3fff::1', '5f00::1',
+    'fc00::1', 'fe80::1', 'ff00::1',
+] as $deniedAddress) {
+    expectCode('WEBHOOK_DESTINATION_DENIED', fn() => $policy->approve('https://' . (str_contains($deniedAddress, ':') ? '[' . $deniedAddress . ']' : $deniedAddress) . '/'), 'CIDR denied ' . $deniedAddress);
+}
 
 $protector = new AesGcmWebhookSecretProtector('test-key', base64_encode(str_repeat('k', 32)));
 $binding = '101:webhook_' . str_repeat('b', 32);
@@ -133,7 +148,15 @@ expectCode('WEBHOOK_SECRET_INVALID', fn() => $protector->open($sealed['ciphertex
 expectCode('WEBHOOK_SECRET_INVALID', fn() => $protector->open($sealed['ciphertext'], 'test-key', '102:webhook_' . str_repeat('b', 32)), 'row binding fails');
 
 $repository = new MemoryRepository();
-$machines = new MachineIdentityService($repository);
+$scopeCatalog = new MachineScopeCatalog(['data.export.read', 'data.export.write', 'webhook.publish']);
+$scopeResolver = new class implements MachineScopeGrantResolver {
+    public function grantableScopes(AuthorizedOperationContext $context): array
+    {
+        return $context->tenantContext->tenantId === 101 && $context->tenantContext->memberId === 501
+            ? ['data.export.read', 'data.export.write'] : [];
+    }
+};
+$machines = new MachineIdentityService($repository, new MachineScopeGrantPolicy($scopeCatalog, $scopeResolver));
 $provisioned = $machines->create(context('machine-manage'), 'Export worker', ['data.export.write', 'data.export.read'], new DateTimeImmutable('2030-01-01T00:00:00Z'));
 truth(str_starts_with($provisioned->token, 'pa_mi_'), 'token disclosed once');
 truth(!str_contains(json_encode($provisioned->identity, JSON_THROW_ON_ERROR), $provisioned->token), 'ordinary identity redacts token');
@@ -141,7 +164,10 @@ same(['data.export.read', 'data.export.write'], $provisioned->identity->scopes, 
 $principal = $machines->authenticate($provisioned->token, ['data.export.read'], new DateTimeImmutable('2026-07-24T10:00:00Z'));
 same('machine', $principal->audience, 'machine audience'); same(101, $principal->tenantId, 'machine tenant');
 expectCode('MACHINE_SCOPE_DENIED', fn() => $machines->authenticate($provisioned->token, ['admin.full'], new DateTimeImmutable('2026-07-24T10:00:00Z')), 'scope denied');
+expectCode('INTEGRATION_INPUT_INVALID', fn() => $machines->create(context('machine-manage'), 'Unknown scope', ['admin.full'], null), 'unknown grant scope rejected');
+expectCode('MACHINE_SCOPE_DENIED', fn() => $machines->create(context('machine-manage', 102, 302, 502), 'Untrusted issuer', ['data.export.read'], null), 'issuer grants derived from context');
 expectCode('INTEGRATION_PERMISSION_DENIED', fn() => $machines->create(context('machine-read'), 'Denied', ['data.export.read'], null), 'operation permission fail closed');
+expectCode('MACHINE_SCOPE_DENIED', fn() => $machines->rotate(context('machine-manage', 101, 302, 502, '01J00000000000000000000001'), $provisioned->identity->identityKey, 1), 'rotation rechecks issuer grants');
 $rotated = $machines->rotate(context('machine-manage'), $provisioned->identity->identityKey, 1);
 truth(!hash_equals($provisioned->token, $rotated->token), 'rotation changes token');
 $machines->revoke(context('machine-manage'), $rotated->identity->identityKey, 1);
