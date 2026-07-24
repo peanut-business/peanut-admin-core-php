@@ -31,8 +31,24 @@ final readonly class MachineScopeGrantPolicy
     public function assertKnown(array $required): void
     {
         foreach ($required as $scope) {
-            if (!$this->catalog->contains($scope)) throw IntegrationSecurityException::scopeDenied();
+            if (!$this->valid($scope) || !$this->catalog->contains($scope)) throw IntegrationSecurityException::scopeDenied();
         }
+    }
+
+    /** @param list<string> $persisted */
+    public function assertPersisted(array $persisted): void
+    {
+        if ($persisted === [] || count($persisted) > 32) throw IntegrationSecurityException::scopeDenied();
+        $normalized = [];
+        foreach ($persisted as $scope) {
+            if (!$this->valid($scope) || !$this->catalog->contains($scope) || isset($normalized[$scope])) {
+                throw IntegrationSecurityException::scopeDenied();
+            }
+            $normalized[$scope] = true;
+        }
+        $expected = array_keys($normalized);
+        sort($expected, SORT_STRING);
+        if ($persisted !== $expected) throw IntegrationSecurityException::scopeDenied();
     }
 
     private function valid(mixed $scope): bool

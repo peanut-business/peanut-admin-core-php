@@ -102,8 +102,10 @@ successor and terminally rotates the predecessor; revoke terminally invalidates
 the digest. A trusted feature scope catalog rejects unknown scopes, while a
 Host-composed `MachineScopeGrantResolver` derives the scopes the current Tenant
 member may grant. Callers never submit a grant list, and create and rotation
-both re-evaluate current issuer grants. Tokens and secrets are never
-serializable through ordinary records.
+both re-evaluate current issuer grants. Authentication revalidates every
+persisted scope against the current trusted catalog before recording use or
+creating a principal, so removed or stale scopes fail closed. Tokens and
+secrets are never serializable through ordinary records.
 
 Webhook URLs require HTTPS on port 443, contain no userinfo or fragment, and
 use an ASCII DNS name or IP literal. `localhost`, local/internal suffixes,

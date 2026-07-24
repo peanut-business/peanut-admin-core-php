@@ -69,6 +69,7 @@ final class MemoryRepository implements IntegrationSecurityRepository
     public ?WebhookDelivery $delivery = null;
     public ?array $failure = null;
     public bool $completed = false;
+    public int $machineTouches = 0;
     public int $deliveryCount = 0;
     private bool $claimed = false;
 
@@ -81,7 +82,7 @@ final class MemoryRepository implements IntegrationSecurityRepository
     }
     public function machines(int $tenantId): array { return $this->machine === null || $tenantId !== 101 ? [] : [$this->machine]; }
     public function machineByDigest(string $tokenDigest): ?array { return $this->auth !== null && hash_equals($this->auth['digest'], $tokenDigest) ? array_diff_key($this->auth, ['digest' => true]) : null; }
-    public function touchMachine(string $tokenDigest, DateTimeImmutable $now): void {}
+    public function touchMachine(string $tokenDigest, DateTimeImmutable $now): void { ++$this->machineTouches; }
     public function rotateMachine(TenantContext $context, string $identityKey, int $expectedRevision, string $successorKey, string $name, array $scopes, string $tokenPrefix, string $tokenDigest, string $tokenLastFour, ?DateTimeImmutable $expiresAt): MachineIdentity
     {
         if ($this->machine === null || $expectedRevision !== $this->machine->revision) throw IntegrationSecurityException::conflict();
@@ -163,6 +164,10 @@ truth(!str_contains(json_encode($provisioned->identity, JSON_THROW_ON_ERROR), $p
 same(['data.export.read', 'data.export.write'], $provisioned->identity->scopes, 'scopes normalized');
 $principal = $machines->authenticate($provisioned->token, ['data.export.read'], new DateTimeImmutable('2026-07-24T10:00:00Z'));
 same('machine', $principal->audience, 'machine audience'); same(101, $principal->tenantId, 'machine tenant');
+$repository->auth['scopes'] = ['legacy.scope'];
+expectCode('MACHINE_SCOPE_DENIED', fn() => $machines->authenticate($provisioned->token, [], new DateTimeImmutable('2026-07-24T10:00:00Z')), 'persisted stale scope rejected');
+same(1, $repository->machineTouches, 'stale scope rejected before touch');
+$repository->auth['scopes'] = ['data.export.read', 'data.export.write'];
 expectCode('MACHINE_SCOPE_DENIED', fn() => $machines->authenticate($provisioned->token, ['admin.full'], new DateTimeImmutable('2026-07-24T10:00:00Z')), 'scope denied');
 expectCode('INTEGRATION_INPUT_INVALID', fn() => $machines->create(context('machine-manage'), 'Unknown scope', ['admin.full'], null), 'unknown grant scope rejected');
 expectCode('MACHINE_SCOPE_DENIED', fn() => $machines->create(context('machine-manage', 102, 302, 502), 'Untrusted issuer', ['data.export.read'], null), 'issuer grants derived from context');

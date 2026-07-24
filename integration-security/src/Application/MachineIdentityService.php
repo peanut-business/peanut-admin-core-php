@@ -90,6 +90,7 @@ final readonly class MachineIdentityService
         $row = $this->repository->machineByDigest($digest);
         if ($row === null || $row['status'] !== 'active') throw IntegrationSecurityException::tokenInvalid();
         if ($row['expires_at'] !== null && new DateTimeImmutable($row['expires_at']) <= $now) throw IntegrationSecurityException::tokenExpired();
+        $this->scopePolicy->assertPersisted($row['scopes']);
         foreach ($requiredScopes as $scope) {
             if (!in_array($scope, $row['scopes'], true)) throw IntegrationSecurityException::scopeDenied();
         }
