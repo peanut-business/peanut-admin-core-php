@@ -127,11 +127,16 @@ Stable errors are `IMPORT_EXPORT_INVALID`,
 `IMPORT_EXPORT_INTERNAL_ERROR`. Public errors never expose provider classes,
 SQL, paths, cell values, stack traces, or cross-Tenant existence.
 
-Feature events are `tenant.import_export.submitted`, `.started`, `.progress`,
-`.cancel_requested`, `.cancelled`, `.succeeded`, `.failed`, and `.expired`.
+Feature events are `tenant.import_export.submitted`, `.started`, bounded
+`.progress`, `.cancel_requested`, `.cancelled`, `.succeeded`, and `.failed`.
 Metadata is allowlisted to direction, provider key, counts, safe error code,
 retention deadline, and revisions. Raw rows, mapping values, idempotency keys,
 file storage keys, and provider exceptions are prohibited.
+
+The feature-local bulk retention repository does not emit `.expired`: it has no
+trusted per-Tenant actor context. I05 must either run expiry through a
+Tenant-scoped system-audit adapter or explicitly document the host retention
+audit owner; the core does not claim an audit event it cannot attribute safely.
 
 The feature-local Web package owns strict response parsers, a disposable
 Tenant-scoped runtime, import/export submission forms, status/progress,

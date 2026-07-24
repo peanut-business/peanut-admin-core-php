@@ -16,7 +16,7 @@ final readonly class ColumnDefinition
         public bool $requiredOnImport = false,
         public int $maxBytes = 4096,
     ) {
-        if (preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $key) !== 1
+        if (preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $key) !== 1 || preg_match('//u', $heading) !== 1
             || trim($heading) !== $heading || $heading === '' || strlen($heading) > 120
             || str_contains($heading, ',') || str_contains($heading, "\r") || str_contains($heading, "\n")
             || (!$importable && !$exportable) || $maxBytes < 1 || $maxBytes > 65535

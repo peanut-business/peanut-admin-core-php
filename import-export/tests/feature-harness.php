@@ -55,11 +55,12 @@ final class HarnessProvider implements DataProvider
 {
     /** @var list<array<string, string|null>> */
     public array $imported = [];
+    public ?Closure $duringImport = null;
     public function key(): string { return 'test.contacts'; }
-    public function schema(): SchemaDefinition { return new SchemaDefinition('contacts.v1', [new ColumnDefinition('name', 'Name', requiredOnImport: true, maxBytes: 64), new ColumnDefinition('email', 'Email', maxBytes: 120)]); }
+    public function schema(): SchemaDefinition { return new SchemaDefinition('contacts.v1', [new ColumnDefinition('name', 'Name', requiredOnImport: true, maxBytes: 64), new ColumnDefinition('email', 'Email', maxBytes: 120), new ColumnDefinition('formula_header', '=Formula', importable: false)]); }
     public function validateImport(AuthorizedOperationContext $context, array $row): array { return isset($row['email']) && $row['email'] !== null && !str_contains($row['email'], '@') ? [new RowIssue('CONTACT_EMAIL_INVALID', 'email')] : []; }
-    public function importRow(AuthorizedOperationContext $context, array $row, string $idempotencyKey): void { $this->imported[] = $row + ['idempotency' => $idempotencyKey]; }
-    public function exportBatch(AuthorizedOperationContext $context, ?string $cursor, int $limit): ExportBatch { return $cursor === null ? new ExportBatch([['name' => '=Alice', 'email' => 'alice@example.test'], ['name' => 'Bob', 'email' => null]], null) : throw new RuntimeException('unexpected cursor'); }
+    public function importRow(AuthorizedOperationContext $context, array $row, string $idempotencyKey): void { if ($this->duringImport !== null) ($this->duringImport)(); $this->imported[] = $row + ['idempotency' => $idempotencyKey]; }
+    public function exportBatch(AuthorizedOperationContext $context, ?string $cursor, int $limit): ExportBatch { return $cursor === null ? new ExportBatch([['name' => "\xEF\xBB\xBF \t=Alice", 'email' => 'alice@example.test', 'formula_header' => "\t@payload"], ['name' => "\r-Bob", 'email' => null, 'formula_header' => '+formula']], null) : throw new RuntimeException('unexpected cursor'); }
 }
 
 final class HarnessFiles implements FileMediaGateway
@@ -122,11 +123,35 @@ problem('IMPORT_EXPORT_STATE_CONFLICT', fn() => $runner->run($create101, $import
 $export = $repository->create(101, 501, 'iox_' . str_repeat('4', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-export'), hash('sha256', 'request-export'), 7);
 $export = $repository->attachJob(101, $export->operationKey, 'job_' . str_repeat('b', 32)); $export = $runner->run($create101, $export->operationKey, $export->taskJobKey ?? '', 1);
 check('succeeded', $export->status, 'export completion'); check(2, $export->processedRows, 'export rows');
-if ($export->resultFileKey === null || !str_contains($files->outputs[$export->resultFileKey], "'=Alice")) throw new RuntimeException('CSV formula was not neutralized.');
-check(['tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows'], $audit->events, 'redacted lifecycle audit');
+if ($export->resultFileKey === null) throw new RuntimeException('Export result missing.');
+$csv = $files->outputs[$export->resultFileKey];
+foreach (["'=Formula", "'\xEF\xBB\xBF \t=Alice", "'\t@payload", "'\r-Bob", "'+formula"] as $safeText) {
+    if (!str_contains($csv, $safeText)) throw new RuntimeException('CSV formula was not neutralized: ' . bin2hex($safeText));
+}
+check(['tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.progress:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows'], $audit->events, 'redacted lifecycle audit');
+
+problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->normalizeImportRow(["\xC3\x28"], ['Name'], ['Name' => 'name']), 'invalid UTF-8 import cell');
+problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->exportValues(['name' => "\xC3\x28", 'email' => null, 'formula_header' => 'safe']), 'invalid UTF-8 export text');
+problem('IMPORT_EXPORT_INVALID', fn() => new ColumnDefinition('invalid_heading', "\xC3\x28"), 'invalid UTF-8 schema heading');
 
 $cancel = $repository->create(101, 501, 'iox_' . str_repeat('5', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-cancel'), hash('sha256', 'request-cancel'), 1);
 $cancel = $repository->requestCancel(101, $cancel->operationKey, $cancel->revision); check('cancelled', $cancel->status, 'queued cancellation');
+
+$racingFileKey = 'file_' . str_repeat('b', 32); $files->inputs[$racingFileKey] = "Name,Email\r\nRace,race@example.test\r\n";
+$racing = $repository->create(101, 501, 'iox_' . str_repeat('6', 32), $provider->key(), 'import', $racingFileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-racing'), hash('sha256', 'request-racing'), 1);
+$racing = $repository->attachJob(101, $racing->operationKey, 'job_' . str_repeat('c', 32));
+$provider->duringImport = static function () use ($repository, &$racing): void {
+    $current = $repository->get(101, $racing->operationKey); $repository->requestCancel(101, $racing->operationKey, $current->revision);
+};
+$racing = $runner->run($create101, $racing->operationKey, $racing->taskJobKey ?? '', 1); $provider->duringImport = null;
+check('cancelled', $racing->status, 'provider/progress cancellation race settles without runner failure'); check(1, $racing->processedRows, 'cancel race progress checkpoint');
+
+$finishRace = $repository->create(101, 501, 'iox_' . str_repeat('7', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-finish-race'), hash('sha256', 'request-finish-race'), 1);
+$finishRace = $repository->attachJob(101, $finishRace->operationKey, 'job_' . str_repeat('e', 32));
+$finishRace = $repository->beginAttempt(101, $finishRace->operationKey, $finishRace->taskJobKey ?? '', 1);
+$finishRace = $repository->requestCancel(101, $finishRace->operationKey, $finishRace->revision);
+$finishRace = $repository->finish(101, $finishRace->id, $finishRace->taskJobKey ?? '', 1, 'succeeded', 'file_' . str_repeat('f', 32), null, 0);
+check('cancelled', $finishRace->status, 'finish/cancel race prefers cancellation'); check(null, $finishRace->resultFileKey, 'cancelled finish publishes no result');
 $pdo->exec("UPDATE pa_import_export_operation SET retention_until = TIMESTAMPADD(SECOND,-1,UTC_TIMESTAMP(3)) WHERE operation_key = " . $pdo->quote($cancel->operationKey));
 check(1, $repository->expireDue(), 'retention expiry'); check('expired', $repository->get(101, $cancel->operationKey)->status, 'expired terminal state');
 

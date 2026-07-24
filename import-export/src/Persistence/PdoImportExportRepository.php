@@ -157,12 +157,58 @@ SQL);
         });
     }
 
-    public function progress(int $tenantId, int $operationId, string $jobKey, int $attempt, int $processed, int $accepted, int $rejected): void
+    public function checkpointProgressOrCancel(int $tenantId, int $operationId, string $jobKey, int $attempt, int $processed, int $accepted, int $rejected): OperationRecord
     {
         if ($processed < 0 || $processed > 100000 || $accepted < 0 || $rejected < 0 || $accepted + $rejected > $processed) throw ImportExportException::internal();
-        $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET processed_rows = :processed, accepted_rows = :accepted, rejected_rows = :rejected, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND task_job_key = :job_key AND attempt_number = :attempt AND status = 'running'");
-        $statement->execute(['processed' => $processed, 'accepted' => $accepted, 'rejected' => $rejected, 'id' => $operationId, 'tenant_id' => $tenantId, 'job_key' => $jobKey, 'attempt' => $attempt]);
-        if ($statement->rowCount() !== 1) throw ImportExportException::stateConflict();
+        return $this->transaction(function () use ($tenantId, $operationId, $jobKey, $attempt, $processed, $accepted, $rejected): OperationRecord {
+            $row = $this->byId($tenantId, $operationId, true);
+            if ($row === null || !is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])
+                || (int) $row['attempt_number'] !== $attempt || !in_array($row['status'], ['running', 'cancel_requested'], true)
+            ) {
+                throw ImportExportException::stateConflict();
+            }
+            $cancelled = $row['status'] === 'cancel_requested';
+            if (!$cancelled && (int) $row['processed_rows'] === $processed
+                && (int) $row['accepted_rows'] === $accepted && (int) $row['rejected_rows'] === $rejected
+            ) {
+                return $this->map($row);
+            }
+            $statement = $this->pdo->prepare(<<<'SQL'
+UPDATE pa_import_export_operation
+SET status = :status,
+    processed_rows = :processed,
+    accepted_rows = :accepted,
+    rejected_rows = :rejected,
+    total_rows = IF(:cancelled = 1, :processed_total, total_rows),
+    result_file_key = IF(:cancelled_result_file = 1, NULL, result_file_key),
+    error_file_key = IF(:cancelled_error_file = 1, NULL, error_file_key),
+    last_error_code = IF(:cancelled_error = 1, NULL, last_error_code),
+    completed_at = IF(:cancelled_completion = 1, UTC_TIMESTAMP(3), completed_at),
+    revision = revision + 1,
+    updated_at = UTC_TIMESTAMP(3)
+WHERE id = :id AND tenant_id = :tenant_id AND task_job_key = :job_key
+  AND attempt_number = :attempt AND status = :expected_status
+SQL);
+            $statement->execute([
+                'status' => $cancelled ? 'cancelled' : 'running',
+                'processed' => $processed,
+                'accepted' => $accepted,
+                'rejected' => $rejected,
+                'cancelled' => $cancelled ? 1 : 0,
+                'processed_total' => $processed,
+                'cancelled_result_file' => $cancelled ? 1 : 0,
+                'cancelled_error_file' => $cancelled ? 1 : 0,
+                'cancelled_error' => $cancelled ? 1 : 0,
+                'cancelled_completion' => $cancelled ? 1 : 0,
+                'id' => $operationId,
+                'tenant_id' => $tenantId,
+                'job_key' => $jobKey,
+                'attempt' => $attempt,
+                'expected_status' => $row['status'],
+            ]);
+            if ($statement->rowCount() !== 1) throw ImportExportException::stateConflict();
+            return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal());
+        });
     }
 
     public function addRowIssue(int $tenantId, int $operationId, int $rowNumber, RowIssue $issue): void
@@ -183,23 +229,32 @@ SQL);
         return array_map(static fn(array $row): array => ['row_number' => (int) $row['row_number'], 'column_key' => is_string($row['column_key']) ? $row['column_key'] : null, 'error_code' => (string) $row['error_code']], $statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
-    public function cancellationRequested(int $tenantId, int $operationId, string $jobKey, int $attempt): bool
-    {
-        $statement = $this->pdo->prepare('SELECT status FROM pa_import_export_operation WHERE id = :id AND tenant_id = :tenant_id AND task_job_key = :job_key AND attempt_number = :attempt');
-        $statement->execute(['id' => $operationId, 'tenant_id' => $tenantId, 'job_key' => $jobKey, 'attempt' => $attempt]);
-        $status = $statement->fetchColumn();
-        if (!is_string($status)) throw ImportExportException::stateConflict();
-        return $status === 'cancel_requested';
-    }
-
     public function finish(int $tenantId, int $operationId, string $jobKey, int $attempt, string $status, ?string $resultFileKey, ?string $errorFileKey, int $totalRows, ?string $errorCode = null): OperationRecord
     {
         if (!in_array($status, ['succeeded', 'failed', 'cancelled'], true) || $totalRows < 0 || $totalRows > 100000 || ($status === 'succeeded' && $errorCode !== null) || ($status === 'failed' && preg_match('/^[A-Z][A-Z0-9_]{2,63}$/D', (string) $errorCode) !== 1)) {
             throw ImportExportException::internal();
         }
         return $this->transaction(function () use ($tenantId, $operationId, $jobKey, $attempt, $status, $resultFileKey, $errorFileKey, $totalRows, $errorCode): OperationRecord {
-            $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = :status, result_file_key = :result_file_key, error_file_key = :error_file_key, total_rows = :total_rows, last_error_code = :error_code, completed_at = UTC_TIMESTAMP(3), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND task_job_key = :job_key AND attempt_number = :attempt AND status IN ('running','cancel_requested')");
-            $statement->execute(['status' => $status, 'result_file_key' => $resultFileKey, 'error_file_key' => $errorFileKey, 'total_rows' => $totalRows, 'error_code' => $errorCode, 'id' => $operationId, 'tenant_id' => $tenantId, 'job_key' => $jobKey, 'attempt' => $attempt]);
+            $row = $this->byId($tenantId, $operationId, true);
+            if ($row === null || !is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])
+                || (int) $row['attempt_number'] !== $attempt || !in_array($row['status'], ['running', 'cancel_requested'], true)
+            ) {
+                throw ImportExportException::stateConflict();
+            }
+            $cancelled = $row['status'] === 'cancel_requested';
+            $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = :status, result_file_key = :result_file_key, error_file_key = :error_file_key, total_rows = :total_rows, last_error_code = :error_code, completed_at = UTC_TIMESTAMP(3), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND task_job_key = :job_key AND attempt_number = :attempt AND status = :expected_status");
+            $statement->execute([
+                'status' => $cancelled ? 'cancelled' : $status,
+                'result_file_key' => $cancelled ? null : $resultFileKey,
+                'error_file_key' => $cancelled ? null : $errorFileKey,
+                'total_rows' => $totalRows,
+                'error_code' => $cancelled ? null : $errorCode,
+                'id' => $operationId,
+                'tenant_id' => $tenantId,
+                'job_key' => $jobKey,
+                'attempt' => $attempt,
+                'expected_status' => $row['status'],
+            ]);
             if ($statement->rowCount() !== 1) throw ImportExportException::stateConflict();
             return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal());
         });

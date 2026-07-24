@@ -35,7 +35,7 @@ final readonly class SchemaDefinition
         if ($mapping === [] || count($mapping) > 100) throw ImportExportException::invalid();
         $targets = [];
         foreach ($mapping as $source => $target) {
-            if (!is_string($source) || trim($source) !== $source || $source === '' || strlen($source) > 120
+            if (!is_string($source) || preg_match('//u', $source) !== 1 || trim($source) !== $source || $source === '' || strlen($source) > 120
                 || !isset($this->byKey[$target]) || !$this->byKey[$target]->importable || isset($targets[$target])) {
                 throw ImportExportException::schemaMismatch();
             }
@@ -71,6 +71,9 @@ final readonly class SchemaDefinition
             $target = $mapping[$heading];
             $column = $this->byKey[$target] ?? throw ImportExportException::schemaMismatch();
             $value = $values[$index];
+            if ($value !== null && (!is_string($value) || preg_match('//u', $value) !== 1)) {
+                throw ImportExportException::schemaMismatch();
+            }
             if ($value !== null && strlen($value) > $column->maxBytes) {
                 $issues[] = new RowIssue('IMPORT_VALUE_TOO_LONG', $target);
                 continue;
@@ -98,6 +101,7 @@ final readonly class SchemaDefinition
                 throw ImportExportException::schemaMismatch();
             }
             $text = $value === null ? '' : (string) $value;
+            if (preg_match('//u', $text) !== 1) throw ImportExportException::schemaMismatch();
             if (strlen($text) > $column->maxBytes) throw ImportExportException::limitExceeded();
             $values[] = $text;
         }

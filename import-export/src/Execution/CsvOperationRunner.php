@@ -44,23 +44,34 @@ final readonly class CsvOperationRunner
             $this->audit($context, $result, $result->status, ['processed_rows' => $result->processedRows, 'accepted_rows' => $result->acceptedRows, 'rejected_rows' => $result->rejectedRows]);
             return $result;
         } catch (RetryableTaskException $exception) {
+            $current = $this->repository->get($operation->tenantId, $operation->operationKey);
+            $checkpoint = $this->repository->checkpointProgressOrCancel(
+                $operation->tenantId, $operation->id, $jobKey, $attempt,
+                $current->processedRows, $current->acceptedRows, $current->rejectedRows,
+            );
+            if ($checkpoint->status === 'cancelled') {
+                $this->audit($context, $checkpoint, 'cancelled', ['processed_rows' => $checkpoint->processedRows]);
+                return $checkpoint;
+            }
             if ($attempt >= 3) {
-                $current = $this->repository->get($operation->tenantId, $operation->operationKey);
                 $failed = $this->repository->finish($operation->tenantId, $operation->id, $jobKey, $attempt, 'failed', null, null, $current->processedRows, $exception->safeCode);
-                $this->audit($context, $failed, 'failed', ['error_code' => $exception->safeCode]);
+                $this->audit($context, $failed, $failed->status, $failed->status === 'cancelled' ? ['processed_rows' => $failed->processedRows] : ['error_code' => $exception->safeCode]);
+                if ($failed->status === 'cancelled') return $failed;
             }
             throw $exception;
         } catch (ImportExportException $exception) {
             if (!in_array($exception->problemCode, ['IMPORT_EXPORT_STATE_CONFLICT', 'IMPORT_EXPORT_PERMISSION_DENIED'], true)) {
                 $current = $this->repository->get($operation->tenantId, $operation->operationKey);
                 $failed = $this->repository->finish($operation->tenantId, $operation->id, $jobKey, $attempt, 'failed', null, null, $current->processedRows, $exception->problemCode);
-                $this->audit($context, $failed, 'failed', ['error_code' => $exception->problemCode]);
+                $this->audit($context, $failed, $failed->status, $failed->status === 'cancelled' ? ['processed_rows' => $failed->processedRows] : ['error_code' => $exception->problemCode]);
+                if ($failed->status === 'cancelled') return $failed;
             }
             throw $exception;
         } catch (Throwable $exception) {
             $current = $this->repository->get($operation->tenantId, $operation->operationKey);
             $failed = $this->repository->finish($operation->tenantId, $operation->id, $jobKey, $attempt, 'failed', null, null, $current->processedRows, 'IMPORT_EXPORT_INTERNAL_ERROR');
-            $this->audit($context, $failed, 'failed', ['error_code' => 'IMPORT_EXPORT_INTERNAL_ERROR']);
+            $this->audit($context, $failed, $failed->status, $failed->status === 'cancelled' ? ['processed_rows' => $failed->processedRows] : ['error_code' => 'IMPORT_EXPORT_INTERNAL_ERROR']);
+            if ($failed->status === 'cancelled') return $failed;
             throw $exception;
         }
     }
@@ -74,16 +85,15 @@ final readonly class CsvOperationRunner
         $schema = $provider->schema();
         $headings = fgetcsv($stream, 1048577, ',', '"', '');
         if (!is_array($headings) || $headings === [] || count($headings) > 100) throw ImportExportException::schemaMismatch();
-        $headings = array_map(static fn(mixed $value): string => is_string($value) ? $value : throw ImportExportException::schemaMismatch(), $headings);
+        $headings = array_map(static fn(mixed $value): string => is_string($value) && preg_match('//u', $value) === 1 ? $value : throw ImportExportException::schemaMismatch(), $headings);
         if (count(array_unique($headings, SORT_STRING)) !== count($headings) || array_diff(array_keys($operation->mapping), $headings) !== []) throw ImportExportException::schemaMismatch();
         $processed = $accepted = $rejected = $issueCount = 0;
         while (($values = fgetcsv($stream, 1048577, ',', '"', '')) !== false) {
+            $checkpoint = $this->repository->checkpointProgressOrCancel($operation->tenantId, $operation->id, $jobKey, $attempt, $processed, $accepted, $rejected);
+            if ($checkpoint->status === 'cancelled') return $checkpoint;
             ++$processed;
             $rowNumber = $processed + 1;
             if ($processed > self::MAX_ROWS) throw ImportExportException::limitExceeded();
-            if ($this->repository->cancellationRequested($operation->tenantId, $operation->id, $jobKey, $attempt)) {
-                return $this->repository->finish($operation->tenantId, $operation->id, $jobKey, $attempt, 'cancelled', null, null, $processed);
-            }
             $normalized = $schema->normalizeImportRow($values, $headings, $operation->mapping);
             $rowBytes = array_sum(array_map(static fn(mixed $value): int => is_string($value) ? strlen($value) : 0, $values));
             if ($rowBytes > 1048576) $normalized['issues'][] = new RowIssue('IMPORT_ROW_TOO_LARGE');
@@ -104,7 +114,9 @@ final readonly class CsvOperationRunner
                 $provider->importRow($context, $normalized['row'], $operation->operationKey . ':row:' . $rowNumber);
                 ++$accepted;
             }
-            $this->repository->progress($operation->tenantId, $operation->id, $jobKey, $attempt, $processed, $accepted, $rejected);
+            $checkpoint = $this->repository->checkpointProgressOrCancel($operation->tenantId, $operation->id, $jobKey, $attempt, $processed, $accepted, $rejected);
+            if ($checkpoint->status === 'cancelled') return $checkpoint;
+            $this->auditProgress($context, $checkpoint);
         }
         $errorFile = $rejected > 0 ? $this->storeErrorReport($context, $operation) : null;
         return $this->repository->finish($operation->tenantId, $operation->id, $jobKey, $attempt, 'succeeded', null, $errorFile, $processed);
@@ -116,13 +128,12 @@ final readonly class CsvOperationRunner
         $schema = $provider->schema();
         $stream = fopen('php://temp/maxmemory:' . self::MAX_BYTES, 'w+b');
         if (!is_resource($stream)) throw ImportExportException::internal();
-        fputcsv($stream, array_map(static fn($column): string => $column->heading, $schema->exportColumns()), ',', '"', '');
+        fputcsv($stream, array_map(static fn($column): string => self::csvSafe($column->heading), $schema->exportColumns()), ',', '"', '');
         $cursor = null;
         $processed = 0;
         do {
-            if ($this->repository->cancellationRequested($operation->tenantId, $operation->id, $jobKey, $attempt)) {
-                return $this->repository->finish($operation->tenantId, $operation->id, $jobKey, $attempt, 'cancelled', null, null, $processed);
-            }
+            $checkpoint = $this->repository->checkpointProgressOrCancel($operation->tenantId, $operation->id, $jobKey, $attempt, $processed, $processed, 0);
+            if ($checkpoint->status === 'cancelled') return $checkpoint;
             $batch = $provider->exportBatch($context, $cursor, 500);
             if (count($batch->rows) > 500 || ($batch->rows === [] && $batch->nextCursor !== null) || ($batch->nextCursor !== null && $batch->nextCursor === $cursor)) throw ImportExportException::internal();
             foreach ($batch->rows as $row) {
@@ -132,7 +143,9 @@ final readonly class CsvOperationRunner
                 $size = ftell($stream);
                 if (!is_int($size) || $size > self::MAX_BYTES) throw ImportExportException::limitExceeded();
             }
-            $this->repository->progress($operation->tenantId, $operation->id, $jobKey, $attempt, $processed, $processed, 0);
+            $checkpoint = $this->repository->checkpointProgressOrCancel($operation->tenantId, $operation->id, $jobKey, $attempt, $processed, $processed, 0);
+            if ($checkpoint->status === 'cancelled') return $checkpoint;
+            $this->auditProgress($context, $checkpoint);
             $cursor = $batch->nextCursor;
         } while ($cursor !== null);
         rewind($stream);
@@ -162,7 +175,18 @@ final readonly class CsvOperationRunner
 
     private static function csvSafe(string $value): string
     {
-        return $value !== '' && in_array($value[0], ['=', '+', '-', '@'], true) ? "'" . $value : $value;
+        if (preg_match('//u', $value) !== 1) throw ImportExportException::schemaMismatch();
+        return preg_match('/^(?:\xEF\xBB\xBF)?[\x09\x0B\x0C\x0D\x20]*[=+@-]/', $value) === 1 ? "'" . $value : $value;
+    }
+
+    private function auditProgress(AuthorizedOperationContext $context, OperationRecord $operation): void
+    {
+        if ($operation->processedRows !== 1 && $operation->processedRows % 1000 !== 0) return;
+        $this->audit($context, $operation, 'progress', [
+            'processed_rows' => $operation->processedRows,
+            'accepted_rows' => $operation->acceptedRows,
+            'rejected_rows' => $operation->rejectedRows,
+        ]);
     }
 
     /** @param array<string, int|string> $metadata */
