@@ -10,7 +10,7 @@ use PeanutAdmin\OpsConsole\Support\Contract;
 final readonly class OpsStatusSnapshot
 {
     /**
-     * @param list<array{key: string, status: string, critical: bool, latency_ms: float}> $checks
+     * @param list<array{key: string, status: string, critical: bool, latency_ms: int|float}> $checks
      */
     public function __construct(
         public string $health,
@@ -50,11 +50,13 @@ final readonly class OpsStatusSnapshot
         Contract::commit($targetCommit);
         $criticalCheckDown = false;
         foreach ($checks as $check) {
-            if (array_keys($check) !== ['key', 'status', 'critical', 'latency_ms']
+            $checkKeys = array_keys($check);
+            sort($checkKeys);
+            if ($checkKeys !== ['critical', 'key', 'latency_ms', 'status']
                 || !in_array($check['status'], ['up', 'down'], true)
                 || !is_bool($check['critical'])
-                || !is_float($check['latency_ms'])
-                || !is_finite($check['latency_ms']) || $check['latency_ms'] < 0 || $check['latency_ms'] > 60000
+                || (!is_int($check['latency_ms']) && !is_float($check['latency_ms']))
+                || !is_finite((float) $check['latency_ms']) || $check['latency_ms'] < 0 || $check['latency_ms'] > 60000
             ) {
                 throw new InvalidArgumentException('Invalid health check.');
             }

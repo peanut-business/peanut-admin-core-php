@@ -25,14 +25,13 @@ final readonly class RuntimeLogService
         }
         try {
             $batch = $this->providers->require($query->sourceKey)->read($context, $query);
-            $severityRank = ['info' => 0, 'warning' => 1, 'error' => 2, 'critical' => 3];
             if (count($batch->records) > $query->pageSize
                 || ($batch->nextCursor !== null && $batch->nextCursor === $query->cursor)
             ) {
                 throw new \InvalidArgumentException('Invalid log provider batch.');
             }
             foreach ($batch->records as $record) {
-                if ($severityRank[$record->severity] < $severityRank[$query->minimumSeverity]) {
+                if (LogSeverity::rank($record->severity) < LogSeverity::rank($query->minimumSeverity)) {
                     throw new \InvalidArgumentException('Log record is below the requested severity.');
                 }
             }

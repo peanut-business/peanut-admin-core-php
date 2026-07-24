@@ -20,6 +20,7 @@ use PeanutAdmin\Kernel\Auth\ValidatedPlatformSession;
 use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\OpsConsole\Application\OpsConsoleException;
 use PeanutAdmin\OpsConsole\Application\PlatformPermissionChecker;
+use PeanutAdmin\OpsConsole\Logs\LogSeverity;
 use PeanutAdmin\OpsConsole\Logs\RuntimeLogProvider;
 use PeanutAdmin\OpsConsole\Logs\RuntimeLogProviderRegistry;
 use PeanutAdmin\OpsConsole\Logs\RuntimeLogQuery;
@@ -208,6 +209,7 @@ final class Dispatcher implements OpsTaskDispatcher
 final class MaintenanceStore implements MaintenanceWindowStore
 {
     public ?MaintenanceWindow $window = null;
+    public ?MaintenanceWindow $returnOverride = null;
     /** @var array<string, array{request: string, window: MaintenanceWindow}> */
     public array $idempotency = [];
     /** @var list<OpsAuditEvent> */
@@ -218,7 +220,7 @@ final class MaintenanceStore implements MaintenanceWindowStore
     public function schedule(PlatformContext $context, MaintenanceWindow $candidate, int $expectedRevision, string $idempotencyDigest, string $requestDigest, OpsAuditEvent $audit): MaintenanceWindow
     {
         $replay = $this->replay($idempotencyDigest, $requestDigest);
-        if ($replay !== null) return $replay;
+        if ($replay !== null) return $this->returned($replay);
         $actual = $this->window?->revision ?? 0;
         if ($actual !== $expectedRevision || ($this->window !== null && $this->window->state !== 'closed' && $expectedRevision === 0)) {
             throw OpsConsoleException::revisionConflict();
@@ -226,7 +228,7 @@ final class MaintenanceStore implements MaintenanceWindowStore
         $this->window = $candidate;
         $this->idempotency[$idempotencyDigest] = ['request' => $requestDigest, 'window' => $candidate];
         $this->audits[] = $audit;
-        return $candidate;
+        return $this->returned($candidate);
     }
 
     public function close(PlatformContext $context, string $maintenanceKey, int $expectedRevision, string $idempotencyDigest, string $requestDigest, OpsAuditEvent $audit): MaintenanceWindow
@@ -242,7 +244,7 @@ final class MaintenanceStore implements MaintenanceWindowStore
         );
         $this->idempotency[$idempotencyDigest] = ['request' => $requestDigest, 'window' => $this->window];
         $this->audits[] = $audit;
-        return $this->window;
+        return $this->returned($this->window);
     }
 
     private function replay(string $key, string $request): ?MaintenanceWindow
@@ -251,6 +253,11 @@ final class MaintenanceStore implements MaintenanceWindowStore
         if ($existing === null) return null;
         if (!hash_equals($existing['request'], $request)) throw OpsConsoleException::idempotencyConflict();
         return $existing['window'];
+    }
+
+    private function returned(MaintenanceWindow $window): MaintenanceWindow
+    {
+        return $this->returnOverride ?? $window;
     }
 }
 
@@ -288,6 +295,13 @@ expectInvalidArgument(fn() => statusSnapshot(['migrationDrift' => true]), 'healt
 expectInvalidArgument(fn() => statusSnapshot([
     'appliedMigrations' => 11, 'targetMigrations' => 12, 'pendingMigrations' => 1,
 ]), 'healthy status with pending migrations');
+$integerLatencyStatus = statusSnapshot(['checks' => [[
+    'latency_ms' => 1, 'critical' => true, 'status' => 'up', 'key' => 'database',
+]]]);
+same(1, $integerLatencyStatus->checks[0]['latency_ms'], 'health check keys and integer latency match JSON semantics');
+expectInvalidArgument(fn() => statusSnapshot(['checks' => [[
+    'key' => 'database', 'status' => 'up', 'critical' => true, 'latency_ms' => 1, 'unexpected' => false,
+]]]), 'health check exact key set');
 foreach (['repositoryClean', 'backupVerified', 'sourceEvidenceMatches'] as $evidence) {
     expectInvalidArgument(fn() => statusSnapshot(['upgradeState' => 'succeeded', $evidence => false]), 'succeeded upgrade without ' . $evidence);
 }
@@ -353,6 +367,7 @@ $maintenance = new MaintenanceService($all, new MaintenanceReasonRegistry(['upgr
 $window = $maintenance->schedule($platform, 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-24T04:00:00.000Z', 0, 'maintenance-request-0001');
 $windowReplay = $maintenance->schedule($platform, 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-24T04:00:00.000Z', 0, 'maintenance-request-0001');
 same($window->maintenanceKey, $windowReplay->maintenanceKey, 'maintenance exact replay');
+truth($window !== $maintenanceStore->window && $windowReplay !== $maintenanceStore->window, 'maintenance schedule and replay are reconstructed');
 $currentWindow = $maintenance->current($platform);
 truth($currentWindow !== $window && $currentWindow?->maintenanceKey === $window->maintenanceKey, 'maintenance current is reconstructed');
 $serializedWindow = serialize($window);
@@ -365,16 +380,40 @@ expectCode('OPS_IDEMPOTENCY_CONFLICT', fn() => $maintenance->schedule($platform,
 expectCode('OPS_REVISION_CONFLICT', fn() => $maintenance->close($platform, $window->maintenanceKey, 2, 'maintenance-close-0001'), 'maintenance stale revision');
 $closed = $maintenance->close($platform, $window->maintenanceKey, 1, 'maintenance-close-0002');
 same('closed', $closed->state, 'maintenance close');
+truth($closed !== $maintenanceStore->window, 'maintenance close is reconstructed');
 same(2, count($maintenanceStore->audits), 'maintenance audits commit with writes');
 expectCode('OPS_MAINTENANCE_INVALID', fn() => $maintenance->schedule($platform, 'upgrade', '2026-07-24T00:00:00.000Z', '2026-07-26T00:00:00.000Z', 2, 'maintenance-request-0002'), 'maintenance duration');
 expectInvalidArgument(fn() => new MaintenanceWindow('maintenance_' . str_repeat('3', 32), 'scheduled', 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-24T03:00:00.000Z', 1), 'maintenance requires positive duration');
 expectInvalidArgument(fn() => new MaintenanceWindow('maintenance_' . str_repeat('4', 32), 'scheduled', 'upgrade', '2026-07-24T03:00:00.000Z', '2026-07-25T03:00:00.001Z', 1), 'maintenance rejects 24 hours plus one millisecond');
+
+$invalidScheduleStore = new MaintenanceStore();
+$invalidScheduleStore->returnOverride = $forgedWindow;
+expectCode('OPS_INTERNAL_ERROR', fn() => (new MaintenanceService($all, new MaintenanceReasonRegistry(['upgrade']), $invalidScheduleStore))->schedule(
+    $platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-schedule-return-0001',
+), 'invalid schedule store return fails closed');
+$invalidReplayStore = new MaintenanceStore();
+$invalidReplayService = new MaintenanceService($all, new MaintenanceReasonRegistry(['upgrade']), $invalidReplayStore);
+$invalidReplayService->schedule($platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-replay-return-0001');
+$invalidReplayStore->returnOverride = $forgedWindow;
+expectCode('OPS_INTERNAL_ERROR', fn() => $invalidReplayService->schedule(
+    $platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-replay-return-0001',
+), 'invalid idempotent replay store return fails closed');
+$invalidCloseStore = new MaintenanceStore();
+$invalidCloseService = new MaintenanceService($all, new MaintenanceReasonRegistry(['upgrade']), $invalidCloseStore);
+$closeCandidate = $invalidCloseService->schedule($platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-close-setup-0001');
+$invalidCloseStore->returnOverride = $forgedWindow;
+expectCode('OPS_INTERNAL_ERROR', fn() => $invalidCloseService->close(
+    $platform, $closeCandidate->maintenanceKey, $closeCandidate->revision, 'invalid-close-return-0001',
+), 'invalid close store return fails closed');
 
 try {
     new SafeLogMessageCatalog(['runtime.request.failed' => 'password=secret']);
     throw new RuntimeException('unsafe catalog message did not fail');
 } catch (InvalidArgumentException) {}
 $catalog = new SafeLogMessageCatalog(['runtime.request.failed' => 'A runtime request failed.']);
+same(['info', 'warning', 'error', 'critical'], LogSeverity::VALUES, 'PHP log severity parity');
+expectInvalidArgument(fn() => new RuntimeLogQuery('application', 'debug', null, 20), 'debug query severity is rejected');
+expectInvalidArgument(fn() => new StructuredLogRecord('runtime.request.failed', 'debug', 'http.runtime', '2026-07-24T02:00:00.000Z', null, 1), 'debug record severity is rejected');
 $logs = new RuntimeLogService($all, new RuntimeLogProviderRegistry([new LogProvider()]), $catalog);
 $page = $logs->read($platform, new RuntimeLogQuery('application', 'warning', null, 20))->toPublicArray();
 same('A runtime request failed.', $page['items'][0]['message'], 'known safe log message');

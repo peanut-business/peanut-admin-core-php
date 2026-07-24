@@ -16,7 +16,7 @@ final readonly class RuntimeLogQuery
         public int $pageSize,
     ) {
         Contract::qualifiedKey($sourceKey, 64);
-        if (!in_array($minimumSeverity, ['info', 'warning', 'error', 'critical'], true)
+        if (!in_array($minimumSeverity, LogSeverity::VALUES, true)
             || $pageSize < 1 || $pageSize > 100
         ) {
             throw new InvalidArgumentException('Invalid log query.');
