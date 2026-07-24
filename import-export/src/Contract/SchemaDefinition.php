@@ -67,13 +67,13 @@ final readonly class SchemaDefinition
         $row = [];
         $issues = [];
         foreach ($headings as $index => $heading) {
-            if (!isset($mapping[$heading])) continue;
-            $target = $mapping[$heading];
-            $column = $this->byKey[$target] ?? throw ImportExportException::schemaMismatch();
             $value = $values[$index];
             if ($value !== null && (!is_string($value) || preg_match('//u', $value) !== 1)) {
                 throw ImportExportException::schemaMismatch();
             }
+            if (!isset($mapping[$heading])) continue;
+            $target = $mapping[$heading];
+            $column = $this->byKey[$target] ?? throw ImportExportException::schemaMismatch();
             if ($value !== null && strlen($value) > $column->maxBytes) {
                 $issues[] = new RowIssue('IMPORT_VALUE_TOO_LONG', $target);
                 continue;

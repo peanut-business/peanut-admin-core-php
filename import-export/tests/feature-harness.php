@@ -131,6 +131,7 @@ foreach (["'=Formula", "'\xEF\xBB\xBF \t=Alice", "'\t@payload", "'\r-Bob", "'+fo
 check(['tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.progress:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows'], $audit->events, 'redacted lifecycle audit');
 
 problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->normalizeImportRow(["\xC3\x28"], ['Name'], ['Name' => 'name']), 'invalid UTF-8 import cell');
+problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->normalizeImportRow(['Alice', "\xC3\x28"], ['Name', 'Ignored'], ['Name' => 'name']), 'invalid UTF-8 unmapped import cell');
 problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->exportValues(['name' => "\xC3\x28", 'email' => null, 'formula_header' => 'safe']), 'invalid UTF-8 export text');
 problem('IMPORT_EXPORT_INVALID', fn() => new ColumnDefinition('invalid_heading', "\xC3\x28"), 'invalid UTF-8 schema heading');
 
