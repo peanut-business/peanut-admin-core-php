@@ -1,0 +1,17 @@
+{
+  "name": "peanut-admin/ops-console",
+  "description": "Peanut Admin platform operations evidence and controlled action contracts",
+  "type": "library",
+  "license": "Apache-2.0",
+  "version": "0.1.0",
+  "require": {
+    "peanut-admin/kernel": "^0.1.0",
+    "peanut-admin/task-job": "^0.1.0",
+    "php": "^8.3"
+  },
+  "autoload": {
+    "psr-4": {
+      "PeanutAdmin\\OpsConsole\\": "src/"
+    }
+  }
+}
