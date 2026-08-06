@@ -70,7 +70,7 @@ final class MenuCatalogSynchronizerTest extends TestCase
 
         (new MenuCatalogSynchronizer($repository))->synchronize($registry);
 
-        self::assertCount(13, $repository->definitions);
+        self::assertCount(17, $repository->definitions);
         self::assertSame(['registry-digest'], array_values(array_unique($repository->digests)));
         self::assertSame(array_keys($repository->definitions), $repository->activeKeys);
         self::assertSame('Users', $repository->definitions['core.organization']->icon);
