@@ -6,7 +6,7 @@ namespace PeanutAdmin\DataPermission;
 
 final class Package
 {
-    public const NAME = 'peanut-admin/data-permission';
+    public const NAME = 'peanut-admin/core';
     public const VERSION = '0.1.0';
 
     private function __construct() {}
