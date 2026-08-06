@@ -212,6 +212,7 @@ SQL, ['event_id' => $eventId]);
 
     /**
      * @param array<string, string> $csvFields source field => result field
+     * @param array<string, string> $parameters
      * @return array{items: list<array<string, mixed>>, total: int}
      */
     private function page(

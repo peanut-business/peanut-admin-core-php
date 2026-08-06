@@ -17,6 +17,8 @@ final readonly class ExternalOperationResult
     /**
      * @param array<string, mixed> $body
      * @param array<string, mixed> $auditMetadata
+     * @param array<string, mixed>|null $idempotencyBody
+     * @param array<array-key, mixed> $responseHeaders
      */
     public function __construct(
         public int $status,
@@ -46,13 +48,15 @@ final readonly class ExternalOperationResult
             $normalized[$key] = $value;
         }
         $this->auditMetadata = $normalized;
+        $normalizedHeaders = [];
         foreach ($responseHeaders as $name => $value) {
             if (!is_string($name) || !is_string($value) || preg_match('/^[A-Za-z][A-Za-z0-9-]*$/D', $name) !== 1
                 || preg_match('/[\r\n]/', $value) === 1) {
                 throw new InvalidArgumentException('Invalid atomic operation response header.');
             }
+            $normalizedHeaders[$name] = $value;
         }
-        $this->responseHeaders = $responseHeaders;
+        $this->responseHeaders = $normalizedHeaders;
     }
 
     public function response(): ExternalOperationResponse

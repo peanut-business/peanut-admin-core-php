@@ -107,7 +107,10 @@ final class GovernanceWorkbenchTest extends TestCase
         );
     }
 
-    /** @param callable(): mixed $operation */
+    /**
+     * @param callable(): mixed $operation
+     * @param class-string<\Throwable> $class
+     */
     private function assertGovernanceFailure(string $code, callable $operation, string $class = GovernanceException::class): void
     {
         try {

@@ -54,7 +54,7 @@ final class GovernancePermissionCatalog
     {
         $resolved = [];
         foreach (array_values(array_unique($keys)) as $key) {
-            if (!is_string($key) || $key === '*' || $key === '') {
+            if ($key === '*' || $key === '') {
                 throw new GovernanceException(
                     'GOVERNANCE_PERMISSION_INVALID',
                     'A role Permission key is invalid.',
