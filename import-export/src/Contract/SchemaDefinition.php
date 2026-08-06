@@ -32,7 +32,9 @@ final readonly class SchemaDefinition
     /** @param array<string, string> $mapping @return array<string, string> */
     public function validateImportMapping(array $mapping): array
     {
-        if ($mapping === [] || count($mapping) > 100) throw ImportExportException::invalid();
+        if ($mapping === [] || count($mapping) > 100) {
+            throw ImportExportException::invalid();
+        }
         $targets = [];
         foreach ($mapping as $source => $target) {
             if (!is_string($source) || preg_match('//u', $source) !== 1 || trim($source) !== $source || $source === '' || strlen($source) > 120
@@ -71,7 +73,9 @@ final readonly class SchemaDefinition
             if ($value !== null && (!is_string($value) || preg_match('//u', $value) !== 1)) {
                 throw ImportExportException::schemaMismatch();
             }
-            if (!isset($mapping[$heading])) continue;
+            if (!isset($mapping[$heading])) {
+                continue;
+            }
             $target = $mapping[$heading];
             $column = $this->byKey[$target] ?? throw ImportExportException::schemaMismatch();
             if ($value !== null && strlen($value) > $column->maxBytes) {
@@ -94,15 +98,23 @@ final readonly class SchemaDefinition
     {
         $values = [];
         foreach ($this->exportColumns() as $column) {
-            if (!array_key_exists($column->key, $row)) throw ImportExportException::schemaMismatch();
+            if (!array_key_exists($column->key, $row)) {
+                throw ImportExportException::schemaMismatch();
+            }
             $value = $row[$column->key];
-            if (is_bool($value)) $value = $value ? 'true' : 'false';
+            if (is_bool($value)) {
+                $value = $value ? 'true' : 'false';
+            }
             if ($value !== null && !is_int($value) && !is_float($value) && !is_string($value)) {
                 throw ImportExportException::schemaMismatch();
             }
             $text = $value === null ? '' : (string) $value;
-            if (preg_match('//u', $text) !== 1) throw ImportExportException::schemaMismatch();
-            if (strlen($text) > $column->maxBytes) throw ImportExportException::limitExceeded();
+            if (preg_match('//u', $text) !== 1) {
+                throw ImportExportException::schemaMismatch();
+            }
+            if (strlen($text) > $column->maxBytes) {
+                throw ImportExportException::limitExceeded();
+            }
             $values[] = $text;
         }
         return $values;

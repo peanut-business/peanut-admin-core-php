@@ -18,12 +18,18 @@ final readonly class MachineScopeGrantPolicy
     {
         $grantable = [];
         foreach ($this->resolver->grantableScopes($context) as $scope) {
-            if (!$this->valid($scope) || !$this->catalog->contains($scope)) throw IntegrationSecurityException::scopeDenied();
+            if (!$this->valid($scope) || !$this->catalog->contains($scope)) {
+                throw IntegrationSecurityException::scopeDenied();
+            }
             $grantable[$scope] = true;
         }
         foreach ($requested as $scope) {
-            if (!$this->catalog->contains($scope)) throw IntegrationSecurityException::invalid();
-            if (!isset($grantable[$scope])) throw IntegrationSecurityException::scopeDenied();
+            if (!$this->catalog->contains($scope)) {
+                throw IntegrationSecurityException::invalid();
+            }
+            if (!isset($grantable[$scope])) {
+                throw IntegrationSecurityException::scopeDenied();
+            }
         }
     }
 
@@ -31,14 +37,18 @@ final readonly class MachineScopeGrantPolicy
     public function assertKnown(array $required): void
     {
         foreach ($required as $scope) {
-            if (!$this->valid($scope) || !$this->catalog->contains($scope)) throw IntegrationSecurityException::scopeDenied();
+            if (!$this->valid($scope) || !$this->catalog->contains($scope)) {
+                throw IntegrationSecurityException::scopeDenied();
+            }
         }
     }
 
     /** @param list<string> $persisted */
     public function assertPersisted(array $persisted): void
     {
-        if ($persisted === [] || count($persisted) > 32) throw IntegrationSecurityException::scopeDenied();
+        if ($persisted === [] || count($persisted) > 32) {
+            throw IntegrationSecurityException::scopeDenied();
+        }
         $normalized = [];
         foreach ($persisted as $scope) {
             if (!$this->valid($scope) || !$this->catalog->contains($scope) || isset($normalized[$scope])) {
@@ -48,7 +58,9 @@ final readonly class MachineScopeGrantPolicy
         }
         $expected = array_keys($normalized);
         sort($expected, SORT_STRING);
-        if ($persisted !== $expected) throw IntegrationSecurityException::scopeDenied();
+        if ($persisted !== $expected) {
+            throw IntegrationSecurityException::scopeDenied();
+        }
     }
 
     private function valid(mixed $scope): bool

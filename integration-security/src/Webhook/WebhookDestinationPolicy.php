@@ -78,7 +78,9 @@ final readonly class WebhookDestinationPolicy
             return true;
         }
         foreach (['.localhost', '.local', '.internal', '.home', '.lan'] as $suffix) {
-            if (str_ends_with($host, $suffix)) return true;
+            if (str_ends_with($host, $suffix)) {
+                return true;
+            }
         }
         return false;
     }
@@ -86,7 +88,9 @@ final readonly class WebhookDestinationPolicy
     private function publicAddress(string $address): string
     {
         $address = trim($address);
-        if (str_starts_with($address, '[') && str_ends_with($address, ']')) $address = substr($address, 1, -1);
+        if (str_starts_with($address, '[') && str_ends_with($address, ']')) {
+            $address = substr($address, 1, -1);
+        }
         $packed = @inet_pton($address);
         if (!is_string($packed)) {
             throw IntegrationSecurityException::destinationDenied();
@@ -99,17 +103,25 @@ final readonly class WebhookDestinationPolicy
             }
         }
         $canonical = inet_ntop($packed);
-        if (!is_string($canonical)) throw IntegrationSecurityException::destinationDenied();
+        if (!is_string($canonical)) {
+            throw IntegrationSecurityException::destinationDenied();
+        }
         return strtolower($canonical);
     }
 
     private function matchesPrefix(string $address, string $network, int $prefix): bool
     {
-        if (strlen($address) !== strlen($network)) return false;
+        if (strlen($address) !== strlen($network)) {
+            return false;
+        }
         $wholeBytes = intdiv($prefix, 8);
-        if ($wholeBytes > 0 && substr($address, 0, $wholeBytes) !== substr($network, 0, $wholeBytes)) return false;
+        if ($wholeBytes > 0 && substr($address, 0, $wholeBytes) !== substr($network, 0, $wholeBytes)) {
+            return false;
+        }
         $remaining = $prefix % 8;
-        if ($remaining === 0) return true;
+        if ($remaining === 0) {
+            return true;
+        }
         $mask = (0xff << (8 - $remaining)) & 0xff;
         return (ord($address[$wholeBytes]) & $mask) === (ord($network[$wholeBytes]) & $mask);
     }

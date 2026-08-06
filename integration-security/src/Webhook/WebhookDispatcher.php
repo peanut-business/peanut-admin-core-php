@@ -21,11 +21,15 @@ final readonly class WebhookDispatcher
 
     public function runOne(int $tenantId, ?DateTimeImmutable $now = null): bool
     {
-        if ($tenantId < 1) throw IntegrationSecurityException::invalid();
+        if ($tenantId < 1) {
+            throw IntegrationSecurityException::invalid();
+        }
         $now ??= new DateTimeImmutable('now');
         $lease = bin2hex(random_bytes(32));
         $delivery = $this->repository->claimDelivery($tenantId, hash('sha256', $lease), 30, $now);
-        if ($delivery === null) return false;
+        if ($delivery === null) {
+            return false;
+        }
 
         try {
             $destination = $this->destinations->approve($delivery->url);

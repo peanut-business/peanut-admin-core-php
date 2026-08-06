@@ -21,13 +21,19 @@ final readonly class PdoImportExportRepository
     public function transaction(callable $operation): mixed
     {
         $owns = !$this->pdo->inTransaction();
-        if ($owns) $this->begin();
+        if ($owns) {
+            $this->begin();
+        }
         try {
             $result = $operation();
-            if ($owns) $this->pdo->commit();
+            if ($owns) {
+                $this->pdo->commit();
+            }
             return $result;
         } catch (Throwable $exception) {
-            if ($owns && $this->pdo->inTransaction()) $this->pdo->rollBack();
+            if ($owns && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
             throw $exception;
         }
     }
@@ -77,7 +83,9 @@ SQL);
                 $id = (int) $this->pdo->lastInsertId();
                 $created = true;
             } catch (PDOException $exception) {
-                if ($exception->getCode() !== '23000') throw $exception;
+                if ($exception->getCode() !== '23000') {
+                    throw $exception;
+                }
                 $existing = $this->byIdempotency($tenantId, $memberId, $direction, $providerKey, $idempotencyKeyHash, true);
                 if ($existing === null || !hash_equals((string) $existing['request_hash'], $requestHash)) {
                     throw ImportExportException::conflict();
@@ -85,8 +93,12 @@ SQL);
                 $id = (int) $existing['id'];
             }
             $row = $this->byId($tenantId, $id, true);
-            if ($row === null || !hash_equals((string) $row['request_hash'], $requestHash)) throw ImportExportException::conflict();
-            if (!$created && !hash_equals((string) $row['schema_revision'], $schemaRevision)) throw ImportExportException::schemaMismatch();
+            if ($row === null || !hash_equals((string) $row['request_hash'], $requestHash)) {
+                throw ImportExportException::conflict();
+            }
+            if (!$created && !hash_equals((string) $row['schema_revision'], $schemaRevision)) {
+                throw ImportExportException::schemaMismatch();
+            }
             return $this->map($row);
         });
     }
@@ -101,15 +113,21 @@ WHERE tenant_id = :tenant_id AND operation_key = :operation_key AND status = 'qu
 SQL);
         $statement->execute(['job_key' => $jobKey, 'job_key_check' => $jobKey, 'tenant_id' => $tenantId, 'operation_key' => $operationKey]);
         $row = $this->byKey($tenantId, $operationKey, true);
-        if ($row === null) throw ImportExportException::notFound();
-        if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])) throw ImportExportException::stateConflict();
+        if ($row === null) {
+            throw ImportExportException::notFound();
+        }
+        if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])) {
+            throw ImportExportException::stateConflict();
+        }
         return $this->map($row);
     }
 
     /** @return array{items: list<OperationRecord>, page: int, page_size: int, total: int} */
     public function list(int $tenantId, string $status, int $page, int $pageSize): array
     {
-        if ($page < 1 || $page > 1_000_000 || $pageSize < 1 || $pageSize > 100) throw ImportExportException::invalid();
+        if ($page < 1 || $page > 1_000_000 || $pageSize < 1 || $pageSize > 100) {
+            throw ImportExportException::invalid();
+        }
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM pa_import_export_operation WHERE tenant_id = :tenant_id AND status = :status');
         $count->execute(['tenant_id' => $tenantId, 'status' => $status]);
         $statement = $this->pdo->prepare('SELECT * FROM pa_import_export_operation WHERE tenant_id = :tenant_id AND status = :status ORDER BY id DESC LIMIT :limit OFFSET :offset');
@@ -124,7 +142,9 @@ SQL);
     public function get(int $tenantId, string $operationKey): OperationRecord
     {
         $row = $this->byKey($tenantId, $operationKey, false);
-        if ($row === null) throw ImportExportException::notFound();
+        if ($row === null) {
+            throw ImportExportException::notFound();
+        }
         return $this->map($row);
     }
 
@@ -132,12 +152,18 @@ SQL);
     {
         return $this->transaction(function () use ($tenantId, $operationKey, $revision): OperationRecord {
             $row = $this->byKey($tenantId, $operationKey, true);
-            if ($row === null) throw ImportExportException::notFound();
+            if ($row === null) {
+                throw ImportExportException::notFound();
+            }
             $next = $row['status'] === 'queued' ? 'cancelled' : 'cancel_requested';
-            if (!in_array($row['status'], ['queued', 'running'], true) || (int) $row['revision'] !== $revision) throw ImportExportException::stateConflict();
+            if (!in_array($row['status'], ['queued', 'running'], true) || (int) $row['revision'] !== $revision) {
+                throw ImportExportException::stateConflict();
+            }
             $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = :status, completed_at = IF(:completion_status = 'cancelled', UTC_TIMESTAMP(3), NULL), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND revision = :revision");
             $statement->execute(['status' => $next, 'completion_status' => $next, 'id' => $row['id'], 'tenant_id' => $tenantId, 'revision' => $revision]);
-            if ($statement->rowCount() !== 1) throw ImportExportException::stateConflict();
+            if ($statement->rowCount() !== 1) {
+                throw ImportExportException::stateConflict();
+            }
             return $this->map($this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal());
         });
     }
@@ -146,20 +172,26 @@ SQL);
     {
         return $this->transaction(function () use ($tenantId, $operationKey, $jobKey, $attempt): OperationRecord {
             $row = $this->byKey($tenantId, $operationKey, true);
-            if ($row === null) throw ImportExportException::notFound();
+            if ($row === null) {
+                throw ImportExportException::notFound();
+            }
             if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key']) || $attempt < 1 || $attempt > 10 || $attempt <= (int) $row['attempt_number'] || !in_array($row['status'], ['queued', 'running'], true)) {
                 throw ImportExportException::stateConflict();
             }
             $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = 'running', attempt_number = :attempt, last_error_code = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND attempt_number < :attempt_fence AND status IN ('queued','running')");
             $statement->execute(['attempt' => $attempt, 'attempt_fence' => $attempt, 'id' => $row['id'], 'tenant_id' => $tenantId]);
-            if ($statement->rowCount() !== 1) throw ImportExportException::stateConflict();
+            if ($statement->rowCount() !== 1) {
+                throw ImportExportException::stateConflict();
+            }
             return $this->map($this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal());
         });
     }
 
     public function checkpointProgressOrCancel(int $tenantId, int $operationId, string $jobKey, int $attempt, int $processed, int $accepted, int $rejected): OperationRecord
     {
-        if ($processed < 0 || $processed > 100000 || $accepted < 0 || $rejected < 0 || $accepted + $rejected > $processed) throw ImportExportException::internal();
+        if ($processed < 0 || $processed > 100000 || $accepted < 0 || $rejected < 0 || $accepted + $rejected > $processed) {
+            throw ImportExportException::internal();
+        }
         return $this->transaction(function () use ($tenantId, $operationId, $jobKey, $attempt, $processed, $accepted, $rejected): OperationRecord {
             $row = $this->byId($tenantId, $operationId, true);
             if ($row === null || !is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])
@@ -206,7 +238,9 @@ SQL);
                 'attempt' => $attempt,
                 'expected_status' => $row['status'],
             ]);
-            if ($statement->rowCount() !== 1) throw ImportExportException::stateConflict();
+            if ($statement->rowCount() !== 1) {
+                throw ImportExportException::stateConflict();
+            }
             return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal());
         });
     }
@@ -220,7 +254,9 @@ SQL);
     /** @return list<array{row_number: int, column_key: string|null, error_code: string}> */
     public function rowIssues(int $tenantId, int $operationId, int $limit = 10000): array
     {
-        if ($limit < 1 || $limit > 10000) throw ImportExportException::invalid();
+        if ($limit < 1 || $limit > 10000) {
+            throw ImportExportException::invalid();
+        }
         $statement = $this->pdo->prepare('SELECT `row_number`, `column_key`, `error_code` FROM pa_import_export_row_error WHERE `tenant_id` = :tenant_id AND `operation_id` = :operation_id ORDER BY `row_number`, `id` LIMIT :limit');
         $statement->bindValue('tenant_id', $tenantId, PDO::PARAM_INT);
         $statement->bindValue('operation_id', $operationId, PDO::PARAM_INT);
@@ -255,14 +291,18 @@ SQL);
                 'attempt' => $attempt,
                 'expected_status' => $row['status'],
             ]);
-            if ($statement->rowCount() !== 1) throw ImportExportException::stateConflict();
+            if ($statement->rowCount() !== 1) {
+                throw ImportExportException::stateConflict();
+            }
             return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal());
         });
     }
 
     public function expireDue(int $limit = 100): int
     {
-        if ($limit < 1 || $limit > 1000) throw ImportExportException::invalid();
+        if ($limit < 1 || $limit > 1000) {
+            throw ImportExportException::invalid();
+        }
         $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = 'expired', result_file_key = NULL, error_file_key = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE status IN ('succeeded','failed','cancelled') AND retention_until <= UTC_TIMESTAMP(3) ORDER BY id LIMIT :limit");
         $statement->bindValue('limit', $limit, PDO::PARAM_INT);
         $statement->execute();
@@ -305,39 +345,68 @@ SQL);
         } catch (JsonException) {
             throw ImportExportException::internal();
         }
-        if (!is_array($mapping)) throw ImportExportException::internal();
-        foreach ($mapping as $key => $value) if (!is_string($key) || !is_string($value)) throw ImportExportException::internal();
+        if (!is_array($mapping)) {
+            throw ImportExportException::internal();
+        }
+        foreach ($mapping as $key => $value) {
+            if (!is_string($key) || !is_string($value)) {
+                throw ImportExportException::internal();
+            }
+        }
         return new OperationRecord(
-            (int) $row['id'], (string) $row['operation_key'], (int) $row['tenant_id'], (int) $row['created_by_member_id'],
-            (string) $row['provider_key'], (string) $row['direction'], (string) $row['status'],
+            (int) $row['id'],
+            (string) $row['operation_key'],
+            (int) $row['tenant_id'],
+            (int) $row['created_by_member_id'],
+            (string) $row['provider_key'],
+            (string) $row['direction'],
+            (string) $row['status'],
             is_string($row['input_file_key']) ? $row['input_file_key'] : null,
             is_string($row['result_file_key']) ? $row['result_file_key'] : null,
             is_string($row['error_file_key']) ? $row['error_file_key'] : null,
             is_string($row['task_job_key']) ? $row['task_job_key'] : null,
-            (string) $row['schema_revision'], $mapping, (int) $row['processed_rows'], (int) $row['accepted_rows'],
-            (int) $row['rejected_rows'], (int) $row['total_rows'], (int) $row['attempt_number'], (int) $row['revision'],
+            (string) $row['schema_revision'],
+            $mapping,
+            (int) $row['processed_rows'],
+            (int) $row['accepted_rows'],
+            (int) $row['rejected_rows'],
+            (int) $row['total_rows'],
+            (int) $row['attempt_number'],
+            (int) $row['revision'],
             is_string($row['last_error_code']) ? $row['last_error_code'] : null,
-            $this->time((string) $row['retention_until']), $this->time((string) $row['created_at']), $this->time((string) $row['updated_at']),
+            $this->time((string) $row['retention_until']),
+            $this->time((string) $row['created_at']),
+            $this->time((string) $row['updated_at']),
             is_string($row['completed_at']) ? $this->time($row['completed_at']) : null,
         );
     }
 
     private function json(array $value): string
     {
-        try { return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); }
-        catch (JsonException) { throw ImportExportException::invalid(); }
+        try {
+            return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (JsonException) {
+            throw ImportExportException::invalid();
+        }
     }
 
     private function time(string $value): string
     {
         $time = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s.v', $value, new DateTimeZone('UTC'));
-        if (!$time instanceof DateTimeImmutable) throw ImportExportException::internal();
+        if (!$time instanceof DateTimeImmutable) {
+            throw ImportExportException::internal();
+        }
         return $time->format('Y-m-d\TH:i:s.v\Z');
     }
 
     private function begin(): void
     {
-        try { if (!$this->pdo->beginTransaction()) throw ImportExportException::internal(); }
-        catch (PDOException) { throw ImportExportException::internal(); }
+        try {
+            if (!$this->pdo->beginTransaction()) {
+                throw ImportExportException::internal();
+            }
+        } catch (PDOException) {
+            throw ImportExportException::internal();
+        }
     }
 }

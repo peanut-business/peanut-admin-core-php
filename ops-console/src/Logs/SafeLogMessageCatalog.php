@@ -12,7 +12,9 @@ final readonly class SafeLogMessageCatalog
     /** @param array<string, string> $messages */
     public function __construct(private array $messages)
     {
-        if (count($messages) > 256) throw new InvalidArgumentException('Too many safe log messages.');
+        if (count($messages) > 256) {
+            throw new InvalidArgumentException('Too many safe log messages.');
+        }
         foreach ($messages as $key => $message) {
             Contract::qualifiedKey($key, 96);
             Contract::publicText($message);

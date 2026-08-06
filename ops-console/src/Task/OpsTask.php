@@ -32,11 +32,15 @@ final readonly class OpsTask
         ) {
             throw new InvalidArgumentException('Invalid operations task status.');
         }
-        if ($lastErrorCode !== null) Contract::stableCode($lastErrorCode);
+        if ($lastErrorCode !== null) {
+            Contract::stableCode($lastErrorCode);
+        }
         Contract::instant($availableAt);
         Contract::instant($createdAt);
         Contract::instant($updatedAt);
-        if ($completedAt !== null) Contract::instant($completedAt);
+        if ($completedAt !== null) {
+            Contract::instant($completedAt);
+        }
     }
 
     public static function supportsTaskType(string $taskType): bool

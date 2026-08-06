@@ -43,7 +43,9 @@ final readonly class MaintenanceService
         string $idempotencyKey,
     ): MaintenanceWindow {
         $this->assertAllowed($context, Package::MAINTENANCE_PERMISSION);
-        if ($expectedRevision < 0) throw OpsConsoleException::revisionConflict();
+        if ($expectedRevision < 0) {
+            throw OpsConsoleException::revisionConflict();
+        }
         $reason = $this->reasons->require($reasonKey);
         try {
             Contract::instant($startsAt);
@@ -56,14 +58,20 @@ final readonly class MaintenanceService
         $startMilliseconds = $start->getTimestamp() * 1000 + (int) $start->format('v');
         $endMilliseconds = $end->getTimestamp() * 1000 + (int) $end->format('v');
         $duration = $endMilliseconds - $startMilliseconds;
-        if ($duration < 1 || $duration > 86400000) throw OpsConsoleException::maintenanceInvalid();
+        if ($duration < 1 || $duration > 86400000) {
+            throw OpsConsoleException::maintenanceInvalid();
+        }
         [$idempotencyDigest, $requestDigest] = $this->digests($idempotencyKey, [
             'reason_key' => $reason, 'starts_at' => $startsAt, 'ends_at' => $endsAt,
             'expected_revision' => $expectedRevision,
         ]);
         $candidate = new MaintenanceWindow(
-            'maintenance_' . bin2hex(random_bytes(16)), 'scheduled', $reason,
-            $startsAt, $endsAt, max(1, $expectedRevision + 1),
+            'maintenance_' . bin2hex(random_bytes(16)),
+            'scheduled',
+            $reason,
+            $startsAt,
+            $endsAt,
+            max(1, $expectedRevision + 1),
         );
         $audit = new OpsAuditEvent('platform.ops.maintenance.scheduled', 'maintenance.schedule', [
             'maintenance_key' => $candidate->maintenanceKey,
@@ -74,7 +82,12 @@ final readonly class MaintenanceService
         try {
             return $this->validatedWindow(
                 $this->store->schedule(
-                    $context, $candidate, $expectedRevision, $idempotencyDigest, $requestDigest, $audit,
+                    $context,
+                    $candidate,
+                    $expectedRevision,
+                    $idempotencyDigest,
+                    $requestDigest,
+                    $audit,
                 ),
             );
         } catch (OpsConsoleException $exception) {
@@ -91,7 +104,9 @@ final readonly class MaintenanceService
         string $idempotencyKey,
     ): MaintenanceWindow {
         $this->assertAllowed($context, Package::MAINTENANCE_PERMISSION);
-        if ($expectedRevision < 1) throw OpsConsoleException::revisionConflict();
+        if ($expectedRevision < 1) {
+            throw OpsConsoleException::revisionConflict();
+        }
         try {
             Contract::opaqueKey($maintenanceKey, 'maintenance_');
         } catch (Throwable) {
@@ -107,7 +122,12 @@ final readonly class MaintenanceService
         try {
             return $this->validatedWindow(
                 $this->store->close(
-                    $context, $maintenanceKey, $expectedRevision, $idempotencyDigest, $requestDigest, $audit,
+                    $context,
+                    $maintenanceKey,
+                    $expectedRevision,
+                    $idempotencyDigest,
+                    $requestDigest,
+                    $audit,
                 ),
             );
         } catch (OpsConsoleException $exception) {
@@ -133,7 +153,9 @@ final readonly class MaintenanceService
 
     private function assertAllowed(PlatformContext $context, string $permission): void
     {
-        if (!$this->permissions->allows($context, $permission)) throw OpsConsoleException::denied();
+        if (!$this->permissions->allows($context, $permission)) {
+            throw OpsConsoleException::denied();
+        }
     }
 
     private function validatedWindow(MaintenanceWindow $window): MaintenanceWindow

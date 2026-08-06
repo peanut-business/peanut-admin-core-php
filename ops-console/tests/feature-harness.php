@@ -11,7 +11,9 @@ spl_autoload_register(static function (string $class) use ($root): void {
     ] as $prefix => $directory) {
         if (str_starts_with($class, $prefix)) {
             $file = $directory . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
-            if (is_file($file)) require $file;
+            if (is_file($file)) {
+                require $file;
+            }
         }
     }
 });
@@ -55,7 +57,9 @@ function same(mixed $expected, mixed $actual, string $label): void
 
 function truth(bool $condition, string $label): void
 {
-    if (!$condition) throw new RuntimeException($label);
+    if (!$condition) {
+        throw new RuntimeException($label);
+    }
 }
 
 function expectCode(string $code, callable $operation, string $label): void
@@ -83,7 +87,11 @@ function expectInvalidArgument(callable $operation, string $label): void
 function context(): PlatformContext
 {
     return PlatformContext::fromValidatedSession(new ValidatedPlatformSession(
-        11, 'platform-session', 21, 31, 'platform-web',
+        11,
+        'platform-session',
+        21,
+        31,
+        'platform-web',
         new DateTimeImmutable('2026-07-24T00:00:00Z'),
     ), 'req_ops_console_0001');
 }
@@ -91,9 +99,17 @@ function context(): PlatformContext
 function task(int $number, string $type = Package::BACKUP_TASK_TYPE): OpsTask
 {
     return new OpsTask(
-        'job_' . str_pad(dechex($number), 32, '0', STR_PAD_LEFT), $type, 'queued',
-        0, 3, 1, null, '2026-07-24T01:00:00.000Z', '2026-07-24T01:00:00.000Z',
-        '2026-07-24T01:00:00.000Z', null,
+        'job_' . str_pad(dechex($number), 32, '0', STR_PAD_LEFT),
+        $type,
+        'queued',
+        0,
+        3,
+        1,
+        null,
+        '2026-07-24T01:00:00.000Z',
+        '2026-07-24T01:00:00.000Z',
+        '2026-07-24T01:00:00.000Z',
+        null,
     );
 }
 
@@ -138,7 +154,9 @@ final class StatusProvider implements RuntimeStatusProvider
     public function __construct(private bool $fail = false) {}
     public function snapshot(PlatformContext $context): OpsStatusSnapshot
     {
-        if ($this->fail) throw new RuntimeException('mysql://root:password@host/database');
+        if ($this->fail) {
+            throw new RuntimeException('mysql://root:password@host/database');
+        }
         return statusSnapshot();
     }
 }
@@ -146,11 +164,26 @@ final class StatusProvider implements RuntimeStatusProvider
 final class Provider implements BackupRestoreProvider
 {
     public function __construct(private string $providerKey = 'reference.mysql', private array $targets = ['verification']) {}
-    public function key(): string { return $this->providerKey; }
-    public function backupHandlerKey(): string { return 'ops.backup.reference'; }
-    public function restoreHandlerKey(): string { return 'ops.restore.reference'; }
-    public function restoreTargetKeys(): array { return $this->targets; }
-    public function maximumAttempts(): int { return 3; }
+    public function key(): string
+    {
+        return $this->providerKey;
+    }
+    public function backupHandlerKey(): string
+    {
+        return 'ops.backup.reference';
+    }
+    public function restoreHandlerKey(): string
+    {
+        return 'ops.restore.reference';
+    }
+    public function restoreTargetKeys(): array
+    {
+        return $this->targets;
+    }
+    public function maximumAttempts(): int
+    {
+        return 3;
+    }
 }
 
 final class MutableProvider implements BackupRestoreProvider
@@ -164,11 +197,31 @@ final class MutableProvider implements BackupRestoreProvider
     public array $targets = ['verification'];
     public int $attempts = 3;
 
-    public function key(): string { ++$this->calls['key']; return $this->providerKey; }
-    public function backupHandlerKey(): string { ++$this->calls['backup']; return $this->backupHandler; }
-    public function restoreHandlerKey(): string { ++$this->calls['restore']; return $this->restoreHandler; }
-    public function restoreTargetKeys(): array { ++$this->calls['targets']; return $this->targets; }
-    public function maximumAttempts(): int { ++$this->calls['attempts']; return $this->attempts; }
+    public function key(): string
+    {
+        ++$this->calls['key'];
+        return $this->providerKey;
+    }
+    public function backupHandlerKey(): string
+    {
+        ++$this->calls['backup'];
+        return $this->backupHandler;
+    }
+    public function restoreHandlerKey(): string
+    {
+        ++$this->calls['restore'];
+        return $this->restoreHandler;
+    }
+    public function restoreTargetKeys(): array
+    {
+        ++$this->calls['targets'];
+        return $this->targets;
+    }
+    public function maximumAttempts(): int
+    {
+        ++$this->calls['attempts'];
+        return $this->attempts;
+    }
 }
 
 final class Dispatcher implements OpsTaskDispatcher
@@ -185,13 +238,19 @@ final class Dispatcher implements OpsTaskDispatcher
 
     public function dispatch(PlatformContext $context, OpsTaskSubmission $submission): OpsTask
     {
-        if ($this->fail) throw new RuntimeException('password=do-not-leak /private/backup.sql');
+        if ($this->fail) {
+            throw new RuntimeException('password=do-not-leak /private/backup.sql');
+        }
         $existing = $this->idempotency[$submission->idempotencyDigest] ?? null;
         if ($existing !== null) {
-            if (!hash_equals($existing['request'], $submission->requestDigest)) throw OpsConsoleException::idempotencyConflict();
+            if (!hash_equals($existing['request'], $submission->requestDigest)) {
+                throw OpsConsoleException::idempotencyConflict();
+            }
             return $existing['task'];
         }
-        if (isset($this->active[$submission->concurrencyKey])) throw OpsConsoleException::operationInProgress();
+        if (isset($this->active[$submission->concurrencyKey])) {
+            throw OpsConsoleException::operationInProgress();
+        }
         $record = task(count($this->tasks) + 1, $submission->taskType);
         $this->submissions[] = $submission;
         $this->tasks[$record->taskKey] = $record;
@@ -215,12 +274,17 @@ final class MaintenanceStore implements MaintenanceWindowStore
     /** @var list<OpsAuditEvent> */
     public array $audits = [];
 
-    public function current(PlatformContext $context): ?MaintenanceWindow { return $this->window; }
+    public function current(PlatformContext $context): ?MaintenanceWindow
+    {
+        return $this->window;
+    }
 
     public function schedule(PlatformContext $context, MaintenanceWindow $candidate, int $expectedRevision, string $idempotencyDigest, string $requestDigest, OpsAuditEvent $audit): MaintenanceWindow
     {
         $replay = $this->replay($idempotencyDigest, $requestDigest);
-        if ($replay !== null) return $this->returned($replay);
+        if ($replay !== null) {
+            return $this->returned($replay);
+        }
         $actual = $this->window?->revision ?? 0;
         if ($actual !== $expectedRevision || ($this->window !== null && $this->window->state !== 'closed' && $expectedRevision === 0)) {
             throw OpsConsoleException::revisionConflict();
@@ -234,13 +298,19 @@ final class MaintenanceStore implements MaintenanceWindowStore
     public function close(PlatformContext $context, string $maintenanceKey, int $expectedRevision, string $idempotencyDigest, string $requestDigest, OpsAuditEvent $audit): MaintenanceWindow
     {
         $replay = $this->replay($idempotencyDigest, $requestDigest);
-        if ($replay !== null) return $replay;
+        if ($replay !== null) {
+            return $replay;
+        }
         if ($this->window === null || $this->window->maintenanceKey !== $maintenanceKey || $this->window->revision !== $expectedRevision) {
             throw OpsConsoleException::revisionConflict();
         }
         $this->window = new MaintenanceWindow(
-            $this->window->maintenanceKey, 'closed', $this->window->reasonKey,
-            $this->window->startsAt, $this->window->endsAt, $expectedRevision + 1,
+            $this->window->maintenanceKey,
+            'closed',
+            $this->window->reasonKey,
+            $this->window->startsAt,
+            $this->window->endsAt,
+            $expectedRevision + 1,
         );
         $this->idempotency[$idempotencyDigest] = ['request' => $requestDigest, 'window' => $this->window];
         $this->audits[] = $audit;
@@ -250,8 +320,12 @@ final class MaintenanceStore implements MaintenanceWindowStore
     private function replay(string $key, string $request): ?MaintenanceWindow
     {
         $existing = $this->idempotency[$key] ?? null;
-        if ($existing === null) return null;
-        if (!hash_equals($existing['request'], $request)) throw OpsConsoleException::idempotencyConflict();
+        if ($existing === null) {
+            return null;
+        }
+        if (!hash_equals($existing['request'], $request)) {
+            throw OpsConsoleException::idempotencyConflict();
+        }
         return $existing['window'];
     }
 
@@ -264,10 +338,15 @@ final class MaintenanceStore implements MaintenanceWindowStore
 final class LogProvider implements RuntimeLogProvider
 {
     public function __construct(private bool $fail = false, private ?StructuredLogBatch $batch = null) {}
-    public function sourceKey(): string { return 'application'; }
+    public function sourceKey(): string
+    {
+        return 'application';
+    }
     public function read(PlatformContext $context, RuntimeLogQuery $query): StructuredLogBatch
     {
-        if ($this->fail) throw new RuntimeException('Stack trace #0 /private/app.php password=secret');
+        if ($this->fail) {
+            throw new RuntimeException('Stack trace #0 /private/app.php password=secret');
+        }
         return $this->batch ?? new StructuredLogBatch([
             new StructuredLogRecord('runtime.request.failed', 'error', 'http.runtime', '2026-07-24T02:00:00.000Z', 'req_ops_console_0002', 2),
             new StructuredLogRecord('runtime.unknown', 'warning', 'worker.runtime', '2026-07-24T02:01:00.000Z', null, 1),
@@ -309,7 +388,8 @@ foreach (['repositoryClean', 'backupVerified', 'sourceEvidenceMatches'] as $evid
 try {
     new BackupRestoreProviderRegistry([new Provider(targets: ['production'])]);
     throw new RuntimeException('unsafe target registration did not fail');
-} catch (InvalidArgumentException) {}
+} catch (InvalidArgumentException) {
+}
 
 $mutableProvider = new MutableProvider();
 $snapshotRegistry = new BackupRestoreProviderRegistry([$mutableProvider]);
@@ -389,27 +469,41 @@ expectInvalidArgument(fn() => new MaintenanceWindow('maintenance_' . str_repeat(
 $invalidScheduleStore = new MaintenanceStore();
 $invalidScheduleStore->returnOverride = $forgedWindow;
 expectCode('OPS_INTERNAL_ERROR', fn() => (new MaintenanceService($all, new MaintenanceReasonRegistry(['upgrade']), $invalidScheduleStore))->schedule(
-    $platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-schedule-return-0001',
+    $platform,
+    'upgrade',
+    '2026-07-24T05:00:00.000Z',
+    '2026-07-24T06:00:00.000Z',
+    0,
+    'invalid-schedule-return-0001',
 ), 'invalid schedule store return fails closed');
 $invalidReplayStore = new MaintenanceStore();
 $invalidReplayService = new MaintenanceService($all, new MaintenanceReasonRegistry(['upgrade']), $invalidReplayStore);
 $invalidReplayService->schedule($platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-replay-return-0001');
 $invalidReplayStore->returnOverride = $forgedWindow;
 expectCode('OPS_INTERNAL_ERROR', fn() => $invalidReplayService->schedule(
-    $platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-replay-return-0001',
+    $platform,
+    'upgrade',
+    '2026-07-24T05:00:00.000Z',
+    '2026-07-24T06:00:00.000Z',
+    0,
+    'invalid-replay-return-0001',
 ), 'invalid idempotent replay store return fails closed');
 $invalidCloseStore = new MaintenanceStore();
 $invalidCloseService = new MaintenanceService($all, new MaintenanceReasonRegistry(['upgrade']), $invalidCloseStore);
 $closeCandidate = $invalidCloseService->schedule($platform, 'upgrade', '2026-07-24T05:00:00.000Z', '2026-07-24T06:00:00.000Z', 0, 'invalid-close-setup-0001');
 $invalidCloseStore->returnOverride = $forgedWindow;
 expectCode('OPS_INTERNAL_ERROR', fn() => $invalidCloseService->close(
-    $platform, $closeCandidate->maintenanceKey, $closeCandidate->revision, 'invalid-close-return-0001',
+    $platform,
+    $closeCandidate->maintenanceKey,
+    $closeCandidate->revision,
+    'invalid-close-return-0001',
 ), 'invalid close store return fails closed');
 
 try {
     new SafeLogMessageCatalog(['runtime.request.failed' => 'password=secret']);
     throw new RuntimeException('unsafe catalog message did not fail');
-} catch (InvalidArgumentException) {}
+} catch (InvalidArgumentException) {
+}
 $catalog = new SafeLogMessageCatalog(['runtime.request.failed' => 'A runtime request failed.']);
 same(['info', 'warning', 'error', 'critical'], LogSeverity::VALUES, 'PHP log severity parity');
 expectInvalidArgument(fn() => new RuntimeLogQuery('application', 'debug', null, 20), 'debug query severity is rejected');

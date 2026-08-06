@@ -13,7 +13,10 @@ use PeanutAdmin\TaskJob\Execution\TaskHandler;
 final readonly class ImportExportTaskHandler implements TaskHandler
 {
     public function __construct(private CsvOperationRunner $runner) {}
-    public function key(): string { return 'peanut.import-export.execute'; }
+    public function key(): string
+    {
+        return 'peanut.import-export.execute';
+    }
 
     public function handle(AuthorizedOperationContext $context, JobExecution $execution): void
     {

@@ -98,8 +98,14 @@ final readonly class OpsTaskService
         ], static fn(mixed $value): bool => $value !== null));
         try {
             return $this->dispatcher->dispatch($context, new OpsTaskSubmission(
-                $taskType, $handlerKey, $payload, $idempotencyDigest, $requestDigest,
-                $taskType . '.' . $provider->key, $provider->maximumAttempts, $audit,
+                $taskType,
+                $handlerKey,
+                $payload,
+                $idempotencyDigest,
+                $requestDigest,
+                $taskType . '.' . $provider->key,
+                $provider->maximumAttempts,
+                $audit,
             ));
         } catch (OpsConsoleException $exception) {
             throw $exception;
@@ -110,6 +116,8 @@ final readonly class OpsTaskService
 
     private function assertAllowed(PlatformContext $context, string $permission): void
     {
-        if (!$this->permissions->allows($context, $permission)) throw OpsConsoleException::denied();
+        if (!$this->permissions->allows($context, $permission)) {
+            throw OpsConsoleException::denied();
+        }
     }
 }

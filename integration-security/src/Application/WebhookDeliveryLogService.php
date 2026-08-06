@@ -22,7 +22,9 @@ final readonly class WebhookDeliveryLogService
     public function attempts(AuthorizedOperationContext $context, string $deliveryKey, int $page, int $pageSize): IntegrationSecurityPage
     {
         $this->assertRead($context);
-        if (preg_match('/^delivery_[0-9a-f]{32}$/D', $deliveryKey) !== 1) throw IntegrationSecurityException::invalid();
+        if (preg_match('/^delivery_[0-9a-f]{32}$/D', $deliveryKey) !== 1) {
+            throw IntegrationSecurityException::invalid();
+        }
         $this->assertPage($page, $pageSize);
         return $this->repository->deliveryAttemptRecords($context->tenantContext->tenantId, $deliveryKey, $page, $pageSize);
     }
@@ -36,6 +38,8 @@ final readonly class WebhookDeliveryLogService
 
     private function assertPage(int $page, int $pageSize): void
     {
-        if ($page < 1 || $pageSize < 1 || $pageSize > 100) throw IntegrationSecurityException::invalid();
+        if ($page < 1 || $pageSize < 1 || $pageSize > 100) {
+            throw IntegrationSecurityException::invalid();
+        }
     }
 }

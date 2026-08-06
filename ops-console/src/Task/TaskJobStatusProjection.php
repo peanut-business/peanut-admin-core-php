@@ -17,10 +17,17 @@ final class TaskJobStatusProjection
         }
         try {
             return new OpsTask(
-                $record->jobKey, $record->taskType, $record->status,
-                $record->attemptCount, $record->maxAttempts, $record->revision,
-                $record->lastErrorCode, $record->availableAt, $record->createdAt,
-                $record->updatedAt, $record->completedAt,
+                $record->jobKey,
+                $record->taskType,
+                $record->status,
+                $record->attemptCount,
+                $record->maxAttempts,
+                $record->revision,
+                $record->lastErrorCode,
+                $record->availableAt,
+                $record->createdAt,
+                $record->updatedAt,
+                $record->completedAt,
             );
         } catch (Throwable) {
             throw OpsConsoleException::taskUnavailable();

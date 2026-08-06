@@ -18,10 +18,14 @@ final class MaintenanceReasonRegistry
     {
         foreach ($keys as $key) {
             Contract::qualifiedKey($key, 64);
-            if (isset($this->keys[$key])) throw new InvalidArgumentException('Duplicate maintenance reason.');
+            if (isset($this->keys[$key])) {
+                throw new InvalidArgumentException('Duplicate maintenance reason.');
+            }
             $this->keys[$key] = true;
         }
-        if ($this->keys === [] || count($this->keys) > 32) throw new InvalidArgumentException('Missing maintenance reasons.');
+        if ($this->keys === [] || count($this->keys) > 32) {
+            throw new InvalidArgumentException('Missing maintenance reasons.');
+        }
     }
 
     public function require(string $key): string

@@ -37,7 +37,8 @@ final readonly class RuntimeLogService
             }
             return new RuntimeLogPage(array_map(
                 fn(StructuredLogRecord $record): RuntimeLogEntry => new RuntimeLogEntry(
-                    $record, $this->messages->message($record->eventKey),
+                    $record,
+                    $this->messages->message($record->eventKey),
                 ),
                 $batch->records,
             ), $batch->nextCursor);

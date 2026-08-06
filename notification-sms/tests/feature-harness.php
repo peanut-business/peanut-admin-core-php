@@ -11,7 +11,9 @@ spl_autoload_register(static function (string $class) use ($root): void {
     ] as $prefix => $directory) {
         if (str_starts_with($class, $prefix)) {
             $file = $directory . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
-            if (is_file($file)) require $file;
+            if (is_file($file)) {
+                require $file;
+            }
         }
     }
 });
@@ -35,25 +37,29 @@ use PeanutAdmin\NotificationSms\Persistence\NotificationRepository;
 use PeanutAdmin\NotificationSms\Persistence\PdoNotificationRepository;
 use PeanutAdmin\NotificationSms\Persistence\SmsDispatch;
 use PeanutAdmin\NotificationSms\Sms\LocalDevSmsProvider;
-use PeanutAdmin\NotificationSms\Sms\SmsReceipt;
 use PeanutAdmin\NotificationSms\Sms\SmsProvider;
 use PeanutAdmin\NotificationSms\Sms\SmsProviderException;
+use PeanutAdmin\NotificationSms\Sms\SmsReceipt;
 use PeanutAdmin\NotificationSms\Sms\SmsRecipient;
 use PeanutAdmin\NotificationSms\Sms\SmsRecipientResolver;
-use PeanutAdmin\NotificationSms\Task\OutboxTaskSubmissionProvider;
 use PeanutAdmin\NotificationSms\Task\InboxTaskHandler;
+use PeanutAdmin\NotificationSms\Task\OutboxTaskSubmissionProvider;
 use PeanutAdmin\NotificationSms\Task\SmsTaskHandler;
 use PeanutAdmin\TaskJob\Execution\JobExecution;
 use PeanutAdmin\TaskJob\Execution\RetryableTaskException;
 
 function same(mixed $expected, mixed $actual, string $message): void
 {
-    if ($expected !== $actual) throw new RuntimeException($message);
+    if ($expected !== $actual) {
+        throw new RuntimeException($message);
+    }
 }
 
 function expectCode(string $code, callable $operation, string $message): void
 {
-    try { $operation(); } catch (NotificationException $exception) {
+    try {
+        $operation();
+    } catch (NotificationException $exception) {
         same($code, $exception->problemCode, $message);
         return;
     }
@@ -98,11 +104,19 @@ final class MemoryRepository implements NotificationRepository
         $this->smsDigest = (new SmsRecipient('+8613800138000', str_repeat('k', 32)))->digest;
     }
 
-    public function transaction(callable $operation): mixed { return $operation(); }
-    public function putTemplate(TenantContext $context, string $templateKey, string $name, string $subjectTemplate, string $bodyTemplate, array $channels, array $variables, ?int $expectedRevision): array { return ['template_key' => $templateKey, 'revision' => 1]; }
+    public function transaction(callable $operation): mixed
+    {
+        return $operation();
+    }
+    public function putTemplate(TenantContext $context, string $templateKey, string $name, string $subjectTemplate, string $bodyTemplate, array $channels, array $variables, ?int $expectedRevision): array
+    {
+        return ['template_key' => $templateKey, 'revision' => 1];
+    }
     public function activeTemplate(int $tenantId, string $templateKey): array
     {
-        if ($tenantId !== 101 || $templateKey !== 'security.alert') throw NotificationException::notFound();
+        if ($tenantId !== 101 || $templateKey !== 'security.alert') {
+            throw NotificationException::notFound();
+        }
         return [
             'template_key' => 'security.alert', 'name' => 'Security alert',
             'subject_template' => 'Alert {{code}}', 'body_template' => 'Review {{code}}',
@@ -120,22 +134,52 @@ final class MemoryRepository implements NotificationRepository
             new OutboxRecord('outbox_' . str_repeat('2', 32), 101, 'sms', 'pending', null),
         ]];
     }
-    public function inbox(int $tenantId, int $memberId, string $status, int $page, int $pageSize): array { return ['items' => [], 'page' => 1, 'page_size' => 20, 'total' => 0]; }
-    public function changeInbox(TenantContext $context, string $messageKey, string $action, int $expectedRevision): NotificationMessage { throw new LogicException('unused'); }
-    public function bulkChangeInbox(TenantContext $context, array $messageKeys, string $action): int { throw new LogicException('unused'); }
-    public function outboxForSubmission(int $tenantId, string $outboxKey): OutboxRecord { throw new LogicException('unused'); }
-    public function bindJob(int $tenantId, string $outboxKey, string $jobKey): void { throw new LogicException('unused'); }
-    public function deliverInbox(int $tenantId, string $outboxKey, string $jobKey): void { if ($this->inboxDeliveryFails) throw new RuntimeException('database unavailable'); }
+    public function inbox(int $tenantId, int $memberId, string $status, int $page, int $pageSize): array
+    {
+        return ['items' => [], 'page' => 1, 'page_size' => 20, 'total' => 0];
+    }
+    public function changeInbox(TenantContext $context, string $messageKey, string $action, int $expectedRevision): NotificationMessage
+    {
+        throw new LogicException('unused');
+    }
+    public function bulkChangeInbox(TenantContext $context, array $messageKeys, string $action): int
+    {
+        throw new LogicException('unused');
+    }
+    public function outboxForSubmission(int $tenantId, string $outboxKey): OutboxRecord
+    {
+        throw new LogicException('unused');
+    }
+    public function bindJob(int $tenantId, string $outboxKey, string $jobKey): void
+    {
+        throw new LogicException('unused');
+    }
+    public function deliverInbox(int $tenantId, string $outboxKey, string $jobKey): void
+    {
+        if ($this->inboxDeliveryFails) {
+            throw new RuntimeException('database unavailable');
+        }
+    }
     public function beginSms(int $tenantId, string $outboxKey, string $jobKey): SmsDispatch
     {
-        if ($this->beginFails) throw new RuntimeException('database unavailable');
+        if ($this->beginFails) {
+            throw new RuntimeException('database unavailable');
+        }
         return new SmsDispatch($outboxKey, $tenantId, 501, $this->smsDigest, 'Security alert body', $jobKey, $this->receipt !== null);
     }
-    public function reserveSmsRate(int $tenantId, string $recipientDigest): bool { return $this->rateAllowed; }
-    public function completeSms(SmsDispatch $dispatch, SmsReceipt $receipt): void { $this->receipt = $receipt; }
+    public function reserveSmsRate(int $tenantId, string $recipientDigest): bool
+    {
+        return $this->rateAllowed;
+    }
+    public function completeSms(SmsDispatch $dispatch, SmsReceipt $receipt): void
+    {
+        $this->receipt = $receipt;
+    }
     public function failSms(SmsDispatch $dispatch, string $safeCode, bool $retryable): void
     {
-        if ($this->failureWriteFails) throw new RuntimeException('database unavailable');
+        if ($this->failureWriteFails) {
+            throw new RuntimeException('database unavailable');
+        }
         $this->failure = [$safeCode, $retryable];
     }
 }
@@ -148,7 +192,9 @@ expectCode('NOTIFICATION_TEMPLATE_VARIABLE_INVALID', fn() => $renderer->render('
 
 $recipient = new SmsRecipient('+8613800138000', str_repeat('k', 32));
 same('+861*******000', $recipient->masked, 'phone mask');
-if (str_contains(json_encode($recipient, JSON_THROW_ON_ERROR), '+8613800138000')) throw new RuntimeException('raw phone serialized');
+if (str_contains(json_encode($recipient, JSON_THROW_ON_ERROR), '+8613800138000')) {
+    throw new RuntimeException('raw phone serialized');
+}
 $provider = new LocalDevSmsProvider();
 $request = new \PeanutAdmin\NotificationSms\Sms\SmsSendRequest('job_' . str_repeat('a', 32), 101, 'outbox_' . str_repeat('2', 32), '+8613800138000', 'Test body');
 same('{}', json_encode($request, JSON_THROW_ON_ERROR), 'provider request is not implicitly serializable');
@@ -161,7 +207,9 @@ $service = new NotificationService(
     new class implements RecipientResolver {
         public function snapshot(TenantContext $context, int $memberId, bool $requiresSms): RecipientSnapshot
         {
-            if ($context->tenantId !== 101 || $memberId !== 501 || !$requiresSms) throw NotificationException::recipientUnavailable();
+            if ($context->tenantId !== 101 || $memberId !== 501 || !$requiresSms) {
+                throw NotificationException::recipientUnavailable();
+            }
             $phone = new SmsRecipient('+8613800138000', str_repeat('k', 32));
             return new RecipientSnapshot(501, 301, 'Ada Admin', $phone->masked, $phone->digest);
         }
@@ -169,7 +217,9 @@ $service = new NotificationService(
     new class implements AttachmentResolver {
         public function snapshot(TenantContext $context, string $fileKey): AttachmentReference
         {
-            if ($context->tenantId !== 101 || $fileKey !== 'file_' . str_repeat('f', 32)) throw NotificationException::attachmentUnavailable();
+            if ($context->tenantId !== 101 || $fileKey !== 'file_' . str_repeat('f', 32)) {
+                throw NotificationException::attachmentUnavailable();
+            }
             return new AttachmentReference($fileKey, 'report.pdf', 'application/pdf', 42, str_repeat('a', 64));
         }
     },
@@ -193,7 +243,9 @@ same(['outbox_key' => 'outbox_' . str_repeat('2', 32)], $submission->payload, 'm
 $resolver = new class implements SmsRecipientResolver {
     public function resolve(int $tenantId, int $memberId): SmsRecipient
     {
-        if ($tenantId !== 101 || $memberId !== 501) throw NotificationException::recipientUnavailable();
+        if ($tenantId !== 101 || $memberId !== 501) {
+            throw NotificationException::recipientUnavailable();
+        }
         return new SmsRecipient('+8613800138000', str_repeat('k', 32));
     }
 };
@@ -217,7 +269,10 @@ $transientLookup = new MemoryRepository();
 $transientLookup->failureWriteFails = true;
 try {
     (new SmsTaskHandler($transientLookup, new class implements SmsRecipientResolver {
-        public function resolve(int $tenantId, int $memberId): SmsRecipient { throw new RuntimeException('private lookup detail'); }
+        public function resolve(int $tenantId, int $memberId): SmsRecipient
+        {
+            throw new RuntimeException('private lookup detail');
+        }
     }, new LocalDevSmsProvider()))->handle(context('manage'), $execution);
     throw new RuntimeException('transient recipient lookup did not retry');
 } catch (RetryableTaskException $exception) {
@@ -238,7 +293,10 @@ $inboxFailure = new MemoryRepository();
 $inboxFailure->inboxDeliveryFails = true;
 try {
     (new InboxTaskHandler($inboxFailure))->handle(context('manage'), new JobExecution(
-        'job_' . str_repeat('c', 32), 101, 1, ['outbox_key' => 'outbox_' . str_repeat('1', 32)],
+        'job_' . str_repeat('c', 32),
+        101,
+        1,
+        ['outbox_key' => 'outbox_' . str_repeat('1', 32)],
     ));
     throw new RuntimeException('inbox persistence failure did not retry');
 } catch (RetryableTaskException $exception) {
@@ -248,7 +306,10 @@ try {
 $permanentProvider = new MemoryRepository();
 try {
     (new SmsTaskHandler($permanentProvider, $resolver, new class implements SmsProvider {
-        public function key(): string { return 'test-provider'; }
+        public function key(): string
+        {
+            return 'test-provider';
+        }
         public function send(\PeanutAdmin\NotificationSms\Sms\SmsSendRequest $request): SmsReceipt
         {
             throw SmsProviderException::permanent('SMS_DESTINATION_REJECTED');
@@ -261,11 +322,17 @@ try {
 }
 
 same(6, count(Schema::tableNames()), 'owned table count');
-if (!class_exists(PdoNotificationRepository::class)) throw new RuntimeException('PDO repository contract does not load');
+if (!class_exists(PdoNotificationRepository::class)) {
+    throw new RuntimeException('PDO repository contract does not load');
+}
 $schema = implode("\n", array_map(Schema::createSql(...), Schema::tableNames()));
 foreach (['tenant_id', 'recipient_phone_masked', 'recipient_phone_digest', 'dispatch_job_key', 'pa_sms_rate_bucket'] as $needle) {
-    if (!str_contains($schema, $needle)) throw new RuntimeException('schema missing ' . $needle);
+    if (!str_contains($schema, $needle)) {
+        throw new RuntimeException('schema missing ' . $needle);
+    }
 }
-if (str_contains($schema, 'phone_e164') || str_contains($schema, 'provider_secret')) throw new RuntimeException('schema stores raw phone or secret');
+if (str_contains($schema, 'phone_e164') || str_contains($schema, 'provider_secret')) {
+    throw new RuntimeException('schema stores raw phone or secret');
+}
 
 fwrite(STDOUT, "notification-sms feature harness: PASS\n");

@@ -25,14 +25,18 @@ final readonly class PdoIntegrationSecurityRepository implements IntegrationSecu
 
     public function transaction(callable $operation): mixed
     {
-        if ($this->pdo->inTransaction()) return $operation();
+        if ($this->pdo->inTransaction()) {
+            return $operation();
+        }
         $this->pdo->beginTransaction();
         try {
             $result = $operation();
             $this->pdo->commit();
             return $result;
         } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) $this->pdo->rollBack();
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
             throw $exception;
         }
     }
@@ -73,7 +77,9 @@ SQL, [
         $statement = $this->pdo->prepare('SELECT tenant_id, identity_key, scopes_json, status, expires_at FROM pa_integration_machine_identity WHERE token_digest = :digest');
         $statement->execute(['digest' => $tokenDigest]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) return null;
+        if (!is_array($row)) {
+            return null;
+        }
         return [
             'tenant_id' => (int) $row['tenant_id'], 'identity_key' => (string) $row['identity_key'],
             'scopes' => $this->stringList($row['scopes_json']), 'status' => (string) $row['status'],
@@ -92,13 +98,19 @@ SQL, [
     {
         return $this->transaction(function () use ($context, $identityKey, $expectedRevision, $successorKey, $name, $scopes, $tokenPrefix, $tokenDigest, $tokenLastFour, $expiresAt): MachineIdentity {
             $current = $this->machineByKey($context->tenantId, $identityKey, true);
-            if ($current === null) throw IntegrationSecurityException::machineNotFound();
-            if ($current['status'] !== 'active' || (int) $current['revision'] !== $expectedRevision) throw IntegrationSecurityException::conflict();
+            if ($current === null) {
+                throw IntegrationSecurityException::machineNotFound();
+            }
+            if ($current['status'] !== 'active' || (int) $current['revision'] !== $expectedRevision) {
+                throw IntegrationSecurityException::conflict();
+            }
             $now = new DateTimeImmutable('now');
             $updated = $this->execute("UPDATE pa_integration_machine_identity SET status = 'rotated', rotated_at = :rotated_at, revision = revision + 1, updated_at = :updated_at WHERE id = :id AND status = 'active' AND revision = :revision", [
                 'rotated_at' => $this->format($now), 'updated_at' => $this->format($now), 'id' => $current['id'], 'revision' => $expectedRevision,
             ]);
-            if ($updated !== 1) throw IntegrationSecurityException::conflict();
+            if ($updated !== 1) {
+                throw IntegrationSecurityException::conflict();
+            }
             $this->execute(<<<'SQL'
 INSERT INTO pa_integration_machine_identity (
  tenant_id, identity_key, family_key, name, scopes_json, token_prefix, token_digest,
@@ -121,12 +133,18 @@ SQL, [
     {
         return $this->transaction(function () use ($context, $identityKey, $expectedRevision): MachineIdentity {
             $row = $this->machineByKey($context->tenantId, $identityKey, true);
-            if ($row === null) throw IntegrationSecurityException::machineNotFound();
-            if ($row['status'] !== 'active' || (int) $row['revision'] !== $expectedRevision) throw IntegrationSecurityException::conflict();
+            if ($row === null) {
+                throw IntegrationSecurityException::machineNotFound();
+            }
+            if ($row['status'] !== 'active' || (int) $row['revision'] !== $expectedRevision) {
+                throw IntegrationSecurityException::conflict();
+            }
             $now = new DateTimeImmutable('now');
             if ($this->execute("UPDATE pa_integration_machine_identity SET status = 'revoked', revoked_at = :revoked_at, revision = revision + 1, updated_at = :updated_at WHERE id = :id AND status = 'active' AND revision = :revision", [
                 'revoked_at' => $this->format($now), 'updated_at' => $this->format($now), 'id' => $row['id'], 'revision' => $expectedRevision,
-            ]) !== 1) throw IntegrationSecurityException::conflict();
+            ]) !== 1) {
+                throw IntegrationSecurityException::conflict();
+            }
             $this->audit($context, 'tenant.integration.machine_revoked', 'machine', $identityKey, []);
             return $this->machineRow($this->machineByKey($context->tenantId, $identityKey, false) ?? throw IntegrationSecurityException::machineNotFound());
         });
@@ -162,13 +180,19 @@ SQL, [
     {
         return $this->transaction(function () use ($context, $endpointKey, $expectedRevision, $secretCiphertext, $secretKeyId): WebhookEndpoint {
             $row = $this->endpointByKey($context->tenantId, $endpointKey, true);
-            if ($row === null) throw IntegrationSecurityException::endpointNotFound();
-            if ($row['status'] !== 'active' || (int) $row['revision'] !== $expectedRevision) throw IntegrationSecurityException::conflict();
+            if ($row === null) {
+                throw IntegrationSecurityException::endpointNotFound();
+            }
+            if ($row['status'] !== 'active' || (int) $row['revision'] !== $expectedRevision) {
+                throw IntegrationSecurityException::conflict();
+            }
             $now = new DateTimeImmutable('now');
             if ($this->execute("UPDATE pa_integration_webhook_endpoint SET secret_ciphertext = :ciphertext, secret_key_id = :key_id, revision = revision + 1, updated_at = :now WHERE id = :id AND status = 'active' AND revision = :revision", [
                 'ciphertext' => $secretCiphertext, 'key_id' => $secretKeyId, 'now' => $this->format($now),
                 'id' => $row['id'], 'revision' => $expectedRevision,
-            ]) !== 1) throw IntegrationSecurityException::conflict();
+            ]) !== 1) {
+                throw IntegrationSecurityException::conflict();
+            }
             $this->audit($context, 'tenant.integration.webhook_secret_rotated', 'webhook', $endpointKey, []);
             return $this->endpointRow($this->endpointByKey($context->tenantId, $endpointKey, false) ?? throw IntegrationSecurityException::endpointNotFound());
         });
@@ -178,12 +202,18 @@ SQL, [
     {
         return $this->transaction(function () use ($context, $endpointKey, $expectedRevision): WebhookEndpoint {
             $row = $this->endpointByKey($context->tenantId, $endpointKey, true);
-            if ($row === null) throw IntegrationSecurityException::endpointNotFound();
-            if ($row['status'] !== 'active' || (int) $row['revision'] !== $expectedRevision) throw IntegrationSecurityException::conflict();
+            if ($row === null) {
+                throw IntegrationSecurityException::endpointNotFound();
+            }
+            if ($row['status'] !== 'active' || (int) $row['revision'] !== $expectedRevision) {
+                throw IntegrationSecurityException::conflict();
+            }
             $now = new DateTimeImmutable('now');
             if ($this->execute("UPDATE pa_integration_webhook_endpoint SET status = 'disabled', disabled_at = :disabled_at, revision = revision + 1, updated_at = :updated_at WHERE id = :id AND status = 'active' AND revision = :revision", [
                 'disabled_at' => $this->format($now), 'updated_at' => $this->format($now), 'id' => $row['id'], 'revision' => $expectedRevision,
-            ]) !== 1) throw IntegrationSecurityException::conflict();
+            ]) !== 1) {
+                throw IntegrationSecurityException::conflict();
+            }
             $this->execute("UPDATE pa_integration_webhook_delivery SET status = 'permanent_failed', last_error_code = 'WEBHOOK_ENDPOINT_DISABLED', updated_at = :now WHERE tenant_id = :tenant_id AND endpoint_id = :endpoint_id AND status IN ('pending', 'retryable')", [
                 'now' => $this->format($now), 'tenant_id' => $context->tenantId, 'endpoint_id' => $row['id'],
             ]);
@@ -202,14 +232,18 @@ SQL, [
     public function enqueueDelivery(int $tenantId, string $endpointKey, TrustedWebhookEvent $event, DateTimeImmutable $now): string
     {
         $endpoint = $this->endpointByKey($tenantId, $endpointKey, true);
-        if ($endpoint === null || $endpoint['status'] !== 'active') throw IntegrationSecurityException::endpointNotFound();
+        if ($endpoint === null || $endpoint['status'] !== 'active') {
+            throw IntegrationSecurityException::endpointNotFound();
+        }
         $payload = $event->canonicalPayload();
         $digest = hash('sha256', $payload);
         $existing = $this->fetchOne('SELECT delivery_key, event_type, payload_sha256 FROM pa_integration_webhook_delivery WHERE tenant_id = :tenant_id AND endpoint_id = :endpoint_id AND event_key = :event_key FOR UPDATE', [
             'tenant_id' => $tenantId, 'endpoint_id' => $endpoint['id'], 'event_key' => $event->eventKey,
         ]);
         if ($existing !== null) {
-            if (!hash_equals((string) $existing['event_type'], $event->eventType) || !hash_equals((string) $existing['payload_sha256'], $digest)) throw IntegrationSecurityException::conflict();
+            if (!hash_equals((string) $existing['event_type'], $event->eventType) || !hash_equals((string) $existing['payload_sha256'], $digest)) {
+                throw IntegrationSecurityException::conflict();
+            }
             return (string) $existing['delivery_key'];
         }
         $deliveryKey = 'delivery_' . bin2hex(random_bytes(16));
@@ -230,7 +264,9 @@ SQL, [
 
     public function claimDelivery(int $tenantId, string $leaseDigest, int $leaseSeconds, DateTimeImmutable $now): ?WebhookDelivery
     {
-        if ($leaseSeconds < 5 || $leaseSeconds > 300 || preg_match('/^[0-9a-f]{64}$/D', $leaseDigest) !== 1) throw IntegrationSecurityException::invalid();
+        if ($leaseSeconds < 5 || $leaseSeconds > 300 || preg_match('/^[0-9a-f]{64}$/D', $leaseDigest) !== 1) {
+            throw IntegrationSecurityException::invalid();
+        }
         return $this->transaction(function () use ($tenantId, $leaseDigest, $leaseSeconds, $now): ?WebhookDelivery {
             $expired = $this->fetchAll('SELECT id, attempt_count FROM pa_integration_webhook_delivery WHERE tenant_id = :tenant_id AND status = \'delivering\' AND lease_expires_at <= :lease_cutoff ORDER BY id FOR UPDATE', [
                 'tenant_id' => $tenantId, 'lease_cutoff' => $this->format($now),
@@ -257,17 +293,30 @@ WHERE d.tenant_id = :tenant_id AND d.status IN ('pending', 'retryable')
 ORDER BY d.available_at, d.id
 LIMIT 1 FOR UPDATE SKIP LOCKED
 SQL, ['tenant_id' => $tenantId, 'now' => $this->format($now)]);
-            if ($row === null) return null;
+            if ($row === null) {
+                return null;
+            }
             $attempt = (int) $row['attempt_count'] + 1;
             $expires = $now->modify('+' . $leaseSeconds . ' seconds');
             if ($this->execute("UPDATE pa_integration_webhook_delivery SET status = 'delivering', attempt_count = :attempt, lease_digest = :lease_digest, lease_expires_at = :lease_expires_at, updated_at = :now WHERE id = :id AND tenant_id = :tenant_id AND status IN ('pending', 'retryable')", [
                 'attempt' => $attempt, 'lease_digest' => $leaseDigest, 'lease_expires_at' => $this->format($expires),
                 'now' => $this->format($now), 'id' => $row['id'], 'tenant_id' => $tenantId,
-            ]) !== 1) throw IntegrationSecurityException::conflict();
+            ]) !== 1) {
+                throw IntegrationSecurityException::conflict();
+            }
             return new WebhookDelivery(
-                (int) $row['id'], $tenantId, (string) $row['endpoint_key'], (string) $row['delivery_key'],
-                (string) $row['event_type'], $this->jsonText($row['payload_json']), (string) $row['payload_sha256'],
-                (string) $row['url'], (string) $row['secret_ciphertext'], (string) $row['secret_key_id'], $attempt, $leaseDigest,
+                (int) $row['id'],
+                $tenantId,
+                (string) $row['endpoint_key'],
+                (string) $row['delivery_key'],
+                (string) $row['event_type'],
+                $this->jsonText($row['payload_json']),
+                (string) $row['payload_sha256'],
+                (string) $row['url'],
+                (string) $row['secret_ciphertext'],
+                (string) $row['secret_key_id'],
+                $attempt,
+                $leaseDigest,
             );
         });
     }
@@ -279,19 +328,25 @@ SQL, ['tenant_id' => $tenantId, 'now' => $this->format($now)]);
 
     public function failDelivery(WebhookDelivery $delivery, string $safeCode, bool $retryable, ?int $statusCode, int $durationMs, DateTimeImmutable $now): void
     {
-        if (preg_match('/^[A-Z][A-Z0-9_]{2,63}$/D', $safeCode) !== 1) throw IntegrationSecurityException::invalid();
+        if (preg_match('/^[A-Z][A-Z0-9_]{2,63}$/D', $safeCode) !== 1) {
+            throw IntegrationSecurityException::invalid();
+        }
         $status = $retryable && $delivery->attemptNumber < 8 ? 'retryable' : 'permanent_failed';
         $this->finishDelivery($delivery, $status, $safeCode, $statusCode, $durationMs, $now, $status === 'retryable');
     }
 
     private function finishDelivery(WebhookDelivery $delivery, string $status, ?string $errorCode, ?int $statusCode, int $durationMs, DateTimeImmutable $now, bool $retryable): void
     {
-        if ($durationMs < 0 || $durationMs > 30000 || ($statusCode !== null && ($statusCode < 100 || $statusCode > 599))) throw IntegrationSecurityException::invalid();
+        if ($durationMs < 0 || $durationMs > 30000 || ($statusCode !== null && ($statusCode < 100 || $statusCode > 599))) {
+            throw IntegrationSecurityException::invalid();
+        }
         $this->transaction(function () use ($delivery, $status, $errorCode, $statusCode, $durationMs, $now, $retryable): void {
             $current = $this->fetchOne('SELECT status, attempt_count, lease_digest FROM pa_integration_webhook_delivery WHERE tenant_id = :tenant_id AND id = :id FOR UPDATE', [
                 'tenant_id' => $delivery->tenantId, 'id' => $delivery->id,
             ]);
-            if ($current === null || $current['status'] !== 'delivering' || (int) $current['attempt_count'] !== $delivery->attemptNumber || !hash_equals((string) $current['lease_digest'], $delivery->leaseDigest)) throw IntegrationSecurityException::conflict();
+            if ($current === null || $current['status'] !== 'delivering' || (int) $current['attempt_count'] !== $delivery->attemptNumber || !hash_equals((string) $current['lease_digest'], $delivery->leaseDigest)) {
+                throw IntegrationSecurityException::conflict();
+            }
             $this->execute('INSERT INTO pa_integration_webhook_attempt (tenant_id, delivery_id, attempt_number, outcome, response_status, error_code, duration_ms, attempted_at) VALUES (:tenant_id, :delivery_id, :attempt, :outcome, :response_status, :error_code, :duration_ms, :now)', [
                 'tenant_id' => $delivery->tenantId, 'delivery_id' => $delivery->id, 'attempt' => $delivery->attemptNumber,
                 'outcome' => $status, 'response_status' => $statusCode, 'error_code' => $errorCode,
@@ -336,11 +391,15 @@ SQL);
         $statement->bindValue(':offset', $offset, PDO::PARAM_INT);
         $statement->execute();
         $items = array_map(fn(array $row): WebhookDeliveryRecord => new WebhookDeliveryRecord(
-            (string) $row['delivery_key'], (string) $row['endpoint_key'], (string) $row['event_type'],
-            (string) $row['status'], (int) $row['attempt_count'],
+            (string) $row['delivery_key'],
+            (string) $row['endpoint_key'],
+            (string) $row['event_type'],
+            (string) $row['status'],
+            (int) $row['attempt_count'],
             $row['last_status_code'] === null ? null : (int) $row['last_status_code'],
             $row['last_error_code'] === null ? null : (string) $row['last_error_code'],
-            $this->instant((string) $row['created_at']), $this->instant((string) $row['updated_at']),
+            $this->instant((string) $row['created_at']),
+            $this->instant((string) $row['updated_at']),
             $row['delivered_at'] === null ? null : $this->instant((string) $row['delivered_at']),
         ), $statement->fetchAll(PDO::FETCH_ASSOC));
         return new IntegrationSecurityPage($items, $page, $pageSize, (int) $count->fetchColumn());
@@ -351,7 +410,9 @@ SQL);
         $delivery = $this->fetchOne('SELECT id FROM pa_integration_webhook_delivery WHERE tenant_id = :tenant_id AND delivery_key = :delivery_key', [
             'tenant_id' => $tenantId, 'delivery_key' => $deliveryKey,
         ]);
-        if ($delivery === null) return new IntegrationSecurityPage([], $page, $pageSize, 0);
+        if ($delivery === null) {
+            return new IntegrationSecurityPage([], $page, $pageSize, 0);
+        }
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM pa_integration_webhook_attempt WHERE tenant_id = :tenant_id AND delivery_id = :delivery_id');
         $count->execute(['tenant_id' => $tenantId, 'delivery_id' => $delivery['id']]);
         $statement = $this->pdo->prepare('SELECT attempt_number, outcome, response_status, error_code, duration_ms, attempted_at FROM pa_integration_webhook_attempt WHERE tenant_id = :tenant_id AND delivery_id = :delivery_id ORDER BY attempt_number DESC LIMIT :page_size OFFSET :offset');
@@ -361,10 +422,12 @@ SQL);
         $statement->bindValue(':offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
         $statement->execute();
         $items = array_map(fn(array $row): WebhookAttemptRecord => new WebhookAttemptRecord(
-            (int) $row['attempt_number'], (string) $row['outcome'],
+            (int) $row['attempt_number'],
+            (string) $row['outcome'],
             $row['response_status'] === null ? null : (int) $row['response_status'],
             $row['error_code'] === null ? null : (string) $row['error_code'],
-            (int) $row['duration_ms'], $this->instant((string) $row['attempted_at']),
+            (int) $row['duration_ms'],
+            $this->instant((string) $row['attempted_at']),
         ), $statement->fetchAll(PDO::FETCH_ASSOC));
         return new IntegrationSecurityPage($items, $page, $pageSize, (int) $count->fetchColumn());
     }
@@ -382,7 +445,9 @@ SQL);
             $row = $this->fetchOne('SELECT * FROM pa_tenant_session WHERE tenant_id = :tenant_id AND account_id = :account_id AND session_key = :session_key FOR UPDATE', [
                 'tenant_id' => $context->tenantId, 'account_id' => $context->accountId, 'session_key' => $sessionKey,
             ]);
-            if ($row === null) throw IntegrationSecurityException::sessionNotFound();
+            if ($row === null) {
+                throw IntegrationSecurityException::sessionNotFound();
+            }
             if ($row['status'] === 'active') {
                 $now = new DateTimeImmutable('now');
                 $this->execute("UPDATE pa_tenant_session SET status = 'revoked', revoked_at = :revoked_at, revoke_reason = 'user_device_revoked', updated_at = :updated_at WHERE id = :id AND status = 'active'", [
@@ -411,19 +476,29 @@ SQL);
     private function machineRow(array $row): MachineIdentity
     {
         return new MachineIdentity(
-            (string) $row['identity_key'], (string) $row['name'], $this->stringList($row['scopes_json']),
-            (string) $row['status'], (string) $row['token_prefix'], (string) $row['token_last_four'],
+            (string) $row['identity_key'],
+            (string) $row['name'],
+            $this->stringList($row['scopes_json']),
+            (string) $row['status'],
+            (string) $row['token_prefix'],
+            (string) $row['token_last_four'],
             $row['expires_at'] === null ? null : $this->instant((string) $row['expires_at']),
             $row['last_used_at'] === null ? null : $this->instant((string) $row['last_used_at']),
-            (int) $row['revision'], $this->instant((string) $row['created_at']),
+            (int) $row['revision'],
+            $this->instant((string) $row['created_at']),
         );
     }
 
     private function endpointRow(array $row): WebhookEndpoint
     {
         return new WebhookEndpoint(
-            (string) $row['endpoint_key'], (string) $row['name'], (string) $row['url'], $this->stringList($row['events_json']),
-            (string) $row['status'], (int) $row['revision'], $this->instant((string) $row['created_at']),
+            (string) $row['endpoint_key'],
+            (string) $row['name'],
+            (string) $row['url'],
+            $this->stringList($row['events_json']),
+            (string) $row['status'],
+            (int) $row['revision'],
+            $this->instant((string) $row['created_at']),
         );
     }
 
@@ -432,9 +507,14 @@ SQL);
         $ip = is_string($row['ip_address']) ? $this->maskIp($row['ip_address']) : null;
         $agent = is_string($row['user_agent_hash']) ? substr($row['user_agent_hash'], 0, 12) : null;
         return new SessionDevice(
-            (string) $row['session_key'], (string) $row['client_key'], (string) $row['status'],
-            hash_equals($currentSessionKey, (string) $row['session_key']), $ip, $agent,
-            $this->instant((string) $row['issued_at']), $this->instant((string) $row['last_seen_at']),
+            (string) $row['session_key'],
+            (string) $row['client_key'],
+            (string) $row['status'],
+            hash_equals($currentSessionKey, (string) $row['session_key']),
+            $ip,
+            $agent,
+            $this->instant((string) $row['issued_at']),
+            $this->instant((string) $row['last_seen_at']),
             $this->instant((string) $row['absolute_expires_at']),
             $row['revoked_at'] === null ? null : $this->instant((string) $row['revoked_at']),
         );
@@ -443,10 +523,13 @@ SQL);
     private function maskIp(string $ip): ?string
     {
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            $parts = explode('.', $ip); $parts[3] = '*'; return implode('.', $parts);
+            $parts = explode('.', $ip);
+            $parts[3] = '*';
+            return implode('.', $parts);
         }
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            $parts = explode(':', $ip); return implode(':', array_slice($parts, 0, 3)) . ':*';
+            $parts = explode(':', $ip);
+            return implode(':', array_slice($parts, 0, 3)) . ':*';
         }
         return null;
     }
@@ -454,7 +537,9 @@ SQL);
     /** @param array<string, scalar|null> $metadata */
     private function audit(TenantContext $context, string $eventKey, string $targetType, string $targetKey, array $metadata): void
     {
-        if (count($metadata) > 8) throw IntegrationSecurityException::invalid();
+        if (count($metadata) > 8) {
+            throw IntegrationSecurityException::invalid();
+        }
         $this->execute('INSERT INTO pa_integration_security_event (tenant_id, event_key, actor_member_id, target_type, target_key_hash, metadata_json, request_id_hash, occurred_at) VALUES (:tenant_id, :event_key, :member_id, :target_type, :target_hash, :metadata, :request_hash, :now)', [
             'tenant_id' => $context->tenantId, 'event_key' => $eventKey, 'member_id' => $context->memberId,
             'target_type' => $targetType, 'target_hash' => hash('sha256', $targetKey), 'metadata' => $this->json($metadata),
@@ -466,37 +551,61 @@ SQL);
     private function stringList(mixed $json): array
     {
         $decoded = json_decode($this->jsonText($json), true, 64, JSON_THROW_ON_ERROR);
-        if (!is_array($decoded) || !array_is_list($decoded)) throw IntegrationSecurityException::invalid();
-        foreach ($decoded as $item) if (!is_string($item)) throw IntegrationSecurityException::invalid();
+        if (!is_array($decoded) || !array_is_list($decoded)) {
+            throw IntegrationSecurityException::invalid();
+        }
+        foreach ($decoded as $item) {
+            if (!is_string($item)) {
+                throw IntegrationSecurityException::invalid();
+            }
+        }
         return $decoded;
     }
 
     private function jsonText(mixed $json): string
     {
-        if (!is_string($json)) throw IntegrationSecurityException::invalid();
+        if (!is_string($json)) {
+            throw IntegrationSecurityException::invalid();
+        }
         json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         return $json;
     }
 
-    private function json(mixed $value): string { return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); }
-    private function format(DateTimeImmutable $value): string { return $value->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.v'); }
-    private function instant(string $value): string { return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.v\Z'); }
+    private function json(mixed $value): string
+    {
+        return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+    private function format(DateTimeImmutable $value): string
+    {
+        return $value->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.v');
+    }
+    private function instant(string $value): string
+    {
+        return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.v\Z');
+    }
 
     /** @param array<string, mixed> $parameters */
     private function execute(string $sql, array $parameters): int
     {
-        $statement = $this->pdo->prepare($sql); $statement->execute($parameters); return $statement->rowCount();
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute($parameters);
+        return $statement->rowCount();
     }
 
     /** @param array<string, mixed> $parameters @return array<string, mixed>|null */
     private function fetchOne(string $sql, array $parameters): ?array
     {
-        $statement = $this->pdo->prepare($sql); $statement->execute($parameters); $row = $statement->fetch(PDO::FETCH_ASSOC); return is_array($row) ? $row : null;
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute($parameters);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return is_array($row) ? $row : null;
     }
 
     /** @param array<string, mixed> $parameters @return list<array<string, mixed>> */
     private function fetchAll(string $sql, array $parameters): array
     {
-        $statement = $this->pdo->prepare($sql); $statement->execute($parameters); return $statement->fetchAll(PDO::FETCH_ASSOC);
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute($parameters);
+        return $statement->fetchAll(PDO::FETCH_ASSOC);
     }
 }

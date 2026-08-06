@@ -23,12 +23,16 @@ final readonly class SessionSecurityService
     public function revoke(AuthorizedOperationContext $context, string $sessionKey): SessionDevice
     {
         $this->assertOperation($context, 'session-revoke');
-        if (preg_match('/^[0-9A-HJKMNP-TV-Z]{26}$/D', $sessionKey) !== 1) throw IntegrationSecurityException::sessionNotFound();
+        if (preg_match('/^[0-9A-HJKMNP-TV-Z]{26}$/D', $sessionKey) !== 1) {
+            throw IntegrationSecurityException::sessionNotFound();
+        }
         return $this->repository->revokeOwnSession($context->tenantContext, $sessionKey);
     }
 
     private function assertOperation(AuthorizedOperationContext $context, string $operation): void
     {
-        if (!hash_equals(Package::RESOURCE_KEY, $context->resourceKey) || !hash_equals($operation, $context->operation)) throw IntegrationSecurityException::denied();
+        if (!hash_equals(Package::RESOURCE_KEY, $context->resourceKey) || !hash_equals($operation, $context->operation)) {
+            throw IntegrationSecurityException::denied();
+        }
     }
 }

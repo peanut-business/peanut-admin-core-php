@@ -32,15 +32,23 @@ final readonly class TrustedWebhookEvent
 
     private static function normalize(mixed $value, int $depth = 0): mixed
     {
-        if ($depth > 32) throw IntegrationSecurityException::invalid();
-        if (!is_array($value)) {
-            if ($value === null || is_string($value) || is_int($value) || is_bool($value) || (is_float($value) && is_finite($value))) return $value;
+        if ($depth > 32) {
             throw IntegrationSecurityException::invalid();
         }
-        if (array_is_list($value)) return array_map(static fn(mixed $item): mixed => self::normalize($item, $depth + 1), $value);
+        if (!is_array($value)) {
+            if ($value === null || is_string($value) || is_int($value) || is_bool($value) || (is_float($value) && is_finite($value))) {
+                return $value;
+            }
+            throw IntegrationSecurityException::invalid();
+        }
+        if (array_is_list($value)) {
+            return array_map(static fn(mixed $item): mixed => self::normalize($item, $depth + 1), $value);
+        }
         ksort($value, SORT_STRING);
         foreach ($value as $key => $item) {
-            if (!is_string($key) || $key === '' || strlen($key) > 128) throw IntegrationSecurityException::invalid();
+            if (!is_string($key) || $key === '' || strlen($key) > 128) {
+                throw IntegrationSecurityException::invalid();
+            }
             $value[$key] = self::normalize($item, $depth + 1);
         }
         return $value;

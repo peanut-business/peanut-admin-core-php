@@ -148,14 +148,18 @@ SQL);
         }
         try {
             $row = $this->rowByJobKey($tenantId, $jobKey, true);
-            if ($row === null) throw TaskJobException::notFound();
+            if ($row === null) {
+                throw TaskJobException::notFound();
+            }
             $statement = $this->pdo->prepare(<<<'SQL'
 UPDATE pa_task_job
 SET status = 'cancelled', completed_at = UTC_TIMESTAMP(3), revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
 WHERE tenant_id = :tenant_id AND job_key = :job_key AND status = 'queued' AND revision = :revision
 SQL);
             $statement->execute(['tenant_id' => $tenantId, 'job_key' => $jobKey, 'revision' => $revision]);
-            if ($statement->rowCount() !== 1) throw TaskJobException::stateConflict();
+            if ($statement->rowCount() !== 1) {
+                throw TaskJobException::stateConflict();
+            }
             $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.cancelled', $actorMemberId, ['revision' => $revision + 1]);
             $updated = $this->rowById($tenantId, (int) $row['id'], false);
             if ($ownsTransaction) {
@@ -178,7 +182,9 @@ SQL);
         }
         try {
             $row = $this->rowByJobKey($tenantId, $jobKey, true);
-            if ($row === null) throw TaskJobException::notFound();
+            if ($row === null) {
+                throw TaskJobException::notFound();
+            }
             $statement = $this->pdo->prepare(<<<'SQL'
 UPDATE pa_task_job
 SET status = 'queued', max_attempts = attempt_count + 1, available_at = UTC_TIMESTAMP(3),
@@ -187,7 +193,9 @@ WHERE tenant_id = :tenant_id AND job_key = :job_key AND status = 'dead' AND revi
   AND attempt_count < 10
 SQL);
             $statement->execute(['tenant_id' => $tenantId, 'job_key' => $jobKey, 'revision' => $revision]);
-            if ($statement->rowCount() !== 1) throw TaskJobException::stateConflict();
+            if ($statement->rowCount() !== 1) {
+                throw TaskJobException::stateConflict();
+            }
             $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.retried', $actorMemberId, ['revision' => $revision + 1]);
             $updated = $this->rowById($tenantId, (int) $row['id'], false);
             if ($ownsTransaction) {
@@ -402,8 +410,12 @@ SQL);
             }
             $event = $jobStatus === 'queued' ? 'tenant.task.retry_scheduled' : 'tenant.task.' . $jobStatus;
             $metadata = ['attempt' => $claim->attemptNumber];
-            if ($errorCode !== null) $metadata['error_code'] = $errorCode;
-            if ($canRetry) $metadata['backoff_seconds'] = $backoffSeconds;
+            if ($errorCode !== null) {
+                $metadata['error_code'] = $errorCode;
+            }
+            if ($canRetry) {
+                $metadata['backoff_seconds'] = $backoffSeconds;
+            }
             $this->insertEvent($claim->tenantId, $claim->id, $event, null, $metadata);
             $this->pdo->commit();
             return $jobStatus;
@@ -525,7 +537,9 @@ SQL);
             throw TaskJobException::internal();
         }
         $value = is_array($document) && is_array($document['payload'] ?? null) ? ($document['payload'][$field] ?? null) : null;
-        if (!is_string($value) || $value === '') throw TaskJobException::internal();
+        if (!is_string($value) || $value === '') {
+            throw TaskJobException::internal();
+        }
         return $value;
     }
 

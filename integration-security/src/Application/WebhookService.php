@@ -50,7 +50,9 @@ final readonly class WebhookService
     {
         $this->assertOperation($context, 'webhook-manage');
         $this->assertEndpointKey($endpointKey);
-        if ($expectedRevision < 1) throw IntegrationSecurityException::invalid();
+        if ($expectedRevision < 1) {
+            throw IntegrationSecurityException::invalid();
+        }
         $secret = self::secret();
         $sealed = $this->secrets->seal($secret, $context->tenantContext->tenantId . ':' . $endpointKey);
         $endpoint = $this->repository->rotateEndpointSecret($context->tenantContext, $endpointKey, $expectedRevision, $sealed['ciphertext'], $sealed['key_id']);
@@ -61,7 +63,9 @@ final readonly class WebhookService
     {
         $this->assertOperation($context, 'webhook-manage');
         $this->assertEndpointKey($endpointKey);
-        if ($expectedRevision < 1) throw IntegrationSecurityException::invalid();
+        if ($expectedRevision < 1) {
+            throw IntegrationSecurityException::invalid();
+        }
         return $this->repository->disableEndpoint($context->tenantContext, $endpointKey, $expectedRevision);
     }
 
@@ -69,24 +73,36 @@ final readonly class WebhookService
     private function validate(string $name, array $events): array
     {
         $name = trim($name);
-        if ($name === '' || mb_strlen($name) > 120) throw IntegrationSecurityException::invalid();
+        if ($name === '' || mb_strlen($name) > 120) {
+            throw IntegrationSecurityException::invalid();
+        }
         $unique = [];
         foreach ($events as $event) {
-            if (!is_string($event) || preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $event) !== 1 || strlen($event) > 96) throw IntegrationSecurityException::invalid();
+            if (!is_string($event) || preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $event) !== 1 || strlen($event) > 96) {
+                throw IntegrationSecurityException::invalid();
+            }
             $unique[$event] = true;
         }
-        if ($unique === [] || count($unique) > 32) throw IntegrationSecurityException::invalid();
-        $events = array_keys($unique); sort($events, SORT_STRING); return [$name, $events];
+        if ($unique === [] || count($unique) > 32) {
+            throw IntegrationSecurityException::invalid();
+        }
+        $events = array_keys($unique);
+        sort($events, SORT_STRING);
+        return [$name, $events];
     }
 
     private function assertOperation(AuthorizedOperationContext $context, string $operation): void
     {
-        if (!hash_equals(Package::RESOURCE_KEY, $context->resourceKey) || !hash_equals($operation, $context->operation)) throw IntegrationSecurityException::denied();
+        if (!hash_equals(Package::RESOURCE_KEY, $context->resourceKey) || !hash_equals($operation, $context->operation)) {
+            throw IntegrationSecurityException::denied();
+        }
     }
 
     private function assertEndpointKey(string $key): void
     {
-        if (preg_match('/^webhook_[0-9a-f]{32}$/D', $key) !== 1) throw IntegrationSecurityException::endpointNotFound();
+        if (preg_match('/^webhook_[0-9a-f]{32}$/D', $key) !== 1) {
+            throw IntegrationSecurityException::endpointNotFound();
+        }
     }
 
     private static function secret(): string

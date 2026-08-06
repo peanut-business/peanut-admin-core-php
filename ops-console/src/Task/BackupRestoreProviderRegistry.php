@@ -16,7 +16,9 @@ final class BackupRestoreProviderRegistry
     /** @param iterable<BackupRestoreProvider> $providers */
     public function __construct(iterable $providers = [])
     {
-        foreach ($providers as $provider) $this->register($provider);
+        foreach ($providers as $provider) {
+            $this->register($provider);
+        }
     }
 
     public function register(BackupRestoreProvider $provider): void

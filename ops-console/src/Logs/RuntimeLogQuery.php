@@ -21,6 +21,8 @@ final readonly class RuntimeLogQuery
         ) {
             throw new InvalidArgumentException('Invalid log query.');
         }
-        if ($cursor !== null) Contract::opaqueKey($cursor, 'cursor_');
+        if ($cursor !== null) {
+            Contract::opaqueKey($cursor, 'cursor_');
+        }
     }
 }

@@ -19,7 +19,9 @@ final readonly class MachineScopeCatalog
             }
             $known[$scope] = true;
         }
-        if ($known === [] || count($known) > 128) throw IntegrationSecurityException::invalid();
+        if ($known === [] || count($known) > 128) {
+            throw IntegrationSecurityException::invalid();
+        }
         $this->known = $known;
     }
 

@@ -20,7 +20,9 @@ final readonly class StructuredLogRecord
         Contract::qualifiedKey($eventKey, 96);
         Contract::qualifiedKey($componentKey, 64);
         Contract::instant($occurredAt);
-        if ($requestId !== null) Contract::opaqueKey($requestId, 'req_', 128);
+        if ($requestId !== null) {
+            Contract::opaqueKey($requestId, 'req_', 128);
+        }
         if (!in_array($severity, LogSeverity::VALUES, true)
             || $occurrences < 1 || $occurrences > 1000000
         ) {

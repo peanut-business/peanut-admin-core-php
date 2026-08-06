@@ -18,10 +18,14 @@ final class RuntimeLogProviderRegistry
     {
         foreach ($providers as $provider) {
             $key = Contract::qualifiedKey($provider->sourceKey(), 64);
-            if (isset($this->providers[$key])) throw new InvalidArgumentException('Duplicate log provider.');
+            if (isset($this->providers[$key])) {
+                throw new InvalidArgumentException('Duplicate log provider.');
+            }
             $this->providers[$key] = $provider;
         }
-        if ($this->providers === [] || count($this->providers) > 16) throw new InvalidArgumentException('Missing log provider.');
+        if ($this->providers === [] || count($this->providers) > 16) {
+            throw new InvalidArgumentException('Missing log provider.');
+        }
     }
 
     public function require(string $key): RuntimeLogProvider

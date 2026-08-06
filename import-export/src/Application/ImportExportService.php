@@ -44,7 +44,9 @@ final readonly class ImportExportService
     public function list(AuthorizedOperationContext $context, string $status, int $page, int $pageSize): array
     {
         self::assertOperation($context, 'read');
-        if (!in_array($status, ['queued', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired'], true)) throw ImportExportException::invalid();
+        if (!in_array($status, ['queued', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired'], true)) {
+            throw ImportExportException::invalid();
+        }
         return $this->repository->list($context->tenantContext->tenantId, $status, $page, $pageSize);
     }
 
@@ -59,7 +61,9 @@ final readonly class ImportExportService
     {
         self::assertOperation($context, 'cancel');
         self::assertOperationKey($operationKey);
-        if ($revision < 1) throw ImportExportException::invalid();
+        if ($revision < 1) {
+            throw ImportExportException::invalid();
+        }
 
         return $this->repository->transaction(function () use ($context, $operationKey, $revision): OperationRecord {
             $before = $this->repository->get($context->tenantContext->tenantId, $operationKey);
@@ -115,7 +119,9 @@ final readonly class ImportExportService
                 $requestHash,
                 $retentionDays,
             );
-            if ($operation->taskJobKey !== null) return $operation;
+            if ($operation->taskJobKey !== null) {
+                return $operation;
+            }
             $job = $this->publisher->publish($context, self::TASK_TYPE, ['operation_key' => $operation->operationKey], 'iox-' . $idempotencyKey);
             $operation = $this->repository->attachJob($context->tenantContext->tenantId, $operation->operationKey, $job->jobKey);
             $this->audit->appendTenantMember(
@@ -144,22 +150,31 @@ final readonly class ImportExportService
 
     public static function assertOperation(AuthorizedOperationContext $context, string $operation): void
     {
-        if (!hash_equals(self::RESOURCE_KEY, $context->resourceKey) || !hash_equals($operation, $context->operation)) throw ImportExportException::denied();
+        if (!hash_equals(self::RESOURCE_KEY, $context->resourceKey) || !hash_equals($operation, $context->operation)) {
+            throw ImportExportException::denied();
+        }
     }
 
     public static function assertOperationKey(string $key): void
     {
-        if (preg_match('/^iox_[0-9a-f]{32}$/D', $key) !== 1) throw ImportExportException::notFound();
+        if (preg_match('/^iox_[0-9a-f]{32}$/D', $key) !== 1) {
+            throw ImportExportException::notFound();
+        }
     }
 
     private static function assertFileKey(string $key): void
     {
-        if (preg_match('/^file_[0-9a-f]{32}$/D', $key) !== 1) throw ImportExportException::fileUnavailable();
+        if (preg_match('/^file_[0-9a-f]{32}$/D', $key) !== 1) {
+            throw ImportExportException::fileUnavailable();
+        }
     }
 
     private function json(array $value): string
     {
-        try { return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); }
-        catch (JsonException) { throw ImportExportException::invalid(); }
+        try {
+            return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (JsonException) {
+            throw ImportExportException::invalid();
+        }
     }
 }

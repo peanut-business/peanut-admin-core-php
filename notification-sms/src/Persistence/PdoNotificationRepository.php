@@ -52,7 +52,14 @@ final readonly class PdoNotificationRepository implements NotificationRepository
         ?int $expectedRevision,
     ): array {
         return $this->transaction(function () use (
-            $context, $templateKey, $name, $subjectTemplate, $bodyTemplate, $channels, $variables, $expectedRevision,
+            $context,
+            $templateKey,
+            $name,
+            $subjectTemplate,
+            $bodyTemplate,
+            $channels,
+            $variables,
+            $expectedRevision,
         ): array {
             $this->assertTenantActor($context);
             $existing = $this->templateRow($context->tenantId, $templateKey, true);

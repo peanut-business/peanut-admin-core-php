@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace PeanutAdmin\IntegrationSecurity\Persistence;
 
 use DateTimeImmutable;
-use PeanutAdmin\IntegrationSecurity\Application\MachineIdentity;
 use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityPage;
+use PeanutAdmin\IntegrationSecurity\Application\MachineIdentity;
 use PeanutAdmin\IntegrationSecurity\Application\SessionDevice;
 use PeanutAdmin\IntegrationSecurity\Application\WebhookEndpoint;
 use PeanutAdmin\IntegrationSecurity\Webhook\TrustedWebhookEvent;

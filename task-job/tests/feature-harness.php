@@ -14,8 +14,8 @@ use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Application\TaskJobService;
 use PeanutAdmin\TaskJob\Database\Schema;
-use PeanutAdmin\TaskJob\Execution\LocalWorker;
 use PeanutAdmin\TaskJob\Execution\JobExecution;
+use PeanutAdmin\TaskJob\Execution\LocalWorker;
 use PeanutAdmin\TaskJob\Execution\RetryableTaskException;
 use PeanutAdmin\TaskJob\Execution\TaskHandler;
 use PeanutAdmin\TaskJob\Execution\TaskHandlerRegistry;
@@ -34,7 +34,9 @@ spl_autoload_register(static function (string $class) use ($root): void {
     foreach ($prefixes as $prefix => $path) {
         if (str_starts_with($class, $prefix)) {
             $file = $path . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
-            if (is_file($file)) require $file;
+            if (is_file($file)) {
+                require $file;
+            }
         }
     }
 });
@@ -42,9 +44,18 @@ spl_autoload_register(static function (string $class) use ($root): void {
 final class HarnessProvider implements TaskSubmissionProvider
 {
     public function __construct(private readonly string $type = 'test.echo', private readonly string $handler = 'test.echo') {}
-    public function taskType(): string { return $this->type; }
-    public function resourceKey(): string { return 'test.message'; }
-    public function operation(): string { return 'send'; }
+    public function taskType(): string
+    {
+        return $this->type;
+    }
+    public function resourceKey(): string
+    {
+        return 'test.message';
+    }
+    public function operation(): string
+    {
+        return 'send';
+    }
     public function build(AuthorizedOperationContext $context, array $input): TaskSubmission
     {
         if (array_keys($input) !== ['message'] || !is_string($input['message']) || $input['message'] === '' || strlen($input['message']) > 64) {
@@ -84,7 +95,10 @@ final class HarnessRevalidator implements AsyncAuthorizationRevalidator
 final class HarnessHandler implements TaskHandler
 {
     public int $calls = 0;
-    public function key(): string { return 'test.echo'; }
+    public function key(): string
+    {
+        return 'test.echo';
+    }
     public function handle(AuthorizedOperationContext $context, JobExecution $execution): void
     {
         ++$this->calls;
@@ -93,15 +107,23 @@ final class HarnessHandler implements TaskHandler
         if (!str_starts_with($execution->jobKey, 'job_') || $execution->tenantId !== 101 || $execution->attemptNumber !== $this->calls) {
             throw new RuntimeException('Handler did not receive trusted execution idempotency evidence.');
         }
-        if ($this->calls === 1) throw new RetryableTaskException('TEST_TRANSIENT');
+        if ($this->calls === 1) {
+            throw new RetryableTaskException('TEST_TRANSIENT');
+        }
     }
 }
 
 final class HarnessSuccessHandler implements TaskHandler
 {
     public int $calls = 0;
-    public function key(): string { return 'test.echo'; }
-    public function handle(AuthorizedOperationContext $context, JobExecution $execution): void { ++$this->calls; }
+    public function key(): string
+    {
+        return 'test.echo';
+    }
+    public function handle(AuthorizedOperationContext $context, JobExecution $execution): void
+    {
+        ++$this->calls;
+    }
 }
 
 /** @param list<RequestedTargetSet> $targets */
@@ -112,11 +134,16 @@ function context(
     int $memberId = 501,
     ?int $accountId = null,
     array $targets = [],
-): AuthorizedOperationContext
-{
+): AuthorizedOperationContext {
     $tenant = TenantContext::fromValidatedSession(new ValidatedTenantSession(
-        $tenantId, 'session-' . $tenantId, $tenantId, $accountId ?? $tenantId + 10, $memberId,
-        'admin-web', new DateTimeImmutable('2026-07-24T00:00:00Z'), 1,
+        $tenantId,
+        'session-' . $tenantId,
+        $tenantId,
+        $accountId ?? $tenantId + 10,
+        $memberId,
+        'admin-web',
+        new DateTimeImmutable('2026-07-24T00:00:00Z'),
+        1,
     ), 'request-' . $tenantId);
     return AuthorizedOperationContext::fromDecision(AuthorizationDecision::allow($tenant, $resource, $operation, $targets, 'basis-' . $tenantId));
 }
@@ -149,7 +176,9 @@ $pdo = new PDO("mysql:host={$host};port={$port};charset=utf8mb4", $user, $passwo
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES => false,
 ]);
-if (preg_match('/^[a-z][a-z0-9_]{2,62}$/D', $database) !== 1) throw new RuntimeException('Unsafe test database.');
+if (preg_match('/^[a-z][a-z0-9_]{2,62}$/D', $database) !== 1) {
+    throw new RuntimeException('Unsafe test database.');
+}
 $pdo->exec("DROP DATABASE IF EXISTS `{$database}`");
 $pdo->exec("CREATE DATABASE `{$database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
 $pdo->exec("USE `{$database}`");
@@ -162,7 +191,9 @@ CREATE TABLE pa_tenant_member (
 SQL);
 $pdo->exec("INSERT INTO pa_tenant VALUES (101), (202)");
 $pdo->exec("INSERT INTO pa_tenant_member VALUES (501, 101, 111, 'active'), (502, 202, 212, 'active')");
-foreach (Schema::tableNames() as $table) $pdo->exec(Schema::createSql($table));
+foreach (Schema::tableNames() as $table) {
+    $pdo->exec(Schema::createSql($table));
+}
 
 $codec = new TrustedEnvelopeCodec('task-job-harness-signing-key-32-bytes-minimum');
 $registry = new TaskSubmissionRegistry([new HarnessProvider(), new HarnessProvider('test.missing', 'test.missing')]);
@@ -278,7 +309,9 @@ if (str_contains($raw, 'trusted_envelope') || str_contains($raw, 'payload') || s
 assertSame(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_task_job_attempt WHERE job_id = (SELECT id FROM pa_task_job WHERE job_key = " . $pdo->quote($job->jobKey) . ')')->fetchColumn(), 'retry attempt ledger');
 assertSame(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_task_job_attempt WHERE status = 'abandoned'")->fetchColumn(), 'expired attempt ledger');
 
-foreach (array_reverse(Schema::tableNames()) as $table) $pdo->exec(Schema::dropSql($table));
+foreach (array_reverse(Schema::tableNames()) as $table) {
+    $pdo->exec(Schema::dropSql($table));
+}
 $pdo->exec('DROP TABLE pa_tenant_member, pa_tenant');
 $pdo->exec("DROP DATABASE `{$database}`");
 fwrite(STDOUT, "task-job feature harness PASS (idempotency, tenant, permission, claim/lease, retry, recovery, audit)\n");

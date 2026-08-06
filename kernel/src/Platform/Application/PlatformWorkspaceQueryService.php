@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Platform\Application;
 
+use JsonException;
 use PDO;
 use PDOStatement;
-use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
-use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Audit\GovernanceAuditFilter;
 use PeanutAdmin\Kernel\Audit\GovernanceAuditMetadata;
-use JsonException;
+use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
+use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use RuntimeException;
 
 final readonly class PlatformWorkspaceQueryService
@@ -221,8 +221,7 @@ SQL, ['event_id' => $eventId]);
         PageRequest $page,
         array $csvFields = [],
         array $parameters = [],
-    ): array
-    {
+    ): array {
         $count = $this->statement($countSql);
         $count->execute($parameters);
         $statement = $this->statement($querySql);

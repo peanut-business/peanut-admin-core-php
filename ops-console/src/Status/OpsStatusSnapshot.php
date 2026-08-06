@@ -42,7 +42,9 @@ final readonly class OpsStatusSnapshot
         }
         Contract::commit($commit);
         Contract::commit($tree);
-        if ($releaseKey !== null) Contract::qualifiedKey($releaseKey);
+        if ($releaseKey !== null) {
+            Contract::qualifiedKey($releaseKey);
+        }
         Contract::instant($builtAt);
         Contract::hash($migrationDigest);
         Contract::stableCode($upgradeCode);

@@ -11,14 +11,16 @@ spl_autoload_register(static function (string $class) use ($root): void {
     ] as $prefix => $directory) {
         if (str_starts_with($class, $prefix)) {
             $file = $directory . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
-            if (is_file($file)) require $file;
+            if (is_file($file)) {
+                require $file;
+            }
         }
     }
 });
 
+use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
-use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
@@ -41,7 +43,9 @@ use PeanutAdmin\TaskJob\Submission\TrustedJobPublisher;
 
 function same(mixed $expected, mixed $actual, string $message): void
 {
-    if ($expected !== $actual) throw new RuntimeException($message . ': ' . var_export($actual, true));
+    if ($expected !== $actual) {
+        throw new RuntimeException($message . ': ' . var_export($actual, true));
+    }
 }
 
 function operation(string $name, int $tenantId, int $accountId, int $memberId): AuthorizedOperationContext
@@ -80,8 +84,12 @@ $pdo = new PDO($dsn, $user, $password, [
 $drop = array_reverse(Schema::tableNames());
 $taskDrop = array_reverse(TaskJobSchema::tableNames());
 try {
-    foreach ($drop as $table) $pdo->exec(Schema::dropSql($table));
-    foreach ($taskDrop as $table) $pdo->exec(TaskJobSchema::dropSql($table));
+    foreach ($drop as $table) {
+        $pdo->exec(Schema::dropSql($table));
+    }
+    foreach ($taskDrop as $table) {
+        $pdo->exec(TaskJobSchema::dropSql($table));
+    }
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant_member');
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant');
     $pdo->exec(<<<'SQL'
@@ -103,19 +111,25 @@ CREATE TABLE pa_tenant_member (
 SQL);
     $pdo->exec("INSERT INTO pa_tenant (id) VALUES (101), (202)");
     $pdo->exec("INSERT INTO pa_tenant_member (id, tenant_id, account_id, status) VALUES (501,101,301,'active'), (502,202,302,'active')");
-    foreach (TaskJobSchema::tableNames() as $table) $pdo->exec(TaskJobSchema::createSql($table));
-    foreach (Schema::tableNames() as $table) $pdo->exec(Schema::createSql($table));
+    foreach (TaskJobSchema::tableNames() as $table) {
+        $pdo->exec(TaskJobSchema::createSql($table));
+    }
+    foreach (Schema::tableNames() as $table) {
+        $pdo->exec(Schema::createSql($table));
+    }
 
     $repository = new PdoNotificationRepository($pdo);
     $digestKey = str_repeat('k', 32);
     $service = new NotificationService(
         $repository,
-        new class($digestKey) implements RecipientResolver {
+        new class ($digestKey) implements RecipientResolver {
             public function __construct(private readonly string $digestKey) {}
             public function snapshot(TenantContext $context, int $memberId, bool $requiresSms): RecipientSnapshot
             {
                 $expected = $context->tenantId === 101 ? [501, 301, '+8613800138000'] : [502, 302, '+8613900139000'];
-                if ($memberId !== $expected[0]) throw NotificationException::recipientUnavailable();
+                if ($memberId !== $expected[0]) {
+                    throw NotificationException::recipientUnavailable();
+                }
                 $sms = $requiresSms ? new SmsRecipient($expected[2], $this->digestKey) : null;
                 return new RecipientSnapshot($expected[0], $expected[1], 'Tenant member', $sms?->masked, $sms?->digest);
             }
@@ -163,7 +177,9 @@ SQL);
     same(1, $service->bulk($read101, [$read->messageKey], 'archive'), 'archive transition');
 
     $recipientDigest = (new SmsRecipient('+8613800138000', $digestKey))->digest;
-    for ($attempt = 0; $attempt < 5; ++$attempt) same(true, $repository->reserveSmsRate(101, $recipientDigest), 'recipient rate allowance');
+    for ($attempt = 0; $attempt < 5; ++$attempt) {
+        same(true, $repository->reserveSmsRate(101, $recipientDigest), 'recipient rate allowance');
+    }
     same(false, $repository->reserveSmsRate(101, $recipientDigest), 'recipient rate bound');
     same(1, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_template')->fetchColumn(), 'template row');
     same(1, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message WHERE template_revision = 1')->fetchColumn(), 'message row');
@@ -200,8 +216,12 @@ SQL);
 
     fwrite(STDOUT, "notification-sms MySQL harness: PASS\n");
 } finally {
-    foreach ($drop as $table) $pdo->exec(Schema::dropSql($table));
-    foreach ($taskDrop as $table) $pdo->exec(TaskJobSchema::dropSql($table));
+    foreach ($drop as $table) {
+        $pdo->exec(Schema::dropSql($table));
+    }
+    foreach ($taskDrop as $table) {
+        $pdo->exec(TaskJobSchema::dropSql($table));
+    }
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant_member');
     $pdo->exec('DROP TABLE IF EXISTS pa_tenant');
 }
