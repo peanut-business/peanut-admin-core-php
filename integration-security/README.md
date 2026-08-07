@@ -152,4 +152,4 @@ This feature candidate changes only `packages/php/integration-security/**` and
 backend/frontend Host, OpenAPI/generated, Runtime ledger, router, shell,
 canonical starter, and public documentation index change. This task does not
 send a real Webhook, add a dependency, install online, publish, tag, move `dev`
-or a downstream lock, or modify DCS.
+or modify a downstream consumption lock.

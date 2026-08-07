@@ -148,7 +148,7 @@ admin registration.
 
 This lane proves only the feature-local package at a fixed commit. It does not
 modify shared manifests or locks, Host routes/controllers, OpenAPI/generated
-artifacts, Runtime coverage, shared Web routing, canonical starter, `dev`, DCS
-consumption locks, tags, or releases. Aggregate, full browser/build, clean
+artifacts, Runtime coverage, shared Web routing, canonical starter, `dev`,
+downstream consumption locks, tags, or releases. Aggregate, full browser/build, clean
 install/recovery, performance, and cross-OS verification remain deferred to the
 fixed-candidate qualification stage.
