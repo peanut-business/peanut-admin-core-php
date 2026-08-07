@@ -60,10 +60,16 @@ final class ServiceOverrideRegistryTest extends TestCase
     public static function invalidSlotProvider(): iterable
     {
         yield 'invalid key' => [[new ServiceOverrideSlot(
-            'Peanut.fixture.service.example', FixtureService::class, '1.0.0', DefaultFixtureService::class,
+            'Peanut.fixture.service.example',
+            FixtureService::class,
+            '1.0.0',
+            DefaultFixtureService::class,
         )], 'PHP_OVERRIDE_SLOT_KEY_INVALID'];
         yield 'key without service segment' => [[new ServiceOverrideSlot(
-            'peanut.fixture.provider.example', FixtureService::class, '1.0.0', DefaultFixtureService::class,
+            'peanut.fixture.provider.example',
+            FixtureService::class,
+            '1.0.0',
+            DefaultFixtureService::class,
         )], 'PHP_OVERRIDE_SLOT_KEY_INVALID'];
         yield 'duplicate key' => [[self::fixtureSlot(), self::fixtureSlot()], 'PHP_OVERRIDE_SLOT_KEY_DUPLICATE'];
         yield 'duplicate contract' => [[
@@ -71,19 +77,30 @@ final class ServiceOverrideRegistryTest extends TestCase
             new ServiceOverrideSlot('peanut.other.service.example', FixtureService::class, '1.0.0', DefaultFixtureService::class),
         ], 'PHP_OVERRIDE_CONTRACT_DUPLICATE'];
         yield 'contract is not interface' => [[new ServiceOverrideSlot(
-            self::KEY, DefaultFixtureService::class, '1.0.0', DefaultFixtureService::class,
+            self::KEY,
+            DefaultFixtureService::class,
+            '1.0.0',
+            DefaultFixtureService::class,
         )], 'PHP_OVERRIDE_CONTRACT_INVALID'];
         yield 'missing contract' => [[self::untrustedSlot(
-            'PeanutAdmin\\MissingFixtureService', DefaultFixtureService::class,
+            'PeanutAdmin\\MissingFixtureService',
+            DefaultFixtureService::class,
         )], 'PHP_OVERRIDE_CONTRACT_INVALID'];
         yield 'invalid version' => [[new ServiceOverrideSlot(
-            self::KEY, FixtureService::class, '1.0', DefaultFixtureService::class,
+            self::KEY,
+            FixtureService::class,
+            '1.0',
+            DefaultFixtureService::class,
         )], 'PHP_OVERRIDE_VERSION_INVALID'];
         yield 'invalid default' => [[new ServiceOverrideSlot(
-            self::KEY, FixtureService::class, '1.0.0', InvalidFixtureService::class,
+            self::KEY,
+            FixtureService::class,
+            '1.0.0',
+            InvalidFixtureService::class,
         )], 'PHP_OVERRIDE_DEFAULT_INVALID'];
         yield 'missing default' => [[self::untrustedSlot(
-            FixtureService::class, 'PeanutAdmin\\MissingDefaultFixtureService',
+            FixtureService::class,
+            'PeanutAdmin\\MissingDefaultFixtureService',
         )], 'PHP_OVERRIDE_DEFAULT_INVALID'];
     }
 
@@ -102,17 +119,29 @@ final class ServiceOverrideRegistryTest extends TestCase
     {
         $valid = new ServiceOverride(self::KEY, FixtureService::class, '1.0.0', ApplicationFixtureService::class);
         yield 'unknown key' => [[new ServiceOverride(
-            'peanut.unknown.service.example', FixtureService::class, '1.0.0', ApplicationFixtureService::class,
+            'peanut.unknown.service.example',
+            FixtureService::class,
+            '1.0.0',
+            ApplicationFixtureService::class,
         )], 'PHP_OVERRIDE_KEY_UNKNOWN'];
         yield 'duplicate key' => [[$valid, $valid], 'PHP_OVERRIDE_KEY_DUPLICATE'];
         yield 'contract mismatch' => [[new ServiceOverride(
-            self::KEY, OtherFixtureService::class, '1.0.0', ApplicationFixtureService::class,
+            self::KEY,
+            OtherFixtureService::class,
+            '1.0.0',
+            ApplicationFixtureService::class,
         )], 'PHP_OVERRIDE_CONTRACT_MISMATCH'];
         yield 'version mismatch' => [[new ServiceOverride(
-            self::KEY, FixtureService::class, '1.0.1', ApplicationFixtureService::class,
+            self::KEY,
+            FixtureService::class,
+            '1.0.1',
+            ApplicationFixtureService::class,
         )], 'PHP_OVERRIDE_VERSION_MISMATCH'];
         yield 'invalid implementation' => [[new ServiceOverride(
-            self::KEY, FixtureService::class, '1.0.0', InvalidFixtureService::class,
+            self::KEY,
+            FixtureService::class,
+            '1.0.0',
+            InvalidFixtureService::class,
         )], 'PHP_OVERRIDE_IMPLEMENTATION_INVALID'];
         yield 'missing implementation' => [[self::untrustedOverride(
             'PeanutAdmin\\MissingApplicationFixtureService',

@@ -236,7 +236,7 @@ SQL);
     same('revoked', $sessions->revoke(operation('session-revoke', 101, 301, 501, $session1), $session1)->status, 'own session revoked');
     same('revoked', (string) $pdo->query("SELECT status FROM pa_tenant_session_token WHERE token_hash='" . hash('sha256', 'token-' . $session1) . "'")->fetchColumn(), 'session tokens revoked');
     $audit = json_encode($pdo->query('SELECT event_key,target_key_hash,metadata_json,request_id_hash FROM pa_integration_security_event')->fetchAll(), JSON_THROW_ON_ERROR);
-    truth(!str_contains($audit, $machine->token) && !str_contains($audit, $endpoint->signingSecret) && !str_contains($audit,$session1), 'audit redacted');
+    truth(!str_contains($audit, $machine->token) && !str_contains($audit, $endpoint->signingSecret) && !str_contains($audit, $session1), 'audit redacted');
 
     echo "integration-security mysql harness: PASS\n";
 } finally {
