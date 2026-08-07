@@ -10,6 +10,7 @@ use PeanutAdmin\Kernel\Override\ServiceOverrideRegistry;
 use PeanutAdmin\Kernel\Override\ServiceOverrideSlot;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
 
 interface FixtureService {}
 interface OtherFixtureService {}
@@ -48,12 +49,14 @@ final class ServiceOverrideRegistryTest extends TestCase
         self::assertArrayNotHasKey('implementation', $application->diagnostics()[0]);
     }
 
+    /** @param array<array-key, mixed> $slots */
     #[DataProvider('invalidSlotProvider')]
     public function testInvalidSlotsFailClosed(array $slots, string $errorCode): void
     {
         $this->expectOverrideError($errorCode, static fn() => new ServiceOverrideRegistry($slots));
     }
 
+    /** @return iterable<string, array{array<array-key, mixed>, string}> */
     public static function invalidSlotProvider(): iterable
     {
         yield 'invalid key' => [[new ServiceOverrideSlot(
@@ -70,8 +73,8 @@ final class ServiceOverrideRegistryTest extends TestCase
         yield 'contract is not interface' => [[new ServiceOverrideSlot(
             self::KEY, DefaultFixtureService::class, '1.0.0', DefaultFixtureService::class,
         )], 'PHP_OVERRIDE_CONTRACT_INVALID'];
-        yield 'missing contract' => [[new ServiceOverrideSlot(
-            self::KEY, 'PeanutAdmin\\MissingFixtureService', '1.0.0', DefaultFixtureService::class,
+        yield 'missing contract' => [[self::untrustedSlot(
+            'PeanutAdmin\\MissingFixtureService', DefaultFixtureService::class,
         )], 'PHP_OVERRIDE_CONTRACT_INVALID'];
         yield 'invalid version' => [[new ServiceOverrideSlot(
             self::KEY, FixtureService::class, '1.0', DefaultFixtureService::class,
@@ -79,11 +82,12 @@ final class ServiceOverrideRegistryTest extends TestCase
         yield 'invalid default' => [[new ServiceOverrideSlot(
             self::KEY, FixtureService::class, '1.0.0', InvalidFixtureService::class,
         )], 'PHP_OVERRIDE_DEFAULT_INVALID'];
-        yield 'missing default' => [[new ServiceOverrideSlot(
-            self::KEY, FixtureService::class, '1.0.0', 'PeanutAdmin\\MissingDefaultFixtureService',
+        yield 'missing default' => [[self::untrustedSlot(
+            FixtureService::class, 'PeanutAdmin\\MissingDefaultFixtureService',
         )], 'PHP_OVERRIDE_DEFAULT_INVALID'];
     }
 
+    /** @param array<array-key, mixed> $overrides */
     #[DataProvider('invalidOverrideProvider')]
     public function testInvalidApplicationOverridesFailClosed(array $overrides, string $errorCode): void
     {
@@ -93,6 +97,7 @@ final class ServiceOverrideRegistryTest extends TestCase
         );
     }
 
+    /** @return iterable<string, array{array<array-key, mixed>, string}> */
     public static function invalidOverrideProvider(): iterable
     {
         $valid = new ServiceOverride(self::KEY, FixtureService::class, '1.0.0', ApplicationFixtureService::class);
@@ -109,8 +114,8 @@ final class ServiceOverrideRegistryTest extends TestCase
         yield 'invalid implementation' => [[new ServiceOverride(
             self::KEY, FixtureService::class, '1.0.0', InvalidFixtureService::class,
         )], 'PHP_OVERRIDE_IMPLEMENTATION_INVALID'];
-        yield 'missing implementation' => [[new ServiceOverride(
-            self::KEY, FixtureService::class, '1.0.0', 'PeanutAdmin\\MissingApplicationFixtureService',
+        yield 'missing implementation' => [[self::untrustedOverride(
+            'PeanutAdmin\\MissingApplicationFixtureService',
         )], 'PHP_OVERRIDE_IMPLEMENTATION_INVALID'];
     }
 
@@ -136,6 +141,26 @@ final class ServiceOverrideRegistryTest extends TestCase
             '1.0.0',
             DefaultFixtureService::class,
         );
+    }
+
+    private static function untrustedSlot(string $contract, string $defaultImplementation): ServiceOverrideSlot
+    {
+        return (new ReflectionClass(ServiceOverrideSlot::class))->newInstanceArgs([
+            self::KEY,
+            $contract,
+            '1.0.0',
+            $defaultImplementation,
+        ]);
+    }
+
+    private static function untrustedOverride(string $implementation): ServiceOverride
+    {
+        return (new ReflectionClass(ServiceOverride::class))->newInstanceArgs([
+            self::KEY,
+            FixtureService::class,
+            '1.0.0',
+            $implementation,
+        ]);
     }
 
     private function expectOverrideError(string $errorCode, callable $operation): void

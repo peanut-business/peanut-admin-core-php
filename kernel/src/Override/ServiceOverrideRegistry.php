@@ -19,8 +19,8 @@ final readonly class ServiceOverrideRegistry
     private array $resolutionDiagnostics;
 
     /**
-     * @param list<ServiceOverrideSlot> $slots
-     * @param list<ServiceOverride> $overrides
+     * @param array<array-key, mixed> $slots
+     * @param array<array-key, mixed> $overrides
      */
     public function __construct(array $slots, array $overrides = [])
     {
