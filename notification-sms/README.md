@@ -47,6 +47,11 @@ the event ledger.
 returns a deterministic redacted receipt and deduplicates by `jobKey` within the
 local process.
 
+`DisabledSmsProvider` is the package default. It performs no network request
+and fails closed with `SMS_PROVIDER_UNAVAILABLE`. A Host must select a real or
+development implementation through the standard service override registry;
+provider-name switches and implicit development fallbacks are not supported.
+
 ## Owned data
 
 The package owns these tables through `Database\Schema`:
