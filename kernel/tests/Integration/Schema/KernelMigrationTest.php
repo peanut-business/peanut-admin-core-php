@@ -62,7 +62,7 @@ final class KernelMigrationTest extends DatabaseTestCase
         $migrationCount = $this
             ->query('SELECT COUNT(*) FROM `pa_kernel_migration`')
             ->fetchColumn();
-        self::assertSame(38, (int) $migrationCount);
+        self::assertSame(40, (int) $migrationCount);
 
         $challengeClient = $this
             ->query("SHOW COLUMNS FROM `pa_login_challenge` WHERE Field = 'client_key'")
