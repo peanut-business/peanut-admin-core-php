@@ -18,6 +18,7 @@
   },
   "autoload": {
     "psr-4": {
+      "PeanutAdmin\\ArtifactRevision\\": "artifact-revision/src/",
       "PeanutAdmin\\DataPermission\\": "data-permission/src/",
       "PeanutAdmin\\FileMedia\\": "file-media/src/",
       "PeanutAdmin\\ImportExport\\": "import-export/src/",
@@ -33,6 +34,7 @@
   },
   "autoload-dev": {
     "psr-4": {
+      "PeanutAdmin\\ArtifactRevision\\Tests\\": "artifact-revision/tests/",
       "PeanutAdmin\\DataPermission\\Tests\\": "data-permission/tests/",
       "PeanutAdmin\\FileMedia\\Tests\\": "file-media/tests/",
       "PeanutAdmin\\Kernel\\Tests\\": "kernel/tests/",
