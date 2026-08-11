@@ -3,7 +3,7 @@
   "description": "Peanut Admin reusable administration runtime packages",
   "type": "library",
   "license": "Apache-2.0",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.5",
   "require": {
     "ext-fileinfo": "*",
     "ext-json": "*",
@@ -27,7 +27,8 @@
       "PeanutAdmin\\OpsConsole\\": "ops-console/src/",
       "PeanutAdmin\\ReferenceCodes\\": "reference-codes/src/",
       "PeanutAdmin\\Settings\\": "settings/src/",
-      "PeanutAdmin\\TaskJob\\": "task-job/src/"
+      "PeanutAdmin\\TaskJob\\": "task-job/src/",
+      "PeanutAdmin\\Workflow\\": "workflow/src/"
     }
   },
   "autoload-dev": {
@@ -38,7 +39,8 @@
       "PeanutAdmin\\ReferenceCodes\\Tests\\": "reference-codes/tests/",
       "PeanutAdmin\\Settings\\Tests\\": "settings/tests/",
       "PeanutAdmin\\Testing\\": "testing/src/",
-      "PeanutAdmin\\Testing\\Tests\\": "testing/tests/"
+      "PeanutAdmin\\Testing\\Tests\\": "testing/tests/",
+      "PeanutAdmin\\Workflow\\Tests\\": "workflow/tests/"
     }
   }
 }
