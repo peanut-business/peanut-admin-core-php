@@ -67,7 +67,7 @@ final readonly class WorkflowGraph
             if (!is_array($input) || array_is_list($input)) {
                 throw WorkflowException::definitionInvalid('Every workflow node must be an object.');
             }
-            $node = self::node($input);
+            $node = self::parseNode($input);
             if (isset($nodeMap[$node->key])) {
                 throw WorkflowException::definitionInvalid('Workflow node keys must be unique.');
             }
@@ -91,7 +91,7 @@ final readonly class WorkflowGraph
             if (!is_array($input) || array_is_list($input)) {
                 throw WorkflowException::definitionInvalid('Every workflow transition must be an object.');
             }
-            $transition = self::transition($input, $nodeMap);
+            $transition = self::parseTransition($input, $nodeMap);
             if (isset($transitionKeys[$transition->key])) {
                 throw WorkflowException::definitionInvalid('Workflow transition keys must be unique.');
             }
@@ -216,7 +216,7 @@ final readonly class WorkflowGraph
     }
 
     /** @param array<string, mixed> $input */
-    private static function node(array $input): WorkflowNode
+    private static function parseNode(array $input): WorkflowNode
     {
         self::assertExactKeys($input, self::NODE_KEYS);
         $key = self::identifier($input['key'] ?? null, 64, 'node');
@@ -272,7 +272,7 @@ final readonly class WorkflowGraph
     }
 
     /** @param array<string, mixed> $input @param array<string, WorkflowNode> $nodes */
-    private static function transition(array $input, array $nodes): WorkflowTransition
+    private static function parseTransition(array $input, array $nodes): WorkflowTransition
     {
         self::assertExactKeys($input, self::TRANSITION_KEYS);
         $key = self::identifier($input['key'] ?? null, 64, 'transition');
