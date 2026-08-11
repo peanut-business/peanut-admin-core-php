@@ -68,7 +68,7 @@ final class SchemaTest extends TestCase
             "CONSTRAINT `chk_workflow_work_item_status` CHECK (`status` IN ('pending', 'completed', 'cancelled'))",
             "CONSTRAINT `chk_workflow_work_item_terminal_shape` CHECK ((`status` = 'pending' AND `decision` IS NULL AND `completed_by_member_id` IS NULL AND `completed_at` IS NULL AND `cancelled_at` IS NULL) OR (`status` = 'completed' AND `decision` IS NOT NULL AND `completed_by_member_id` IS NOT NULL AND `completed_at` IS NOT NULL AND `cancelled_at` IS NULL) OR (`status` = 'cancelled' AND `decision` IS NULL AND `completed_by_member_id` IS NULL AND `completed_at` IS NULL AND `cancelled_at` IS NOT NULL))",
             'CONSTRAINT `chk_workflow_event_sequence` CHECK (`sequence_no` >= 1)',
-            "CONSTRAINT `chk_workflow_event_key` CHECK (`event_key` REGEXP '^tenant\\.workflow\\.[a-z_]+$')",
+            "CONSTRAINT `chk_workflow_event_key` CHECK (`event_key` REGEXP '^tenant\\\\.workflow\\\\.[a-z_]+$')",
             "CONSTRAINT `chk_workflow_event_subject_digest` CHECK (`subject_revision_sha256` REGEXP '^[0-9a-f]{64}$')",
             "CONSTRAINT `chk_workflow_event_comment_shape` CHECK ((`comment_text` IS NULL AND `comment_sha256` IS NULL) OR (`comment_text` IS NOT NULL AND `comment_sha256` REGEXP '^[0-9a-f]{64}$'))",
             "CONSTRAINT `chk_workflow_event_actor_shape` CHECK ((`actor_type` = 'member' AND `actor_member_id` IS NOT NULL) OR (`actor_type` = 'tenant_system' AND `actor_member_id` IS NULL))",

@@ -60,6 +60,7 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
             ['workflow' => 3, 'audit' => 1, 'notification' => 1, 'task' => 1, 'idempotency' => 1],
             $checkpoints,
         );
+        self::addToAssertionCount(1);
     }
 
     public function testRejectsOutOfOrderCheckpointSelection(): void
