@@ -138,14 +138,12 @@ final class WorkflowAtomicityContractHarness
             }
             $last = $position;
         }
-        foreach ($stateProbes as $probe) {
-            if (!is_callable($probe)) {
-                throw new LogicException('Every workflow state probe must be callable.');
-            }
-        }
     }
 
-    /** @param array<string, callable(): mixed> $stateProbes @return array<string, mixed> */
+    /**
+     * @param array<string, callable(): mixed> $stateProbes
+     * @return array<string, mixed>
+     */
     private function snapshot(array $stateProbes): array
     {
         $snapshot = [];
