@@ -56,7 +56,7 @@ final readonly class DictionaryService
         $seen = [];
         $result = [];
         foreach ([...$system, ...$tenant] as $entry) {
-            if (!$entry instanceof DictionaryEntry || isset($seen[$entry->value])) continue;
+            if (isset($seen[$entry->value])) continue;
             $seen[$entry->value] = true;
             $result[] = $entry->toArray();
         }

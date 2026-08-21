@@ -7,7 +7,10 @@ use PeanutAdmin\Kernel\Tenancy\TenantEntryBindingResolver;
 
 final readonly class ApplicationHostPolicy
 {
-    /** @param list<string> $platformHosts @param list<string> $tenantAdminHosts */
+    /**
+     * @param list<string> $platformHosts
+     * @param list<string> $tenantAdminHosts
+     */
     public function __construct(
         private string $deploymentMode,
         private array $platformHosts,

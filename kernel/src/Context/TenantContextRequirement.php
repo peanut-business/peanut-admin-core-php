@@ -33,7 +33,10 @@ final class TenantContextRequirement
         return $context;
     }
 
-    /** @param array<string, mixed> $payload @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
     public static function withoutTenantId(array $payload): array
     {
         unset($payload['tenant_id']);
