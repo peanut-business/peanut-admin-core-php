@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://peanut-admin.org/schemas/module-manifest.schema.json",
+  "title": "Peanut Admin Module Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "key",
+    "name",
+    "description",
+    "version",
+    "kernel_constraint",
+    "license",
+    "backend",
+    "frontend",
+    "database",
+    "contracts",
+    "tenant"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*$",
+      "maxLength": 96
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
+    "kernel_constraint": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "license": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "php_package": { "type": ["string", "null"] },
+    "web_package": { "type": ["string", "null"] },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["module_key", "version"],
+        "properties": {
+          "module_key": { "$ref": "#/$defs/moduleKey" },
+          "version": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "routes": { "$ref": "#/$defs/relativePath" },
+        "migrations": { "$ref": "#/$defs/relativePath" },
+        "seeds": { "$ref": "#/$defs/relativePath" },
+        "menus": { "$ref": "#/$defs/relativePath" },
+        "permissions": { "$ref": "#/$defs/relativePath" },
+        "protected_resources": { "$ref": "#/$defs/relativePath" },
+        "target_types": { "$ref": "#/$defs/relativePath" },
+        "data_conditions": { "$ref": "#/$defs/relativePath" },
+        "config_schema": { "$ref": "#/$defs/relativePath" },
+        "setting_definitions": { "$ref": "#/$defs/relativePath" },
+        "reference_code_sets": { "$ref": "#/$defs/relativePath" },
+        "system_actors": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+    "frontend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entry": { "$ref": "#/$defs/relativePath" },
+        "routes": { "$ref": "#/$defs/relativePath" },
+        "locales": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owned_tables"],
+      "properties": {
+        "owned_tables": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }
+        }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exports", "events"],
+      "properties": {
+        "exports": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "events": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9.-]+\\.v[1-9][0-9]*$" } }
+      }
+    },
+    "tenant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enableable", "requires"],
+      "properties": {
+        "enableable": { "type": "boolean" },
+        "disable_behavior": { "enum": ["reject_new_operations"] },
+        "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/moduleKey" } }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "target_types": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "name", "resolver", "catalog_provider"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "resolver": { "type": "string", "minLength": 1 },
+              "catalog_provider": { "type": "string", "minLength": 1 },
+              "id_format": { "enum": ["string", "integer-string"] }
+            }
+          }
+        },
+        "protected_resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "name", "ownership", "provider", "operations"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "ownership": { "enum": ["tenant_owned", "business_target_owned", "shared_master", "global_reference"] },
+              "provider": { "type": "string", "minLength": 1 },
+              "scope_provider": { "type": ["string", "null"] },
+              "operations": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["key", "access_mode", "target_cardinality", "permission_match", "audit_level", "permissions", "target_types", "conditions"],
+                  "properties": {
+                    "key": { "type": "string", "minLength": 1, "maxLength": 96 },
+                    "access_mode": { "enum": ["tenant_wide", "rule_filtered", "explicit_targets", "global_reference_read", "system_internal"] },
+                    "target_cardinality": {
+                      "enum": ["none", "one_required", "zero_or_one", "many_readable", "aggregate_read", "policy_publish", "bulk_write"]
+                    },
+                    "permission_match": { "enum": ["all", "any"] },
+                    "audit_level": { "enum": ["deny", "write", "deny_and_write", "all"] },
+                    "permissions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 160 } },
+                    "target_types": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["target_resource_key", "target_role", "input_mode"],
+                        "properties": {
+                          "target_resource_key": { "type": "string", "minLength": 1, "maxLength": 160 },
+                          "target_role": { "type": "string", "minLength": 1, "maxLength": 64 },
+                          "input_mode": { "enum": ["explicit", "derived", "either"] },
+                          "policy_selection_permission": { "type": ["string", "null"], "minLength": 1, "maxLength": 160 }
+                        }
+                      }
+                    },
+                    "conditions": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["key", "selector_resource_key"],
+                        "properties": {
+                          "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+                          "selector_resource_key": { "type": ["string", "null"], "minLength": 1, "maxLength": 160 }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "menus": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "scope", "type", "name", "client_keys"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "scope": { "enum": ["platform", "tenant"] },
+              "parent_key": { "type": ["string", "null"] },
+              "type": { "enum": ["group", "page", "link"] },
+              "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "route_name": { "type": ["string", "null"] },
+              "route_path": { "type": ["string", "null"] },
+              "component_key": { "type": ["string", "null"] },
+              "required_permission": { "type": ["string", "null"] },
+              "icon": { "type": ["string", "null"] },
+              "sort_order": { "type": "integer" },
+              "client_keys": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+            }
+          }
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "type", "name", "risk_level"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "type": { "enum": ["menu", "api", "action"] },
+              "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "risk_level": { "enum": ["normal", "sensitive", "critical"] }
+            }
+          }
+        },
+        "data_conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "category", "target_mode"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "target_mode": { "enum": ["none", "department", "resource"] },
+              "config_schema": { "type": ["object", "null"] }
+            }
+          }
+        },
+        "system_actors": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  },
+  "$defs": {
+    "moduleKey": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*$",
+      "maxLength": 96
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    }
+  }
+}

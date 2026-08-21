@@ -1,0 +1,50 @@
+{
+  "name": "peanut-admin/core",
+  "description": "Peanut Admin reusable administration runtime packages",
+  "type": "library",
+  "license": "Apache-2.0",
+  "version": "0.1.0-alpha.6",
+  "require": {
+    "ext-fileinfo": "*",
+    "ext-json": "*",
+    "ext-openssl": "*",
+    "ext-pdo": "*",
+    "ext-sodium": "*",
+    "opis/json-schema": "^2.6.0",
+    "php": "^8.3"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^12.5.31"
+  },
+  "autoload": {
+    "psr-4": {
+      "PeanutAdmin\\ArtifactRevision\\": "artifact-revision/src/",
+      "PeanutAdmin\\DataPermission\\": "data-permission/src/",
+      "PeanutAdmin\\EntitlementQuota\\": "entitlement-quota/src/",
+      "PeanutAdmin\\FileMedia\\": "file-media/src/",
+      "PeanutAdmin\\ImportExport\\": "import-export/src/",
+      "PeanutAdmin\\IntegrationSecurity\\": "integration-security/src/",
+      "PeanutAdmin\\Kernel\\": "kernel/src/",
+      "PeanutAdmin\\NotificationSms\\": "notification-sms/src/",
+      "PeanutAdmin\\OpsConsole\\": "ops-console/src/",
+      "PeanutAdmin\\ReferenceCodes\\": "reference-codes/src/",
+      "PeanutAdmin\\Settings\\": "settings/src/",
+      "PeanutAdmin\\TaskJob\\": "task-job/src/",
+      "PeanutAdmin\\Workflow\\": "workflow/src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "PeanutAdmin\\ArtifactRevision\\Tests\\": "artifact-revision/tests/",
+      "PeanutAdmin\\DataPermission\\Tests\\": "data-permission/tests/",
+      "PeanutAdmin\\EntitlementQuota\\Tests\\": "entitlement-quota/tests/",
+      "PeanutAdmin\\FileMedia\\Tests\\": "file-media/tests/",
+      "PeanutAdmin\\Kernel\\Tests\\": "kernel/tests/",
+      "PeanutAdmin\\ReferenceCodes\\Tests\\": "reference-codes/tests/",
+      "PeanutAdmin\\Settings\\Tests\\": "settings/tests/",
+      "PeanutAdmin\\Testing\\": "testing/src/",
+      "PeanutAdmin\\Testing\\Tests\\": "testing/tests/",
+      "PeanutAdmin\\Workflow\\Tests\\": "workflow/tests/"
+    }
+  }
+}
