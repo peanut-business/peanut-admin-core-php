@@ -16,7 +16,7 @@ final readonly class PdoTenantLockStore implements TenantLockStore
         $statement = $this->pdo->prepare('SELECT GET_LOCK(:lock_name, 0)');
         $statement->execute(['lock_name' => $name]);
 
-        return (int)$statement->fetchColumn() === 1;
+        return (int) $statement->fetchColumn() === 1;
     }
 
     public function release(TenantScope $scope, string $resourceKey): void

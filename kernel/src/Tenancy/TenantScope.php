@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tenancy;
@@ -13,9 +14,8 @@ final readonly class TenantScope
 
     private function __construct(
         private int $tenantId,
-        private string $contextIdentity
-    ) {
-    }
+        private string $contextIdentity,
+    ) {}
 
     public static function fromTrustedContext(int $tenantId, string $contextIdentity): self
     {

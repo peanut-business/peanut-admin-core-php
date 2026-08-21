@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tenancy;
@@ -14,7 +15,7 @@ final class TenantNamespace
         return self::PREFIX . ':t=' . $scope->tenantId() . ':cache:k=' . self::digest(
             'cache',
             $scope->tenantId(),
-            self::validateLogicalName($logicalKey)
+            self::validateLogicalName($logicalKey),
         );
     }
 
@@ -23,7 +24,7 @@ final class TenantNamespace
         return self::PREFIX . ':t=' . $scope->tenantId() . ':cache:tag=' . self::digest(
             'tag',
             $scope->tenantId(),
-            self::validateLogicalName($logicalTag)
+            self::validateLogicalName($logicalTag),
         );
     }
 
@@ -33,7 +34,7 @@ final class TenantNamespace
         return self::PREFIX . ':l=' . self::digest(
             'lock',
             $scope->tenantId(),
-            self::validateLogicalName($logicalSeed)
+            self::validateLogicalName($logicalSeed),
         );
     }
 
@@ -50,7 +51,7 @@ final class TenantNamespace
     private static function digest(string $kind, int $tenantId, string $logicalName): string
     {
         $material = self::lengthPrefixed($kind)
-            . self::lengthPrefixed((string)$tenantId)
+            . self::lengthPrefixed((string) $tenantId)
             . self::lengthPrefixed($logicalName);
         return rtrim(strtr(base64_encode(hash('sha256', $material, true)), '+/', '-_'), '=');
     }

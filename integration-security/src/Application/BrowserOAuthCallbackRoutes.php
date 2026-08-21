@@ -38,7 +38,7 @@ final readonly class BrowserOAuthCallbackRoutes
         $safeQuery = $this->clientDefaults[$client] ?? [];
         foreach (['code', 'state', 'error', 'error_description'] as $field) {
             $raw = $query[$field] ?? '';
-            if (is_scalar($raw) && ($value = trim((string)$raw)) !== '') {
+            if (is_scalar($raw) && ($value = trim((string) $raw)) !== '') {
                 $safeQuery[$field] = $value;
             }
         }

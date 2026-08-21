@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Dictionary;
@@ -42,7 +43,9 @@ final readonly class DictionaryEntry
         if ($this->attributes !== []) {
             $values = $this->attributes;
             foreach (['id' => $this->id, 'name' => $this->name, 'value' => $this->value, 'type_id' => $this->typeId, 'type_value' => $this->type, 'sort' => $this->sort, 'is_disable' => $this->disabled ? 1 : 0, 'remark' => $this->remark, 'source' => $this->source] as $key => $value) {
-                if (array_key_exists($key, $values)) $values[$key] = $value;
+                if (array_key_exists($key, $values)) {
+                    $values[$key] = $value;
+                }
             }
             return $values;
         }

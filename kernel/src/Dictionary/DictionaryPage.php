@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Dictionary;
@@ -17,7 +18,7 @@ final readonly class DictionaryPage
     public function toArray(): array
     {
         return [
-            'lists' => array_map(static fn (DictionaryType|DictionaryEntry $item): array => $item->toArray(), $this->items),
+            'lists' => array_map(static fn(DictionaryType|DictionaryEntry $item): array => $item->toArray(), $this->items),
             'count' => $this->count,
             'pageNo' => $this->page,
             'pageSize' => $this->pageSize,

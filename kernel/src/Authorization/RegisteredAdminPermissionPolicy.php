@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Authorization;
@@ -13,7 +14,9 @@ final class RegisteredAdminPermissionPolicy
     {
         $normalized = strtolower(trim($accessUri, '/'));
         $registered = new EffectivePermissionSet($this->normalize($registeredPermissions));
-        if (!$registered->allows($normalized)) return false;
+        if (!$registered->allows($normalized)) {
+            return false;
+        }
         return $isRoot || (new EffectivePermissionSet($this->normalize($grantedPermissions)))->allows($normalized);
     }
 
@@ -24,7 +27,9 @@ final class RegisteredAdminPermissionPolicy
     private function normalize(iterable $permissions): array
     {
         $normalized = [];
-        foreach ($permissions as $permission) $normalized[] = strtolower((string) $permission);
+        foreach ($permissions as $permission) {
+            $normalized[] = strtolower((string) $permission);
+        }
         return $normalized;
     }
 }

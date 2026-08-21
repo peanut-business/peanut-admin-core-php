@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tenancy;
@@ -24,7 +25,9 @@ final readonly class TenantAvailabilityGuard
 
     private function assertActive(int $tenantId): void
     {
-        if ($tenantId <= 0) throw new \DomainException('TRUSTED_TENANT_CONTEXT_REQUIRED');
+        if ($tenantId <= 0) {
+            throw new \DomainException('TRUSTED_TENANT_CONTEXT_REQUIRED');
+        }
         $tenant = $this->tenants->byId($tenantId);
         if ($tenant === null || $tenant->status !== TenantStatus::Active) {
             throw new \DomainException('TENANT_UNAVAILABLE');

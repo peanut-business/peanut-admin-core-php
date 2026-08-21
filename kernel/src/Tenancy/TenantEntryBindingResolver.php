@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tenancy;
@@ -17,9 +18,13 @@ final readonly class TenantEntryBindingResolver
     public function loginTenantCode(object $request, string $clientKey, ?string $explicitTenantCode): ?string
     {
         $explicitTenantCode = $explicitTenantCode === null ? null : trim($explicitTenantCode);
-        if ($explicitTenantCode === '') $explicitTenantCode = null;
+        if ($explicitTenantCode === '') {
+            $explicitTenantCode = null;
+        }
         $binding = $this->binding(self::requestHost($request), $clientKey);
-        if ($binding === null) return $explicitTenantCode;
+        if ($binding === null) {
+            return $explicitTenantCode;
+        }
         if ($explicitTenantCode !== null && !hash_equals($binding['tenant_code'], $explicitTenantCode)) {
             throw new \DomainException('TENANT_ENTRY_BINDING_CONFLICT');
         }
@@ -48,8 +53,12 @@ final readonly class TenantEntryBindingResolver
             throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
         }
         $binding = $this->binding(self::requestHost($request), $clientKey);
-        if ($binding !== null) return new TenantSystemContext($binding['tenant_id'], $actor, $operation, $operationId);
-        if ($this->defaultSystem === null) throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
+        if ($binding !== null) {
+            return new TenantSystemContext($binding['tenant_id'], $actor, $operation, $operationId);
+        }
+        if ($this->defaultSystem === null) {
+            throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
+        }
         return ($this->defaultSystem)($actor, $operation, $operationId);
     }
 
@@ -86,8 +95,12 @@ SQL);
         } catch (\PDOException $exception) {
             throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE', 0, $exception);
         }
-        if ($rows === []) return null;
-        if (count($rows) !== 1) throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
+        if ($rows === []) {
+            return null;
+        }
+        if (count($rows) !== 1) {
+            throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
+        }
         $row = $rows[0];
         $tenantId = (int) ($row['tenant_id'] ?? 0);
         $tenantCode = trim((string) ($row['tenant_code'] ?? ''));
@@ -99,13 +112,17 @@ SQL);
 
     private static function requestHost(object $request): string
     {
-        if (!method_exists($request, 'host')) throw new \DomainException('TENANT_ENTRY_HOST_INVALID');
+        if (!method_exists($request, 'host')) {
+            throw new \DomainException('TENANT_ENTRY_HOST_INVALID');
+        }
         return self::normalizeHost((string) $request->host());
     }
 
     private static function validHost(string $host): bool
     {
-        if ($host === 'localhost' || filter_var($host, FILTER_VALIDATE_IP) !== false) return true;
+        if ($host === 'localhost' || filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return true;
+        }
         return preg_match('/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/D', $host) === 1;
     }
 }
