@@ -35,4 +35,25 @@ final class CredentialSecurityTest extends TestCase
         self::assertTrue($hasher->verify('correct horse battery staple', $hash));
         self::assertFalse($hasher->verify('wrong password', $hash));
     }
+
+    public function testPasswordPolicyCanBeConfiguredByTheApplication(): void
+    {
+        $hasher = new PasswordHasher(12, 128);
+
+        self::assertSame(12, $hasher->minimumLength());
+        self::assertSame(128, $hasher->maximumLength());
+        $hasher->assertValid('application-policy-password');
+
+        $this->expectException(\RuntimeException::class);
+        $hasher->hash('short');
+    }
+
+    public function testDefaultPasswordPolicyIsLooseForReusableCore(): void
+    {
+        $hasher = new PasswordHasher();
+
+        self::assertSame(PasswordHasher::DEFAULT_MINIMUM_LENGTH, $hasher->minimumLength());
+        self::assertSame(PasswordHasher::DEFAULT_MAXIMUM_LENGTH, $hasher->maximumLength());
+        self::assertNotEmpty($hasher->hash('eight888'));
+    }
 }
