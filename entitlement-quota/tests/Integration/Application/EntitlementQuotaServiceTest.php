@@ -94,7 +94,7 @@ final class EntitlementQuotaServiceTest extends TestCase
             )),
         );
         self::assertSame('peanut.entitlement-quota', Package::MODULE_KEY);
-        self::assertSame('0.1.0-alpha.8', Package::VERSION);
+        self::assertSame('0.1.0-alpha.9', Package::VERSION);
 
         $receipt = new EntitlementQuotaReceipt(
             Package::RESERVE_OPERATION,
