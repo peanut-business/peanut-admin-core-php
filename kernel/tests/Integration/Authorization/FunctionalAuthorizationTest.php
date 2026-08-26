@@ -41,6 +41,18 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
 
     public function testFixedCatalogIsVersionControlledAndIdempotent(): void
     {
+        $moduleRuntimePermissions = [
+            'platform.module.read',
+            'platform.module.install',
+            'platform.module.uninstall',
+            'platform.module.disable',
+            'platform.module.sync',
+        ];
+        self::assertSame($moduleRuntimePermissions, array_values(array_filter(
+            CorePermissionCatalog::PLATFORM,
+            static fn(string $permission): bool => str_starts_with($permission, 'platform.module.'),
+        )));
+
         $expected = [...CorePermissionCatalog::TENANT, ...CorePermissionCatalog::PLATFORM];
         $actual = $this->query('SELECT `key` FROM pa_permission ORDER BY `key`')->fetchAll(\PDO::FETCH_COLUMN);
 
@@ -52,6 +64,11 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
         self::assertSame('sensitive', $this->query(
             "SELECT risk_level FROM pa_permission WHERE `key` = 'core.member.effective-access.read'",
         )->fetchColumn());
+        foreach ($moduleRuntimePermissions as $permission) {
+            self::assertSame(['module_key' => 'platform', 'status' => 'active'], $this->query(
+                "SELECT module_key, status FROM pa_permission WHERE `key` = '{$permission}'",
+            )->fetch(\PDO::FETCH_ASSOC));
+        }
     }
 
     public function testPreviewProjectionReturnsTheMemberAndOnlyActiveRolesInStableOrder(): void
