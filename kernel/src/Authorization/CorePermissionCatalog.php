@@ -37,6 +37,7 @@ final class CorePermissionCatalog
     /** @var list<string> */
     public const PLATFORM = [
         'platform.module.read',
+        'platform.module.create',
         'platform.module.install',
         'platform.module.uninstall',
         'platform.module.disable',

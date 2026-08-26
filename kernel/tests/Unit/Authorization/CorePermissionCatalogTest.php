@@ -13,6 +13,7 @@ final class CorePermissionCatalogTest extends TestCase
     {
         self::assertSame([
             'platform.module.read',
+            'platform.module.create',
             'platform.module.install',
             'platform.module.uninstall',
             'platform.module.disable',

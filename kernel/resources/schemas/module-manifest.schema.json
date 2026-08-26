@@ -44,6 +44,14 @@
         }
       }
     },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protected"],
+      "properties": {
+        "protected": { "type": "boolean" }
+      }
+    },
     "backend": {
       "type": "object",
       "additionalProperties": false,

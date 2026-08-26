@@ -43,6 +43,7 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
     {
         $moduleRuntimePermissions = [
             'platform.module.read',
+            'platform.module.create',
             'platform.module.install',
             'platform.module.uninstall',
             'platform.module.disable',
