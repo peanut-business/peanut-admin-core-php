@@ -19,11 +19,11 @@ final class Schema
     public static function createSql(
         string $table,
         TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
-    ): string
-    {
+    ): string {
         $scope = new TenantColumnScope($mode);
         return match ($table) {
-            'pa_task_job' => sprintf(<<<'SQL'
+            'pa_task_job' => sprintf(
+                <<<'SQL'
 CREATE TABLE `pa_task_job` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `job_key` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -71,7 +71,8 @@ SQL,
                 $scope->whenTenant('`tenant_id`, '),
                 $scope->whenTenant('`tenant_id`, '),
             ),
-            'pa_task_job_attempt' => sprintf(<<<'SQL'
+            'pa_task_job_attempt' => sprintf(
+                <<<'SQL'
 CREATE TABLE `pa_task_job_attempt` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 %s  `job_id` BIGINT UNSIGNED NOT NULL,
@@ -96,7 +97,8 @@ SQL,
                 $scope->whenTenant('`tenant_id`, '),
                 $scope->whenTenant('`tenant_id`, '),
             ),
-            'pa_task_job_event' => sprintf(<<<'SQL'
+            'pa_task_job_event' => sprintf(
+                <<<'SQL'
 CREATE TABLE `pa_task_job_event` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 %s  `job_id` BIGINT UNSIGNED NOT NULL,

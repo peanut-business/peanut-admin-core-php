@@ -19,11 +19,11 @@ final class Schema
     public static function createSql(
         string $table,
         TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
-    ): string
-    {
+    ): string {
         $scope = new TenantColumnScope($mode);
         return match ($table) {
-            'pa_import_export_operation' => sprintf(<<<'SQL'
+            'pa_import_export_operation' => sprintf(
+                <<<'SQL'
 CREATE TABLE `pa_import_export_operation` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `operation_key` VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -81,7 +81,8 @@ SQL,
                 $scope->whenTenant('`tenant_id`, '),
                 $scope->whenTenant('`tenant_id`, '),
             ),
-            'pa_import_export_row_error' => sprintf(<<<'SQL'
+            'pa_import_export_row_error' => sprintf(
+                <<<'SQL'
 CREATE TABLE `pa_import_export_row_error` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 %s  `operation_id` BIGINT UNSIGNED NOT NULL,

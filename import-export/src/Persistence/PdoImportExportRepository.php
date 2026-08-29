@@ -67,7 +67,8 @@ final readonly class PdoImportExportRepository
         $this->assertStorageMode();
         return $this->transaction(function () use ($tenantId, $memberId, $operationKey, $providerKey, $direction, $inputFileKey, $schemaRevision, $mapping, $idempotencyKeyHash, $requestHash, $retentionDays): OperationRecord {
             $created = false;
-            $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+            $statement = $this->pdo->prepare(sprintf(
+                <<<'SQL'
 INSERT INTO pa_import_export_operation (
   operation_key, %screated_by_member_id, provider_key, direction,
   input_file_key, schema_revision, mapping_json, idempotency_key_hash,

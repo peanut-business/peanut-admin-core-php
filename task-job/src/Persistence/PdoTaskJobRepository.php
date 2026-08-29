@@ -49,7 +49,8 @@ final readonly class PdoTaskJobRepository
         }
         try {
             $created = false;
-            $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+            $statement = $this->pdo->prepare(sprintf(
+                <<<'SQL'
 INSERT INTO pa_task_job (
   job_key, %stask_type, handler_key, payload_json, payload_hash,
   trusted_envelope, idempotency_key_hash, request_hash, status, max_attempts,
@@ -282,7 +283,8 @@ SQL, $this->tenantScope->andWhere()));
             if ($update->rowCount() !== 1) {
                 throw TaskJobException::stateConflict();
             }
-            $insert = $this->pdo->prepare(sprintf(<<<'SQL'
+            $insert = $this->pdo->prepare(sprintf(
+                <<<'SQL'
 INSERT INTO pa_task_job_attempt (
   %sjob_id, attempt_number, worker_id_hash, lease_token_hash, status, started_at
 ) VALUES (%s:job_id, :attempt, :worker_hash, :lease_hash, 'running', UTC_TIMESTAMP(3))
@@ -339,7 +341,8 @@ SQL, $this->tenantScope->andWhere()));
     public function assertExecutable(JobClaim $claim): void
     {
         $this->assertStorageMode();
-        $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $statement = $this->pdo->prepare(sprintf(
+            <<<'SQL'
 SELECT job.*,
        job.lease_token_hash AS job_lease_token_hash,
        attempt.lease_token_hash AS attempt_lease_token_hash,
@@ -471,7 +474,8 @@ SQL, $this->tenantScope->andWhere()));
 
     private function recoverExpired(int $tenantId): void
     {
-        $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $statement = $this->pdo->prepare(sprintf(
+            <<<'SQL'
 SELECT job.*,
        job.lease_token_hash AS job_lease_token_hash,
        attempt.lease_token_hash AS attempt_lease_token_hash
@@ -573,7 +577,8 @@ SQL, $this->tenantScope->where("id = :id AND status = 'running'")));
         } catch (JsonException) {
             throw TaskJobException::internal();
         }
-        $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $statement = $this->pdo->prepare(sprintf(
+            <<<'SQL'
 INSERT INTO pa_task_job_event (%sjob_id, event_key, actor_member_id, metadata_json, occurred_at)
 VALUES (%s:job_id, :event_key, :actor_member_id, :metadata_json, UTC_TIMESTAMP(3))
 SQL,

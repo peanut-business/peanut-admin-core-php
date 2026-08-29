@@ -17,10 +17,10 @@ final class IdempotencySchema
 
     public static function tenant(
         TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
-    ): string
-    {
+    ): string {
         $scope = new TenantColumnScope($mode);
-        return sprintf(<<<'SQL'
+        return sprintf(
+            <<<'SQL'
 CREATE TABLE `pa_tenant_idempotency_record` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 %s  `tenant_member_id` BIGINT UNSIGNED NOT NULL,
