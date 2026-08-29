@@ -238,9 +238,9 @@ SQL);
                                     . 'AND target_resource_key = :target_resource_key AND target_id = :target_id',
                             ),
                         $this->tenantScope->bindings($tenantId, [
-                        'definition_id' => $definitionId,
-                        'target_resource_key' => $targetResourceKey,
-                        'target_id' => $targetId,
+                            'definition_id' => $definitionId,
+                            'target_resource_key' => $targetResourceKey,
+                            'target_id' => $targetId,
                         ]),
                     )
                     : null,
@@ -521,9 +521,9 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
                             . 'AND target_resource_key = :target_resource_key AND target_id = :target_id',
                     ) . $suffix,
                 $this->tenantScope->bindings((int) $tenantId, [
-                'definition_id' => $definitionId,
-                'target_resource_key' => $targetResourceKey,
-                'target_id' => $targetId,
+                    'definition_id' => $definitionId,
+                    'target_resource_key' => $targetResourceKey,
+                    'target_id' => $targetId,
                 ]),
             ),
             default => throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting scope is invalid.'),

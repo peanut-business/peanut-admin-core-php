@@ -96,8 +96,7 @@ SQL,
     public static function createSql(
         string $table,
         TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
-    ): string
-    {
+    ): string {
         return match ($table) {
             'pa_setting_definition', 'pa_setting_deployment_value' => self::CREATE_SQL[$table],
             'pa_setting_tenant_value' => self::tenantValueSql($mode),
@@ -118,7 +117,8 @@ SQL,
     private static function tenantValueSql(TenantPersistenceMode $mode): string
     {
         $scope = new TenantColumnScope($mode);
-        return sprintf(<<<'SQL'
+        return sprintf(
+            <<<'SQL'
 CREATE TABLE `pa_setting_tenant_value` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 %s  `definition_id` BIGINT UNSIGNED NOT NULL,
@@ -158,7 +158,8 @@ SQL,
     private static function targetValueSql(TenantPersistenceMode $mode): string
     {
         $scope = new TenantColumnScope($mode);
-        return sprintf(<<<'SQL'
+        return sprintf(
+            <<<'SQL'
 CREATE TABLE `pa_setting_target_value` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 %s  `definition_id` BIGINT UNSIGNED NOT NULL,
