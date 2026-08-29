@@ -12,11 +12,26 @@ use PDOException;
 use PeanutAdmin\ImportExport\Application\ImportExportException;
 use PeanutAdmin\ImportExport\Application\OperationRecord;
 use PeanutAdmin\ImportExport\Contract\RowIssue;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use Throwable;
 
 final readonly class PdoImportExportRepository
 {
-    public function __construct(private PDO $pdo) {}
+    private TenantColumnScope $tenantScope;
+
+    public function __construct(
+        private PDO $pdo,
+        TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
+        ?int $instanceTenantId = null,
+    ) {
+        $this->tenantScope = new TenantColumnScope($mode, $instanceTenantId);
+        $this->tenantScope->assertRuntimeConfigured();
+        $this->tenantScope->assertStorageMode($pdo, [
+            'pa_import_export_operation',
+            'pa_import_export_row_error',
+        ]);
+    }
 
     public function transaction(callable $operation): mixed
     {
@@ -54,22 +69,24 @@ final readonly class PdoImportExportRepository
     ): OperationRecord {
         return $this->transaction(function () use ($tenantId, $memberId, $operationKey, $providerKey, $direction, $inputFileKey, $schemaRevision, $mapping, $idempotencyKeyHash, $requestHash, $retentionDays): OperationRecord {
             $created = false;
-            $statement = $this->pdo->prepare(<<<'SQL'
+            $statement = $this->pdo->prepare(sprintf(<<<'SQL'
 INSERT INTO pa_import_export_operation (
-  operation_key, tenant_id, created_by_member_id, provider_key, direction,
+  operation_key, %screated_by_member_id, provider_key, direction,
   input_file_key, schema_revision, mapping_json, idempotency_key_hash,
   request_hash, retention_until, created_at, updated_at
 ) VALUES (
-  :operation_key, :tenant_id, :member_id, :provider_key, :direction,
+  :operation_key, %s:member_id, :provider_key, :direction,
   :input_file_key, :schema_revision, :mapping_json, :idempotency_hash,
   :request_hash, TIMESTAMPADD(DAY, :retention_days, UTC_TIMESTAMP(3)),
   UTC_TIMESTAMP(3), UTC_TIMESTAMP(3)
 )
-SQL);
+SQL,
+                $this->tenantScope->whenTenant('tenant_id, '),
+                $this->tenantScope->whenTenant(':tenant_id, '),
+            ));
             try {
-                $statement->execute([
+                $statement->execute($this->tenantScope->bindings($tenantId, [
                     'operation_key' => $operationKey,
-                    'tenant_id' => $tenantId,
                     'member_id' => $memberId,
                     'provider_key' => $providerKey,
                     'direction' => $direction,
@@ -79,7 +96,7 @@ SQL);
                     'idempotency_hash' => $idempotencyKeyHash,
                     'request_hash' => $requestHash,
                     'retention_days' => $retentionDays,
-                ]);
+                ]));
                 $id = (int) $this->pdo->lastInsertId();
                 $created = true;
             } catch (PDOException $exception) {
@@ -99,19 +116,24 @@ SQL);
             if (!$created && !hash_equals((string) $row['schema_revision'], $schemaRevision)) {
                 throw ImportExportException::schemaMismatch();
             }
-            return $this->map($row);
+            return $this->map($row, $tenantId);
         });
     }
 
     public function attachJob(int $tenantId, string $operationKey, string $jobKey): OperationRecord
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $this->byKey($tenantId, $operationKey, false);
+        $statement = $this->pdo->prepare(sprintf(<<<'SQL'
 UPDATE pa_import_export_operation
 SET task_job_key = :job_key, revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
-WHERE tenant_id = :tenant_id AND operation_key = :operation_key AND status = 'queued'
+WHERE %s
   AND (task_job_key IS NULL OR task_job_key = :job_key_check)
-SQL);
-        $statement->execute(['job_key' => $jobKey, 'job_key_check' => $jobKey, 'tenant_id' => $tenantId, 'operation_key' => $operationKey]);
+SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'queued'")));
+        $statement->execute($this->tenantScope->bindings($tenantId, [
+            'job_key' => $jobKey,
+            'job_key_check' => $jobKey,
+            'operation_key' => $operationKey,
+        ]));
         $row = $this->byKey($tenantId, $operationKey, true);
         if ($row === null) {
             throw ImportExportException::notFound();
@@ -119,7 +141,7 @@ SQL);
         if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])) {
             throw ImportExportException::stateConflict();
         }
-        return $this->map($row);
+        return $this->map($row, $tenantId);
     }
 
     /** @return array{items: list<OperationRecord>, page: int, page_size: int, total: int} */
@@ -128,15 +150,28 @@ SQL);
         if ($page < 1 || $page > 1_000_000 || $pageSize < 1 || $pageSize > 100) {
             throw ImportExportException::invalid();
         }
-        $count = $this->pdo->prepare('SELECT COUNT(*) FROM pa_import_export_operation WHERE tenant_id = :tenant_id AND status = :status');
-        $count->execute(['tenant_id' => $tenantId, 'status' => $status]);
-        $statement = $this->pdo->prepare('SELECT * FROM pa_import_export_operation WHERE tenant_id = :tenant_id AND status = :status ORDER BY id DESC LIMIT :limit OFFSET :offset');
-        $statement->bindValue('tenant_id', $tenantId, PDO::PARAM_INT);
+        $count = $this->pdo->prepare(
+            'SELECT COUNT(*) FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('status = :status'),
+        );
+        $count->execute($this->tenantScope->bindings($tenantId, ['status' => $status]));
+        $statement = $this->pdo->prepare(
+            'SELECT * FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('status = :status')
+            . ' ORDER BY id DESC LIMIT :limit OFFSET :offset',
+        );
+        $this->tenantScope->bind($statement, $tenantId);
         $statement->bindValue('status', $status);
         $statement->bindValue('limit', $pageSize, PDO::PARAM_INT);
         $statement->bindValue('offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
         $statement->execute();
-        return ['items' => array_map($this->map(...), $statement->fetchAll(PDO::FETCH_ASSOC)), 'page' => $page, 'page_size' => $pageSize, 'total' => (int) $count->fetchColumn()];
+        return [
+            'items' => array_map(
+                fn(array $row): OperationRecord => $this->map($row, $tenantId),
+                $statement->fetchAll(PDO::FETCH_ASSOC),
+            ),
+            'page' => $page,
+            'page_size' => $pageSize,
+            'total' => (int) $count->fetchColumn(),
+        ];
     }
 
     public function get(int $tenantId, string $operationKey): OperationRecord
@@ -145,7 +180,7 @@ SQL);
         if ($row === null) {
             throw ImportExportException::notFound();
         }
-        return $this->map($row);
+        return $this->map($row, $tenantId);
     }
 
     public function requestCancel(int $tenantId, string $operationKey, int $revision): OperationRecord
@@ -159,12 +194,23 @@ SQL);
             if (!in_array($row['status'], ['queued', 'running'], true) || (int) $row['revision'] !== $revision) {
                 throw ImportExportException::stateConflict();
             }
-            $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = :status, completed_at = IF(:completion_status = 'cancelled', UTC_TIMESTAMP(3), NULL), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND revision = :revision");
-            $statement->execute(['status' => $next, 'completion_status' => $next, 'id' => $row['id'], 'tenant_id' => $tenantId, 'revision' => $revision]);
+            $statement = $this->pdo->prepare(
+                "UPDATE pa_import_export_operation SET status = :status, completed_at = IF(:completion_status = 'cancelled', UTC_TIMESTAMP(3), NULL), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id"
+                . $this->tenantScope->andWhere() . ' AND revision = :revision',
+            );
+            $statement->execute($this->tenantScope->bindings($tenantId, [
+                'status' => $next,
+                'completion_status' => $next,
+                'id' => $row['id'],
+                'revision' => $revision,
+            ]));
             if ($statement->rowCount() !== 1) {
                 throw ImportExportException::stateConflict();
             }
-            return $this->map($this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal());
+            return $this->map(
+                $this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal(),
+                $tenantId,
+            );
         });
     }
 
@@ -178,12 +224,22 @@ SQL);
             if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key']) || $attempt < 1 || $attempt > 10 || $attempt <= (int) $row['attempt_number'] || !in_array($row['status'], ['queued', 'running'], true)) {
                 throw ImportExportException::stateConflict();
             }
-            $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = 'running', attempt_number = :attempt, last_error_code = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND attempt_number < :attempt_fence AND status IN ('queued','running')");
-            $statement->execute(['attempt' => $attempt, 'attempt_fence' => $attempt, 'id' => $row['id'], 'tenant_id' => $tenantId]);
+            $statement = $this->pdo->prepare(
+                "UPDATE pa_import_export_operation SET status = 'running', attempt_number = :attempt, last_error_code = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id"
+                . $this->tenantScope->andWhere() . " AND attempt_number < :attempt_fence AND status IN ('queued','running')",
+            );
+            $statement->execute($this->tenantScope->bindings($tenantId, [
+                'attempt' => $attempt,
+                'attempt_fence' => $attempt,
+                'id' => $row['id'],
+            ]));
             if ($statement->rowCount() !== 1) {
                 throw ImportExportException::stateConflict();
             }
-            return $this->map($this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal());
+            return $this->map(
+                $this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal(),
+                $tenantId,
+            );
         });
     }
 
@@ -203,9 +259,9 @@ SQL);
             if (!$cancelled && (int) $row['processed_rows'] === $processed
                 && (int) $row['accepted_rows'] === $accepted && (int) $row['rejected_rows'] === $rejected
             ) {
-                return $this->map($row);
+                return $this->map($row, $tenantId);
             }
-            $statement = $this->pdo->prepare(<<<'SQL'
+            $statement = $this->pdo->prepare(sprintf(<<<'SQL'
 UPDATE pa_import_export_operation
 SET status = :status,
     processed_rows = :processed,
@@ -218,10 +274,10 @@ SET status = :status,
     completed_at = IF(:cancelled_completion = 1, UTC_TIMESTAMP(3), completed_at),
     revision = revision + 1,
     updated_at = UTC_TIMESTAMP(3)
-WHERE id = :id AND tenant_id = :tenant_id AND task_job_key = :job_key
+WHERE id = :id%s AND task_job_key = :job_key
   AND attempt_number = :attempt AND status = :expected_status
-SQL);
-            $statement->execute([
+SQL, $this->tenantScope->andWhere()));
+            $statement->execute($this->tenantScope->bindings($tenantId, [
                 'status' => $cancelled ? 'cancelled' : 'running',
                 'processed' => $processed,
                 'accepted' => $accepted,
@@ -233,22 +289,34 @@ SQL);
                 'cancelled_error' => $cancelled ? 1 : 0,
                 'cancelled_completion' => $cancelled ? 1 : 0,
                 'id' => $operationId,
-                'tenant_id' => $tenantId,
                 'job_key' => $jobKey,
                 'attempt' => $attempt,
                 'expected_status' => $row['status'],
-            ]);
+            ]));
             if ($statement->rowCount() !== 1) {
                 throw ImportExportException::stateConflict();
             }
-            return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal());
+            return $this->map(
+                $this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal(),
+                $tenantId,
+            );
         });
     }
 
     public function addRowIssue(int $tenantId, int $operationId, int $rowNumber, RowIssue $issue): void
     {
-        $statement = $this->pdo->prepare('INSERT IGNORE INTO pa_import_export_row_error (`tenant_id`, `operation_id`, `row_number`, `column_key`, `error_code`, `occurred_at`) VALUES (:tenant_id, :operation_id, :row_number, :column_key, :error_code, UTC_TIMESTAMP(3))');
-        $statement->execute(['tenant_id' => $tenantId, 'operation_id' => $operationId, 'row_number' => $rowNumber, 'column_key' => $issue->columnKey, 'error_code' => $issue->code]);
+        $this->byId($tenantId, $operationId, false);
+        $statement = $this->pdo->prepare(sprintf(
+            'INSERT IGNORE INTO pa_import_export_row_error (%s`operation_id`, `row_number`, `column_key`, `error_code`, `occurred_at`) VALUES (%s:operation_id, :row_number, :column_key, :error_code, UTC_TIMESTAMP(3))',
+            $this->tenantScope->whenTenant('`tenant_id`, '),
+            $this->tenantScope->whenTenant(':tenant_id, '),
+        ));
+        $statement->execute($this->tenantScope->bindings($tenantId, [
+            'operation_id' => $operationId,
+            'row_number' => $rowNumber,
+            'column_key' => $issue->columnKey,
+            'error_code' => $issue->code,
+        ]));
     }
 
     /** @return list<array{row_number: int, column_key: string|null, error_code: string}> */
@@ -257,8 +325,13 @@ SQL);
         if ($limit < 1 || $limit > 10000) {
             throw ImportExportException::invalid();
         }
-        $statement = $this->pdo->prepare('SELECT `row_number`, `column_key`, `error_code` FROM pa_import_export_row_error WHERE `tenant_id` = :tenant_id AND `operation_id` = :operation_id ORDER BY `row_number`, `id` LIMIT :limit');
-        $statement->bindValue('tenant_id', $tenantId, PDO::PARAM_INT);
+        $this->byId($tenantId, $operationId, false);
+        $statement = $this->pdo->prepare(
+            'SELECT `row_number`, `column_key`, `error_code` FROM pa_import_export_row_error WHERE '
+            . $this->tenantScope->where('operation_id = :operation_id')
+            . ' ORDER BY `row_number`, `id` LIMIT :limit',
+        );
+        $this->tenantScope->bind($statement, $tenantId);
         $statement->bindValue('operation_id', $operationId, PDO::PARAM_INT);
         $statement->bindValue('limit', $limit, PDO::PARAM_INT);
         $statement->execute();
@@ -278,23 +351,29 @@ SQL);
                 throw ImportExportException::stateConflict();
             }
             $cancelled = $row['status'] === 'cancel_requested';
-            $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = :status, result_file_key = :result_file_key, error_file_key = :error_file_key, total_rows = :total_rows, last_error_code = :error_code, completed_at = UTC_TIMESTAMP(3), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id AND tenant_id = :tenant_id AND task_job_key = :job_key AND attempt_number = :attempt AND status = :expected_status");
-            $statement->execute([
+            $statement = $this->pdo->prepare(
+                'UPDATE pa_import_export_operation SET status = :status, result_file_key = :result_file_key, error_file_key = :error_file_key, total_rows = :total_rows, last_error_code = :error_code, completed_at = UTC_TIMESTAMP(3), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id'
+                . $this->tenantScope->andWhere()
+                . ' AND task_job_key = :job_key AND attempt_number = :attempt AND status = :expected_status',
+            );
+            $statement->execute($this->tenantScope->bindings($tenantId, [
                 'status' => $cancelled ? 'cancelled' : $status,
                 'result_file_key' => $cancelled ? null : $resultFileKey,
                 'error_file_key' => $cancelled ? null : $errorFileKey,
                 'total_rows' => $totalRows,
                 'error_code' => $cancelled ? null : $errorCode,
                 'id' => $operationId,
-                'tenant_id' => $tenantId,
                 'job_key' => $jobKey,
                 'attempt' => $attempt,
                 'expected_status' => $row['status'],
-            ]);
+            ]));
             if ($statement->rowCount() !== 1) {
                 throw ImportExportException::stateConflict();
             }
-            return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal());
+            return $this->map(
+                $this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal(),
+                $tenantId,
+            );
         });
     }
 
@@ -302,6 +381,10 @@ SQL);
     {
         if ($limit < 1 || $limit > 1000) {
             throw ImportExportException::invalid();
+        }
+        $row = $this->pdo->query('SELECT * FROM pa_import_export_operation ORDER BY id LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            $this->tenantScope->assertStorageRow($row);
         }
         $statement = $this->pdo->prepare("UPDATE pa_import_export_operation SET status = 'expired', result_file_key = NULL, error_file_key = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE status IN ('succeeded','failed','cancelled') AND retention_until <= UTC_TIMESTAMP(3) ORDER BY id LIMIT :limit");
         $statement->bindValue('limit', $limit, PDO::PARAM_INT);
@@ -312,33 +395,55 @@ SQL);
     /** @return array<string, mixed>|null */
     private function byIdempotency(int $tenantId, int $memberId, string $direction, string $providerKey, string $hash, bool $lock): ?array
     {
-        $sql = 'SELECT * FROM pa_import_export_operation WHERE tenant_id = :tenant_id AND created_by_member_id = :member_id AND direction = :direction AND provider_key = :provider_key AND idempotency_key_hash = :hash' . ($lock ? ' FOR UPDATE' : '');
+        $sql = 'SELECT * FROM pa_import_export_operation WHERE '
+            . $this->tenantScope->where('created_by_member_id = :member_id AND direction = :direction AND provider_key = :provider_key AND idempotency_key_hash = :hash')
+            . ($lock ? ' FOR UPDATE' : '');
         $statement = $this->pdo->prepare($sql);
-        $statement->execute(['tenant_id' => $tenantId, 'member_id' => $memberId, 'direction' => $direction, 'provider_key' => $providerKey, 'hash' => $hash]);
+        $statement->execute($this->tenantScope->bindings($tenantId, [
+            'member_id' => $memberId,
+            'direction' => $direction,
+            'provider_key' => $providerKey,
+            'hash' => $hash,
+        ]));
         $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            $this->tenantScope->tenantId($row, $tenantId);
+        }
         return is_array($row) ? $row : null;
     }
 
     /** @return array<string, mixed>|null */
     private function byKey(int $tenantId, string $operationKey, bool $lock): ?array
     {
-        $statement = $this->pdo->prepare('SELECT * FROM pa_import_export_operation WHERE tenant_id = :tenant_id AND operation_key = :operation_key' . ($lock ? ' FOR UPDATE' : ''));
-        $statement->execute(['tenant_id' => $tenantId, 'operation_key' => $operationKey]);
+        $statement = $this->pdo->prepare(
+            'SELECT * FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('operation_key = :operation_key')
+            . ($lock ? ' FOR UPDATE' : ''),
+        );
+        $statement->execute($this->tenantScope->bindings($tenantId, ['operation_key' => $operationKey]));
         $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            $this->tenantScope->tenantId($row, $tenantId);
+        }
         return is_array($row) ? $row : null;
     }
 
     /** @return array<string, mixed>|null */
     private function byId(int $tenantId, int $id, bool $lock): ?array
     {
-        $statement = $this->pdo->prepare('SELECT * FROM pa_import_export_operation WHERE tenant_id = :tenant_id AND id = :id' . ($lock ? ' FOR UPDATE' : ''));
-        $statement->execute(['tenant_id' => $tenantId, 'id' => $id]);
+        $statement = $this->pdo->prepare(
+            'SELECT * FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('id = :id')
+            . ($lock ? ' FOR UPDATE' : ''),
+        );
+        $statement->execute($this->tenantScope->bindings($tenantId, ['id' => $id]));
         $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            $this->tenantScope->tenantId($row, $tenantId);
+        }
         return is_array($row) ? $row : null;
     }
 
     /** @param array<string, mixed> $row */
-    private function map(array $row): OperationRecord
+    private function map(array $row, int $logicalTenantId): OperationRecord
     {
         try {
             $mapping = json_decode((string) $row['mapping_json'], true, 16, JSON_THROW_ON_ERROR);
@@ -356,7 +461,7 @@ SQL);
         return new OperationRecord(
             (int) $row['id'],
             (string) $row['operation_key'],
-            (int) $row['tenant_id'],
+            $this->tenantScope->tenantId($row, $logicalTenantId),
             (int) $row['created_by_member_id'],
             (string) $row['provider_key'],
             (string) $row['direction'],

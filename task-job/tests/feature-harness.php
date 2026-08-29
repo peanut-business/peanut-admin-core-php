@@ -11,6 +11,7 @@ use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Application\TaskJobService;
 use PeanutAdmin\TaskJob\Database\Schema;
@@ -166,11 +167,23 @@ function expectProblem(string $code, callable $operation, string $label): void
     throw new RuntimeException($label . ': expected ' . $code);
 }
 
+function expectRuntime(string $code, callable $operation, string $label): void
+{
+    try {
+        $operation();
+    } catch (RuntimeException $exception) {
+        assertSame($code, $exception->getMessage(), $label);
+        return;
+    }
+    throw new RuntimeException($label . ': expected ' . $code);
+}
+
 $host = getenv('TASK_JOB_MYSQL_HOST') ?: '127.0.0.1';
 $port = getenv('TASK_JOB_MYSQL_PORT') ?: '33421';
 $database = getenv('TASK_JOB_MYSQL_DATABASE') ?: 'peanut_task_job_test';
 $user = getenv('TASK_JOB_MYSQL_USER') ?: 'root';
 $password = getenv('TASK_JOB_MYSQL_PASSWORD') ?: 'task-job-test';
+$run = static function (TenantPersistenceMode $mode) use ($host, $port, $database, $user, $password): void {
 $pdo = new PDO("mysql:host={$host};port={$port};charset=utf8mb4", $user, $password, [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -192,12 +205,27 @@ SQL);
 $pdo->exec("INSERT INTO pa_tenant VALUES (101), (202)");
 $pdo->exec("INSERT INTO pa_tenant_member VALUES (501, 101, 111, 'active'), (502, 202, 212, 'active')");
 foreach (Schema::tableNames() as $table) {
-    $pdo->exec(Schema::createSql($table));
+    $pdo->exec(Schema::createSql($table, $mode));
+}
+if ($mode === TenantPersistenceMode::InstanceScoped) {
+    foreach (Schema::tableNames() as $table) {
+        foreach (['COLUMNS', 'STATISTICS', 'KEY_COLUMN_USAGE'] as $informationSchemaTable) {
+            $count = $pdo->query(<<<SQL
+SELECT COUNT(*) FROM information_schema.{$informationSchemaTable}
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{$table}' AND COLUMN_NAME = 'tenant_id'
+SQL)->fetchColumn();
+            assertSame(0, (int) $count, "{$table} has no tenant_id in {$informationSchemaTable}");
+        }
+    }
 }
 
 $codec = new TrustedEnvelopeCodec('task-job-harness-signing-key-32-bytes-minimum');
 $registry = new TaskSubmissionRegistry([new HarnessProvider(), new HarnessProvider('test.missing', 'test.missing')]);
-$repository = new PdoTaskJobRepository($pdo);
+$repository = new PdoTaskJobRepository(
+    $pdo,
+    $mode,
+    $mode === TenantPersistenceMode::InstanceScoped ? 101 : null,
+);
 $publisher = new TrustedJobPublisher($repository, $registry, $codec);
 $admin = new TaskJobService($repository);
 $producer101 = context(101, 'test.message', 'send', 501);
@@ -212,11 +240,20 @@ $pdo->beginTransaction();
 $transactional = $publisher->publish($producer101, 'test.echo', ['message' => 'rollback'], 'idem-rollback');
 $pdo->rollBack();
 expectProblem('TASK_NOT_FOUND', fn() => $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $transactional->jobKey), 'outer business rollback removes job and event');
-$tenant2 = $publisher->publish($producer202, 'test.echo', ['message' => 'tenant two'], 'idem-0001');
-assertSame(202, $tenant2->tenantId, 'idempotency is tenant scoped');
-assertSame(1, $admin->list(context(101, TaskJobService::RESOURCE_KEY, 'read'), 'queued', 1, 20)['total'], 'tenant 101 list');
-assertSame(1, $admin->list(context(202, TaskJobService::RESOURCE_KEY, 'read', 502), 'queued', 1, 20)['total'], 'tenant 202 list');
-expectProblem('TASK_NOT_FOUND', fn() => $admin->detail(context(202, TaskJobService::RESOURCE_KEY, 'read', 502), $job->jobKey), 'cross-tenant detail');
+if ($mode === TenantPersistenceMode::TenantScoped) {
+    $tenant2 = $publisher->publish($producer202, 'test.echo', ['message' => 'tenant two'], 'idem-0001');
+    assertSame(202, $tenant2->tenantId, 'idempotency is tenant scoped');
+    assertSame(1, $admin->list(context(101, TaskJobService::RESOURCE_KEY, 'read'), 'queued', 1, 20)['total'], 'tenant 101 list');
+    assertSame(1, $admin->list(context(202, TaskJobService::RESOURCE_KEY, 'read', 502), 'queued', 1, 20)['total'], 'tenant 202 list');
+    expectProblem('TASK_NOT_FOUND', fn() => $admin->detail(context(202, TaskJobService::RESOURCE_KEY, 'read', 502), $job->jobKey), 'cross-tenant detail');
+} else {
+    expectRuntime(
+        'TENANT_PERSISTENCE_CONTEXT_INVALID',
+        fn() => $publisher->publish($producer202, 'test.echo', ['message' => 'tenant two'], 'idem-0001'),
+        'instance scope rejects another logical tenant',
+    );
+    assertSame(1, $admin->list(context(101, TaskJobService::RESOURCE_KEY, 'read'), 'queued', 1, 20)['total'], 'instance list');
+}
 expectProblem('TASK_PERMISSION_DENIED', fn() => $admin->list(context(101, TaskJobService::RESOURCE_KEY, 'manage'), 'queued', 1, 20), 'read permission operation');
 
 $handler = new HarnessHandler();
@@ -230,7 +267,11 @@ $stale = $publisher->publish($producer101, 'test.echo', ['message' => 'lease'], 
 $claim = $repository->claim(101, 'worker-stale', 30);
 assertSame($stale->jobKey, $claim?->jobKey, 'atomic claim returns queued job');
 $secondPdo = new PDO("mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4", $user, $password, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false]);
-assertSame(null, (new PdoTaskJobRepository($secondPdo))->claim(101, 'worker-other', 30), 'claimed job is excluded from a second worker');
+assertSame(null, (new PdoTaskJobRepository(
+    $secondPdo,
+    $mode,
+    $mode === TenantPersistenceMode::InstanceScoped ? 101 : null,
+))->claim(101, 'worker-other', 30), 'claimed job is excluded from a second worker');
 $pdo->exec("UPDATE pa_task_job SET lease_expires_at = TIMESTAMPADD(SECOND, -1, UTC_TIMESTAMP(3)) WHERE job_key = " . $pdo->quote($stale->jobKey));
 $recovered = $repository->claim(101, 'worker-recovery', 30);
 assertSame(2, $recovered?->attemptNumber, 'expired lease is recovered as a new attempt');
@@ -308,10 +349,29 @@ if (str_contains($raw, 'trusted_envelope') || str_contains($raw, 'payload') || s
 }
 assertSame(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_task_job_attempt WHERE job_id = (SELECT id FROM pa_task_job WHERE job_key = " . $pdo->quote($job->jobKey) . ')')->fetchColumn(), 'retry attempt ledger');
 assertSame(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_task_job_attempt WHERE status = 'abandoned'")->fetchColumn(), 'expired attempt ledger');
+if ($mode === TenantPersistenceMode::TenantScoped) {
+    $attemptsBeforeMismatch = (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job_attempt')->fetchColumn();
+    expectRuntime(
+        'TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH',
+        fn() => (new PdoTaskJobRepository(
+            $pdo,
+            TenantPersistenceMode::InstanceScoped,
+            101,
+        ))->claim(101, 'worker-schema-mismatch', 30),
+        'instance repository rejects tenant schema before claim',
+    );
+    assertSame($attemptsBeforeMismatch, (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job_attempt')->fetchColumn(), 'schema mismatch creates no attempt');
+    assertSame('queued', $admin->detail(context(202, TaskJobService::RESOURCE_KEY, 'read', 502), $tenant2->jobKey)->status, 'schema mismatch does not claim another tenant job');
+}
 
 foreach (array_reverse(Schema::tableNames()) as $table) {
     $pdo->exec(Schema::dropSql($table));
 }
 $pdo->exec('DROP TABLE pa_tenant_member, pa_tenant');
 $pdo->exec("DROP DATABASE `{$database}`");
-fwrite(STDOUT, "task-job feature harness PASS (idempotency, tenant, permission, claim/lease, retry, recovery, audit)\n");
+fwrite(STDOUT, "task-job {$mode->value} PASS (idempotency, permission, claim/lease, retry, recovery, audit)\n");
+};
+
+foreach ([TenantPersistenceMode::TenantScoped, TenantPersistenceMode::InstanceScoped] as $mode) {
+    $run($mode);
+}

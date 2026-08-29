@@ -19,6 +19,7 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 
 $root = dirname(__DIR__, 4);
 spl_autoload_register(static function (string $class) use ($root): void {
@@ -47,6 +48,16 @@ function problem(string $code, callable $operation, string $label): void
         $operation();
     } catch (ImportExportException $exception) {
         check($code, $exception->problemCode, $label);
+        return;
+    }
+    throw new RuntimeException($label . ': expected ' . $code);
+}
+function runtimeProblem(string $code, callable $operation, string $label): void
+{
+    try {
+        $operation();
+    } catch (RuntimeException $exception) {
+        check($code, $exception->getMessage(), $label);
         return;
     }
     throw new RuntimeException($label . ': expected ' . $code);
@@ -150,6 +161,7 @@ $password = getenv('IMPORT_EXPORT_MYSQL_PASSWORD') ?: 'import-export-test';
 if (preg_match('/^[a-z][a-z0-9_]{2,62}$/D', $database) !== 1) {
     throw new RuntimeException('Unsafe test database.');
 }
+$run = static function (TenantPersistenceMode $mode) use ($host, $port, $database, $user, $password): void {
 $pdo = new PDO("mysql:host={$host};port={$port};charset=utf8mb4", $user, $password, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false]);
 $pdo->exec("DROP DATABASE IF EXISTS `{$database}`");
 $pdo->exec("CREATE DATABASE `{$database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
@@ -159,10 +171,25 @@ $pdo->exec('CREATE TABLE pa_tenant_member (id BIGINT UNSIGNED NOT NULL, tenant_i
 $pdo->exec("INSERT INTO pa_tenant VALUES (101),(202)");
 $pdo->exec("INSERT INTO pa_tenant_member VALUES (501,101,111,'active'),(502,202,212,'active')");
 foreach (Schema::tableNames() as $table) {
-    $pdo->exec(Schema::createSql($table));
+    $pdo->exec(Schema::createSql($table, $mode));
+}
+if ($mode === TenantPersistenceMode::InstanceScoped) {
+    foreach (Schema::tableNames() as $table) {
+        foreach (['COLUMNS', 'STATISTICS', 'KEY_COLUMN_USAGE'] as $informationSchemaTable) {
+            $count = $pdo->query(<<<SQL
+SELECT COUNT(*) FROM information_schema.{$informationSchemaTable}
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{$table}' AND COLUMN_NAME = 'tenant_id'
+SQL)->fetchColumn();
+            check(0, (int) $count, "{$table} has no tenant_id in {$informationSchemaTable}");
+        }
+    }
 }
 
-$repository = new PdoImportExportRepository($pdo);
+$repository = new PdoImportExportRepository(
+    $pdo,
+    $mode,
+    $mode === TenantPersistenceMode::InstanceScoped ? 101 : null,
+);
 $provider = new HarnessProvider();
 $files = new HarnessFiles();
 $audit = new HarnessAudit();
@@ -180,7 +207,15 @@ $import = $repository->create(101, 501, 'iox_' . str_repeat('1', 32), $provider-
 $replay = $repository->create(101, 501, 'iox_' . str_repeat('2', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'request-import'), 7);
 check($import->operationKey, $replay->operationKey, 'idempotency replay');
 problem('IMPORT_EXPORT_IDEMPOTENCY_CONFLICT', fn() => $repository->create(101, 501, 'iox_' . str_repeat('3', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'changed'), 7), 'idempotency payload conflict');
-problem('IMPORT_EXPORT_NOT_FOUND', fn() => $repository->get(202, $import->operationKey), 'cross tenant detail indistinguishable');
+if ($mode === TenantPersistenceMode::TenantScoped) {
+    problem('IMPORT_EXPORT_NOT_FOUND', fn() => $repository->get(202, $import->operationKey), 'cross tenant detail indistinguishable');
+} else {
+    runtimeProblem(
+        'TENANT_PERSISTENCE_CONTEXT_INVALID',
+        fn() => $repository->get(202, $import->operationKey),
+        'instance scope rejects another logical tenant',
+    );
+}
 $import = $repository->attachJob(101, $import->operationKey, 'job_' . str_repeat('a', 32));
 $import = $runner->run($create101, $import->operationKey, $import->taskJobKey ?? '', 1);
 check('succeeded', $import->status, 'import completion');
@@ -242,9 +277,27 @@ check(null, $finishRace->resultFileKey, 'cancelled finish publishes no result');
 $pdo->exec("UPDATE pa_import_export_operation SET retention_until = TIMESTAMPADD(SECOND,-1,UTC_TIMESTAMP(3)) WHERE operation_key = " . $pdo->quote($cancel->operationKey));
 check(1, $repository->expireDue(), 'retention expiry');
 check('expired', $repository->get(101, $cancel->operationKey)->status, 'expired terminal state');
+if ($mode === TenantPersistenceMode::TenantScoped) {
+    $expiredBeforeMismatch = (int) $pdo->query("SELECT COUNT(*) FROM pa_import_export_operation WHERE status = 'expired'")->fetchColumn();
+    runtimeProblem(
+        'TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH',
+        fn() => (new PdoImportExportRepository(
+            $pdo,
+            TenantPersistenceMode::InstanceScoped,
+            101,
+        ))->expireDue(),
+        'instance repository rejects tenant schema before retention update',
+    );
+    check($expiredBeforeMismatch, (int) $pdo->query("SELECT COUNT(*) FROM pa_import_export_operation WHERE status = 'expired'")->fetchColumn(), 'schema mismatch expires no records');
+}
 
 foreach (array_reverse(Schema::tableNames()) as $table) {
     $pdo->exec(Schema::dropSql($table));
 } $pdo->exec('DROP TABLE pa_tenant_member, pa_tenant');
 $pdo->exec("DROP DATABASE `{$database}`");
-fwrite(STDOUT, "import-export feature harness PASS (migration, tenant, permission, idempotency, CSV, row errors, concurrency, retention)\n");
+fwrite(STDOUT, "import-export {$mode->value} PASS (migration, permission, idempotency, CSV, row errors, concurrency, retention)\n");
+};
+
+foreach ([TenantPersistenceMode::TenantScoped, TenantPersistenceMode::InstanceScoped] as $mode) {
+    $run($mode);
+}

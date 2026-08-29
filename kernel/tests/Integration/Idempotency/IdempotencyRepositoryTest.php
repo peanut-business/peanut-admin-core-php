@@ -8,13 +8,109 @@ use DateTimeImmutable;
 use PDO;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
+use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
 use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 
 final class IdempotencyRepositoryTest extends DatabaseTestCase
 {
+    public function testInstanceRepositoryRejectsTenantSchemaBeforeUpdatingARecord(): void
+    {
+        [$tenantId, $memberId] = $this->tenantMemberFixture();
+        $now = new DateTimeImmutable('2026-07-19T10:00:00Z');
+        $record = (new PdoIdempotencyRepository($this->database))->beginTenant(
+            $tenantId,
+            $memberId,
+            'schemaMismatchCommand',
+            IdempotencyKey::fromString('01KPEANUTADMIN-MISMATCH-001'),
+            hash('sha256', 'schema-mismatch'),
+            $now->modify('+1 hour'),
+            $now,
+        );
+        try {
+            (new PdoIdempotencyRepository(
+                $this->database,
+                TenantPersistenceMode::InstanceScoped,
+                $tenantId,
+            ))->completeTenant($record->id, 200, ['data' => ['ok' => true]]);
+            self::fail('An instance-scoped repository must reject tenant-scoped storage.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH', $exception->getMessage());
+        }
+
+        self::assertSame(
+            'processing',
+            $this->query('SELECT status FROM pa_tenant_idempotency_record WHERE id = ' . $record->id)->fetchColumn(),
+        );
+    }
+
+    public function testInstanceScopedRepositoryUsesNoTenantStorageColumnAndPinsLogicalContext(): void
+    {
+        [$tenantId, $memberId] = $this->tenantMemberFixture();
+        $this->database->exec('DROP TABLE pa_tenant_idempotency_record');
+        $this->database->exec(IdempotencySchema::tenant(TenantPersistenceMode::InstanceScoped));
+
+        self::assertSame(0, (int) $this->query(<<<'SQL'
+SELECT COUNT(*) FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pa_tenant_idempotency_record'
+  AND COLUMN_NAME = 'tenant_id'
+SQL)->fetchColumn());
+        self::assertSame(0, (int) $this->query(<<<'SQL'
+SELECT COUNT(*) FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pa_tenant_idempotency_record'
+  AND COLUMN_NAME = 'tenant_id'
+SQL)->fetchColumn());
+        self::assertSame(0, (int) $this->query(<<<'SQL'
+SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pa_tenant_idempotency_record'
+  AND COLUMN_NAME = 'tenant_id'
+SQL)->fetchColumn());
+
+        $repository = new PdoIdempotencyRepository(
+            $this->database,
+            TenantPersistenceMode::InstanceScoped,
+            $tenantId,
+        );
+        $now = new DateTimeImmutable('2026-07-19T10:00:00Z');
+        $key = IdempotencyKey::fromString('01KPEANUTADMIN-INSTANCE-0001');
+        $created = $repository->beginTenant(
+            $tenantId,
+            $memberId,
+            'instanceCommand',
+            $key,
+            hash('sha256', 'instance-request'),
+            $now->modify('+1 hour'),
+            $now,
+        );
+        $repository->completeTenant($created->id, 200, ['data' => ['ok' => true]]);
+        $replay = $repository->beginTenant(
+            $tenantId,
+            $memberId,
+            'instanceCommand',
+            $key,
+            hash('sha256', 'instance-request'),
+            $now->modify('+1 hour'),
+            $now,
+        );
+        self::assertTrue($created->created);
+        self::assertFalse($replay->created);
+        self::assertSame('completed', $replay->status);
+
+        $this->expectException(\RuntimeException::class);
+        $repository->beginTenant(
+            $tenantId + 1,
+            $memberId,
+            'instanceCommand',
+            $key,
+            hash('sha256', 'instance-request'),
+            $now->modify('+1 hour'),
+            $now,
+        );
+    }
+
     public function testTenantAndPlatformRecordsArePhysicallySeparatedAndReplaySafe(): void
     {
         $this->runner->migrate();
