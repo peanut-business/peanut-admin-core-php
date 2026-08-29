@@ -28,7 +28,6 @@ final class PdoIdempotencyRepository extends PdoRepository
         parent::__construct($pdo);
         $this->tenantScope = new TenantColumnScope($mode, $instanceTenantId);
         $this->tenantScope->assertRuntimeConfigured();
-        $this->tenantScope->assertStorageMode($pdo, ['pa_tenant_idempotency_record']);
     }
 
     public function beginTenant(
@@ -40,6 +39,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
+        $this->assertStorageMode();
         return $this->begin(
             'pa_tenant_idempotency_record',
             $this->tenantScope->bindings($tenantId, ['tenant_member_id' => $memberId]),
@@ -59,6 +59,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
+        $this->assertStorageMode();
         return $this->begin(
             'pa_platform_idempotency_record',
             ['platform_operator_id' => $operatorId],
@@ -78,6 +79,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->assertTenantStorageRecord($id);
         $this->complete('pa_tenant_idempotency_record', $id, $responseStatus, $responseBody, $resourceType, $resourceId);
     }
@@ -90,6 +92,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->complete('pa_platform_idempotency_record', $id, $responseStatus, $responseBody, $resourceType, $resourceId);
     }
 
@@ -101,6 +104,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->assertTenantStorageRecord($id);
         $this->storeOutcome(
             'pa_tenant_idempotency_record',
@@ -121,6 +125,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->storeOutcome(
             'pa_platform_idempotency_record',
             'failed',
@@ -278,6 +283,11 @@ SQL, $parameters);
         if ($row !== null) {
             $this->tenantScope->assertStorageRow($row);
         }
+    }
+
+    private function assertStorageMode(): void
+    {
+        $this->tenantScope->assertStorageMode($this->pdo, ['pa_tenant_idempotency_record']);
     }
 
     private function format(DateTimeImmutable $value): string

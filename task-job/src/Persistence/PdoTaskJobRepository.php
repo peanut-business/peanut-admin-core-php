@@ -27,11 +27,6 @@ final readonly class PdoTaskJobRepository
     ) {
         $this->tenantScope = new TenantColumnScope($mode, $instanceTenantId);
         $this->tenantScope->assertRuntimeConfigured();
-        $this->tenantScope->assertStorageMode($pdo, [
-            'pa_task_job',
-            'pa_task_job_attempt',
-            'pa_task_job_event',
-        ]);
     }
 
     public function enqueue(
@@ -47,6 +42,7 @@ final readonly class PdoTaskJobRepository
         int $maxAttempts,
         int $initialDelaySeconds,
     ): JobRecord {
+        $this->assertStorageMode();
         $ownsTransaction = !$this->pdo->inTransaction();
         if ($ownsTransaction) {
             $this->begin();
@@ -121,6 +117,7 @@ SQL,
     /** @return array{items: list<JobRecord>, page: int, page_size: int, total: int} */
     public function list(int $tenantId, string $status, int $page, int $pageSize): array
     {
+        $this->assertStorageMode();
         if ($page > 1_000_000) {
             throw TaskJobException::invalid();
         }
@@ -153,6 +150,7 @@ SQL, $this->tenantScope->where('status = :status')));
 
     public function get(int $tenantId, string $jobKey): JobRecord
     {
+        $this->assertStorageMode();
         $statement = $this->pdo->prepare(
             'SELECT * FROM pa_task_job WHERE ' . $this->tenantScope->where('job_key = :job_key'),
         );
@@ -167,6 +165,7 @@ SQL, $this->tenantScope->where('status = :status')));
 
     public function cancel(int $tenantId, int $actorMemberId, string $jobKey, int $revision): JobRecord
     {
+        $this->assertStorageMode();
         $ownsTransaction = !$this->pdo->inTransaction();
         if ($ownsTransaction) {
             $this->begin();
@@ -204,6 +203,7 @@ SQL, $this->tenantScope->where("job_key = :job_key AND status = 'queued' AND rev
 
     public function retryDead(int $tenantId, int $actorMemberId, string $jobKey, int $revision): JobRecord
     {
+        $this->assertStorageMode();
         $ownsTransaction = !$this->pdo->inTransaction();
         if ($ownsTransaction) {
             $this->begin();
@@ -243,6 +243,7 @@ SQL, $this->tenantScope->where("job_key = :job_key AND status = 'dead' AND revis
 
     public function claim(int $tenantId, string $workerId, int $leaseSeconds): ?JobClaim
     {
+        $this->assertStorageMode();
         $this->begin();
         try {
             $this->recoverExpired($tenantId);
@@ -317,6 +318,7 @@ SQL,
 
     public function renew(JobClaim $claim, int $leaseSeconds): void
     {
+        $this->assertStorageMode();
         $this->rowById($claim->tenantId, $claim->id, false);
         $statement = $this->pdo->prepare(sprintf(<<<'SQL'
 UPDATE pa_task_job
@@ -336,6 +338,7 @@ SQL, $this->tenantScope->andWhere()));
 
     public function assertExecutable(JobClaim $claim): void
     {
+        $this->assertStorageMode();
         $statement = $this->pdo->prepare(sprintf(<<<'SQL'
 SELECT job.*,
        job.lease_token_hash AS job_lease_token_hash,
@@ -383,11 +386,13 @@ SQL,
 
     public function succeed(JobClaim $claim): void
     {
+        $this->assertStorageMode();
         $this->finish($claim, 'succeeded', null, 0);
     }
 
     public function fail(JobClaim $claim, string $errorCode, bool $retryable, int $backoffSeconds): string
     {
+        $this->assertStorageMode();
         if (preg_match('/^[A-Z][A-Z0-9_]{2,63}$/D', $errorCode) !== 1 || $backoffSeconds < 0 || $backoffSeconds > 300) {
             throw TaskJobException::invalid();
         }
@@ -695,6 +700,15 @@ SQL, $this->tenantScope->where('created_by_member_id = :member_id')));
         if ($this->pdo->inTransaction() || !$this->pdo->beginTransaction()) {
             throw TaskJobException::internal();
         }
+    }
+
+    private function assertStorageMode(): void
+    {
+        $this->tenantScope->assertStorageMode($this->pdo, [
+            'pa_task_job',
+            'pa_task_job_attempt',
+            'pa_task_job_event',
+        ]);
     }
 
     private function rollback(): void

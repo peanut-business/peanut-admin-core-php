@@ -27,14 +27,11 @@ final readonly class PdoImportExportRepository
     ) {
         $this->tenantScope = new TenantColumnScope($mode, $instanceTenantId);
         $this->tenantScope->assertRuntimeConfigured();
-        $this->tenantScope->assertStorageMode($pdo, [
-            'pa_import_export_operation',
-            'pa_import_export_row_error',
-        ]);
     }
 
     public function transaction(callable $operation): mixed
     {
+        $this->assertStorageMode();
         $owns = !$this->pdo->inTransaction();
         if ($owns) {
             $this->begin();
@@ -67,6 +64,7 @@ final readonly class PdoImportExportRepository
         string $requestHash,
         int $retentionDays,
     ): OperationRecord {
+        $this->assertStorageMode();
         return $this->transaction(function () use ($tenantId, $memberId, $operationKey, $providerKey, $direction, $inputFileKey, $schemaRevision, $mapping, $idempotencyKeyHash, $requestHash, $retentionDays): OperationRecord {
             $created = false;
             $statement = $this->pdo->prepare(sprintf(<<<'SQL'
@@ -122,6 +120,7 @@ SQL,
 
     public function attachJob(int $tenantId, string $operationKey, string $jobKey): OperationRecord
     {
+        $this->assertStorageMode();
         $this->byKey($tenantId, $operationKey, false);
         $statement = $this->pdo->prepare(sprintf(<<<'SQL'
 UPDATE pa_import_export_operation
@@ -147,6 +146,7 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
     /** @return array{items: list<OperationRecord>, page: int, page_size: int, total: int} */
     public function list(int $tenantId, string $status, int $page, int $pageSize): array
     {
+        $this->assertStorageMode();
         if ($page < 1 || $page > 1_000_000 || $pageSize < 1 || $pageSize > 100) {
             throw ImportExportException::invalid();
         }
@@ -176,6 +176,7 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
 
     public function get(int $tenantId, string $operationKey): OperationRecord
     {
+        $this->assertStorageMode();
         $row = $this->byKey($tenantId, $operationKey, false);
         if ($row === null) {
             throw ImportExportException::notFound();
@@ -185,6 +186,7 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
 
     public function requestCancel(int $tenantId, string $operationKey, int $revision): OperationRecord
     {
+        $this->assertStorageMode();
         return $this->transaction(function () use ($tenantId, $operationKey, $revision): OperationRecord {
             $row = $this->byKey($tenantId, $operationKey, true);
             if ($row === null) {
@@ -216,6 +218,7 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
 
     public function beginAttempt(int $tenantId, string $operationKey, string $jobKey, int $attempt): OperationRecord
     {
+        $this->assertStorageMode();
         return $this->transaction(function () use ($tenantId, $operationKey, $jobKey, $attempt): OperationRecord {
             $row = $this->byKey($tenantId, $operationKey, true);
             if ($row === null) {
@@ -245,6 +248,7 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
 
     public function checkpointProgressOrCancel(int $tenantId, int $operationId, string $jobKey, int $attempt, int $processed, int $accepted, int $rejected): OperationRecord
     {
+        $this->assertStorageMode();
         if ($processed < 0 || $processed > 100000 || $accepted < 0 || $rejected < 0 || $accepted + $rejected > $processed) {
             throw ImportExportException::internal();
         }
@@ -305,6 +309,7 @@ SQL, $this->tenantScope->andWhere()));
 
     public function addRowIssue(int $tenantId, int $operationId, int $rowNumber, RowIssue $issue): void
     {
+        $this->assertStorageMode();
         $this->byId($tenantId, $operationId, false);
         $statement = $this->pdo->prepare(sprintf(
             'INSERT IGNORE INTO pa_import_export_row_error (%s`operation_id`, `row_number`, `column_key`, `error_code`, `occurred_at`) VALUES (%s:operation_id, :row_number, :column_key, :error_code, UTC_TIMESTAMP(3))',
@@ -322,6 +327,7 @@ SQL, $this->tenantScope->andWhere()));
     /** @return list<array{row_number: int, column_key: string|null, error_code: string}> */
     public function rowIssues(int $tenantId, int $operationId, int $limit = 10000): array
     {
+        $this->assertStorageMode();
         if ($limit < 1 || $limit > 10000) {
             throw ImportExportException::invalid();
         }
@@ -340,6 +346,7 @@ SQL, $this->tenantScope->andWhere()));
 
     public function finish(int $tenantId, int $operationId, string $jobKey, int $attempt, string $status, ?string $resultFileKey, ?string $errorFileKey, int $totalRows, ?string $errorCode = null): OperationRecord
     {
+        $this->assertStorageMode();
         if (!in_array($status, ['succeeded', 'failed', 'cancelled'], true) || $totalRows < 0 || $totalRows > 100000 || ($status === 'succeeded' && $errorCode !== null) || ($status === 'failed' && preg_match('/^[A-Z][A-Z0-9_]{2,63}$/D', (string) $errorCode) !== 1)) {
             throw ImportExportException::internal();
         }
@@ -379,6 +386,7 @@ SQL, $this->tenantScope->andWhere()));
 
     public function expireDue(int $limit = 100): int
     {
+        $this->assertStorageMode();
         if ($limit < 1 || $limit > 1000) {
             throw ImportExportException::invalid();
         }
@@ -513,5 +521,13 @@ SQL, $this->tenantScope->andWhere()));
         } catch (PDOException) {
             throw ImportExportException::internal();
         }
+    }
+
+    private function assertStorageMode(): void
+    {
+        $this->tenantScope->assertStorageMode($this->pdo, [
+            'pa_import_export_operation',
+            'pa_import_export_row_error',
+        ]);
     }
 }

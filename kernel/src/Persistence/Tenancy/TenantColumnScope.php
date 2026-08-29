@@ -8,13 +8,18 @@ use PDO;
 use PDOException;
 use PDOStatement;
 use RuntimeException;
+use WeakMap;
 
-final readonly class TenantColumnScope
+final class TenantColumnScope
 {
+    /** @var WeakMap<PDO, array<string, true>> */
+    private WeakMap $validatedStorageModes;
+
     public function __construct(
-        public TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
-        private ?int $instanceTenantId = null,
+        public readonly TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
+        private readonly ?int $instanceTenantId = null,
     ) {
+        $this->validatedStorageModes = new WeakMap();
         if (($this->mode === TenantPersistenceMode::TenantScoped && $this->instanceTenantId !== null)
             || ($this->instanceTenantId !== null && $this->instanceTenantId < 1)) {
             throw new RuntimeException('TENANT_PERSISTENCE_CONFIGURATION_INVALID');
@@ -133,6 +138,12 @@ final readonly class TenantColumnScope
             throw new RuntimeException('TENANT_PERSISTENCE_CONFIGURATION_INVALID');
         }
 
+        $validationKey = implode("\0", $tables);
+        $validated = $this->validatedStorageModes[$pdo] ?? [];
+        if (isset($validated[$validationKey])) {
+            return;
+        }
+
         $parameters = [];
         $placeholders = [];
         foreach (array_values($tables) as $index => $table) {
@@ -166,6 +177,8 @@ SQL, implode(', ', $placeholders)));
                 throw new RuntimeException('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH');
             }
         }
+        $validated[$validationKey] = true;
+        $this->validatedStorageModes[$pdo] = $validated;
     }
 
     private function assertIdentifier(string $identifier): void
