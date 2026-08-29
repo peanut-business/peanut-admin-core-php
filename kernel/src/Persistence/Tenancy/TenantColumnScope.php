@@ -146,7 +146,7 @@ final class TenantColumnScope
 
         $parameters = [];
         $placeholders = [];
-        foreach (array_values($tables) as $index => $table) {
+        foreach ($tables as $index => $table) {
             $this->assertIdentifier($table);
             $parameter = 'table_' . $index;
             $parameters[$parameter] = $table;
