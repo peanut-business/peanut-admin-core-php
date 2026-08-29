@@ -9,6 +9,8 @@ use DateTimeZone;
 use JsonException;
 use PDO;
 use PDOException;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Settings\Application\SettingException;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
 use PeanutAdmin\Settings\Definition\SettingDefinitionRegistry;
@@ -16,7 +18,16 @@ use Throwable;
 
 final readonly class PdoSettingRepository
 {
-    public function __construct(private PDO $pdo) {}
+    private TenantColumnScope $tenantScope;
+
+    public function __construct(
+        private PDO $pdo,
+        TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
+        ?int $instanceTenantId = null,
+    ) {
+        $this->tenantScope = new TenantColumnScope($mode, $instanceTenantId);
+        $this->tenantScope->assertRuntimeConfigured();
+    }
 
     /** @template T
      * @param callable(): T $operation
@@ -184,9 +195,10 @@ SQL);
         ?string $targetResourceKey = null,
         ?string $targetId = null,
     ): array {
-        if ($tenantId < 1 || (($targetResourceKey === null) !== ($targetId === null))) {
+        if (($targetResourceKey === null) !== ($targetId === null)) {
             throw SettingException::notFound();
         }
+        $this->assertTenantContext($tenantId);
 
         return $this->transaction(function () use (
             $definition,
@@ -212,22 +224,25 @@ SQL);
                     )
                     : null,
                 'tenant' => $definition->allows('tenant')
-                    ? $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_setting_tenant_value
-WHERE tenant_id = :tenant_id AND definition_id = :definition_id
-SQL, ['tenant_id' => $tenantId, 'definition_id' => $definitionId])
+                    ? $this->fetchOne(
+                        'SELECT * FROM pa_setting_tenant_value WHERE '
+                            . $this->tenantScope->where('definition_id = :definition_id'),
+                        $this->tenantScope->bindings($tenantId, ['definition_id' => $definitionId]),
+                    )
                     : null,
                 'target' => $definition->allows('target') && $targetResourceKey !== null && $targetId !== null
-                    ? $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_setting_target_value
-WHERE tenant_id = :tenant_id AND definition_id = :definition_id
-  AND target_resource_key = :target_resource_key AND target_id = :target_id
-SQL, [
-                        'tenant_id' => $tenantId,
+                    ? $this->fetchOne(
+                        'SELECT * FROM pa_setting_target_value WHERE '
+                            . $this->tenantScope->where(
+                                'definition_id = :definition_id '
+                                    . 'AND target_resource_key = :target_resource_key AND target_id = :target_id',
+                            ),
+                        $this->tenantScope->bindings($tenantId, [
                         'definition_id' => $definitionId,
                         'target_resource_key' => $targetResourceKey,
                         'target_id' => $targetId,
-                    ])
+                        ]),
+                    )
                     : null,
             ];
         });
@@ -258,6 +273,7 @@ SQL, [
 
     public function assertCurrentDefinition(SettingDefinition $definition, bool $forShare = false): void
     {
+        $this->assertStorageMode();
         $this->requireDefinition($definition, $forShare);
     }
 
@@ -281,6 +297,9 @@ SQL, [
     ): array {
         if (!$definition->allows($scope) || !in_array($state, ['set', 'unset'], true)) {
             throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting does not allow the requested scope.');
+        }
+        if ($scope !== 'deployment') {
+            $this->assertTenantContext($tenantId);
         }
         $this->assertValidInterval($effectiveAt, $expiresAt);
 
@@ -339,7 +358,7 @@ SQL, ['tenant_id' => $tenantId, 'member_id' => $actorId])) {
                     'updated_at' => $this->date($now),
                 ];
                 if ($scope !== 'deployment') {
-                    $row['tenant_id'] = $tenantId;
+                    $row = [...$this->tenantScope->bindings((int) $tenantId), ...$row];
                     $row['updated_by_member_id'] = $actorId;
                 } else {
                     $row['updated_by_operator_id'] = $actorId;
@@ -490,20 +509,23 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
                 'SELECT * FROM pa_setting_deployment_value WHERE definition_id = :definition_id' . $suffix,
                 ['definition_id' => $definitionId],
             ),
-            'tenant' => $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_setting_tenant_value
-WHERE tenant_id = :tenant_id AND definition_id = :definition_id
-SQL . $suffix, ['tenant_id' => $tenantId, 'definition_id' => $definitionId]),
-            'target' => $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_setting_target_value
-WHERE tenant_id = :tenant_id AND definition_id = :definition_id
-  AND target_resource_key = :target_resource_key AND target_id = :target_id
-SQL . $suffix, [
-                'tenant_id' => $tenantId,
+            'tenant' => $this->fetchOne(
+                'SELECT * FROM pa_setting_tenant_value WHERE '
+                    . $this->tenantScope->where('definition_id = :definition_id') . $suffix,
+                $this->tenantScope->bindings((int) $tenantId, ['definition_id' => $definitionId]),
+            ),
+            'target' => $this->fetchOne(
+                'SELECT * FROM pa_setting_target_value WHERE '
+                    . $this->tenantScope->where(
+                        'definition_id = :definition_id '
+                            . 'AND target_resource_key = :target_resource_key AND target_id = :target_id',
+                    ) . $suffix,
+                $this->tenantScope->bindings((int) $tenantId, [
                 'definition_id' => $definitionId,
                 'target_resource_key' => $targetResourceKey,
                 'target_id' => $targetId,
-            ]),
+                ]),
+            ),
             default => throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting scope is invalid.'),
         };
     }
@@ -558,10 +580,12 @@ SQL . $suffix, [
                 ...$common, 'updated_by_operator_id', 'created_at', 'updated_at',
             ]],
             'tenant' => ['pa_setting_tenant_value', [
-                'tenant_id', ...$common, 'updated_by_member_id', 'created_at', 'updated_at',
+                ...($this->tenantScope->usesTenantColumn() ? ['tenant_id'] : []),
+                ...$common, 'updated_by_member_id', 'created_at', 'updated_at',
             ]],
             'target' => ['pa_setting_target_value', [
-                'tenant_id', 'definition_id', 'target_resource_key', 'target_id',
+                ...($this->tenantScope->usesTenantColumn() ? ['tenant_id'] : []),
+                'definition_id', 'target_resource_key', 'target_id',
                 ...array_slice($common, 1), 'updated_by_member_id', 'created_at', 'updated_at',
             ]],
             default => throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting scope is invalid.'),
@@ -662,6 +686,7 @@ SQL . $suffix, [
      */
     private function transaction(callable $operation): mixed
     {
+        $this->assertStorageMode();
         if ($this->pdo->inTransaction()) {
             return $operation();
         }
@@ -682,5 +707,25 @@ SQL . $suffix, [
         if ($this->pdo->inTransaction()) {
             $this->pdo->rollBack();
         }
+    }
+
+    private function assertTenantContext(?int $tenantId): void
+    {
+        if ($tenantId === null) {
+            throw SettingException::notFound();
+        }
+        try {
+            $this->tenantScope->assertTenantId($tenantId);
+        } catch (\RuntimeException) {
+            throw SettingException::notFound();
+        }
+    }
+
+    private function assertStorageMode(): void
+    {
+        $this->tenantScope->assertStorageMode($this->pdo, [
+            'pa_setting_tenant_value',
+            'pa_setting_target_value',
+        ]);
     }
 }

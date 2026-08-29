@@ -8,11 +8,13 @@ use DateTimeImmutable;
 use PeanutAdmin\Kernel\Authorization\PermissionRequirement;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Kernel\Host\ExternalOperationDefinition;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Settings\Application\SettingAdminService;
 use PeanutAdmin\Settings\Application\SettingException;
 use PeanutAdmin\Settings\Application\SettingResolver;
 use PeanutAdmin\Settings\Application\TargetSettingWriter;
 use PeanutAdmin\Settings\Cache\ArrayRevisionedSettingCache;
+use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
 use PeanutAdmin\Settings\Tests\Integration\Support\SettingsDatabaseTestCase;
 
@@ -20,6 +22,25 @@ require_once dirname(__DIR__) . '/Integration/Support/SettingsDatabaseTestCase.p
 
 final class SettingsIsolationTest extends SettingsDatabaseTestCase
 {
+    public function testExplicitInstanceScopeRejectsTenantScopedStorageBeforeMutation(): void
+    {
+        $tenant = $this->tenant('alpha');
+        $registry = $this->registry([$this->definition([
+            'allowed_scopes' => ['tenant'],
+            'target_resource_key' => null,
+            'target_operation' => null,
+        ])]);
+        $repository = new PdoSettingRepository(
+            $this->database,
+            TenantPersistenceMode::InstanceScoped,
+            $tenant['tenant_id'],
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH');
+        $repository->synchronize($registry, new DateTimeImmutable(self::NOW . ' UTC'));
+    }
+
     public function testTenantReadsAndWritesCannotCrossTenantBoundary(): void
     {
         [$definition, $repository, $protector] = $this->runtime();
