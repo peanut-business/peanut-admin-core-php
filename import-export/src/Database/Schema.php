@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PeanutAdmin\ImportExport\Database;
 
 use InvalidArgumentException;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 
 final class Schema
 {
@@ -14,15 +16,18 @@ final class Schema
         return ['pa_import_export_operation', 'pa_import_export_row_error'];
     }
 
-    public static function createSql(string $table): string
-    {
+    public static function createSql(
+        string $table,
+        TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
+    ): string {
+        $scope = new TenantColumnScope($mode);
         return match ($table) {
-            'pa_import_export_operation' => <<<'SQL'
+            'pa_import_export_operation' => sprintf(
+                <<<'SQL'
 CREATE TABLE `pa_import_export_operation` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `operation_key` VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  `tenant_id` BIGINT UNSIGNED NOT NULL,
-  `created_by_member_id` BIGINT UNSIGNED NOT NULL,
+%s  `created_by_member_id` BIGINT UNSIGNED NOT NULL,
   `provider_key` VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `direction` VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `format` VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'csv',
@@ -48,13 +53,11 @@ CREATE TABLE `pa_import_export_operation` (
   `completed_at` DATETIME(3) NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_import_export_key` (`operation_key`),
-  UNIQUE KEY `uk_import_export_tenant_id` (`tenant_id`, `id`),
-  UNIQUE KEY `uk_import_export_idempotency` (`tenant_id`, `created_by_member_id`, `direction`, `provider_key`, `idempotency_key_hash`),
-  KEY `idx_import_export_status` (`tenant_id`, `status`, `id`),
-  KEY `idx_import_export_task` (`tenant_id`, `task_job_key`),
+%s  UNIQUE KEY `uk_import_export_idempotency` (%s`created_by_member_id`, `direction`, `provider_key`, `idempotency_key_hash`),
+  KEY `idx_import_export_status` (%s`status`, `id`),
+  KEY `idx_import_export_task` (%s`task_job_key`),
   KEY `idx_import_export_retention` (`status`, `retention_until`, `id`),
-  CONSTRAINT `fk_import_export_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `pa_tenant` (`id`) ON DELETE RESTRICT,
-  CONSTRAINT `fk_import_export_member` FOREIGN KEY (`tenant_id`, `created_by_member_id`) REFERENCES `pa_tenant_member` (`tenant_id`, `id`) ON DELETE RESTRICT,
+%s  CONSTRAINT `fk_import_export_member` FOREIGN KEY (%s`created_by_member_id`) REFERENCES `pa_tenant_member` (%s`id`) ON DELETE RESTRICT,
   CONSTRAINT `chk_import_export_key` CHECK (`operation_key` REGEXP '^iox_[0-9a-f]{32}$'),
   CONSTRAINT `chk_import_export_direction` CHECK (`direction` IN ('import','export')),
   CONSTRAINT `chk_import_export_format` CHECK (`format` = 'csv'),
@@ -69,25 +72,40 @@ CREATE TABLE `pa_import_export_operation` (
   CONSTRAINT `chk_import_export_completion` CHECK ((`status` IN ('succeeded','failed','cancelled','expired')) = (`completed_at` IS NOT NULL))
 ) ENGINE=InnoDB
 SQL,
-            'pa_import_export_row_error' => <<<'SQL'
+                $scope->whenTenant("  `tenant_id` BIGINT UNSIGNED NOT NULL,\n"),
+                $scope->whenTenant("  UNIQUE KEY `uk_import_export_tenant_id` (`tenant_id`, `id`),\n"),
+                $scope->whenTenant('`tenant_id`, '),
+                $scope->whenTenant('`tenant_id`, '),
+                $scope->whenTenant('`tenant_id`, '),
+                $scope->whenTenant("  CONSTRAINT `fk_import_export_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `pa_tenant` (`id`) ON DELETE RESTRICT,\n"),
+                $scope->whenTenant('`tenant_id`, '),
+                $scope->whenTenant('`tenant_id`, '),
+            ),
+            'pa_import_export_row_error' => sprintf(
+                <<<'SQL'
 CREATE TABLE `pa_import_export_row_error` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `tenant_id` BIGINT UNSIGNED NOT NULL,
-  `operation_id` BIGINT UNSIGNED NOT NULL,
+%s  `operation_id` BIGINT UNSIGNED NOT NULL,
   `row_number` INT UNSIGNED NOT NULL,
   `column_key` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   `column_key_unique` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (COALESCE(`column_key`, '')) STORED,
   `error_code` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `occurred_at` DATETIME(3) NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_import_export_row_error` (`tenant_id`, `operation_id`, `row_number`, `column_key_unique`, `error_code`),
-  KEY `idx_import_export_row_error` (`tenant_id`, `operation_id`, `row_number`, `id`),
-  CONSTRAINT `fk_import_export_row_operation` FOREIGN KEY (`tenant_id`, `operation_id`) REFERENCES `pa_import_export_operation` (`tenant_id`, `id`) ON DELETE RESTRICT,
+  UNIQUE KEY `uk_import_export_row_error` (%s`operation_id`, `row_number`, `column_key_unique`, `error_code`),
+  KEY `idx_import_export_row_error` (%s`operation_id`, `row_number`, `id`),
+  CONSTRAINT `fk_import_export_row_operation` FOREIGN KEY (%s`operation_id`) REFERENCES `pa_import_export_operation` (%s`id`) ON DELETE RESTRICT,
   CONSTRAINT `chk_import_export_row_number` CHECK (`row_number` >= 2 AND `row_number` <= 100001),
   CONSTRAINT `chk_import_export_column` CHECK (`column_key` IS NULL OR `column_key` REGEXP '^[a-z][a-z0-9_]{0,63}$'),
   CONSTRAINT `chk_import_export_error_code` CHECK (`error_code` REGEXP '^[A-Z][A-Z0-9_]{2,63}$')
 ) ENGINE=InnoDB
 SQL,
+                $scope->whenTenant("  `tenant_id` BIGINT UNSIGNED NOT NULL,\n"),
+                $scope->whenTenant('`tenant_id`, '),
+                $scope->whenTenant('`tenant_id`, '),
+                $scope->whenTenant('`tenant_id`, '),
+                $scope->whenTenant('`tenant_id`, '),
+            ),
             default => throw new InvalidArgumentException('Unknown import-export table.'),
         };
     }

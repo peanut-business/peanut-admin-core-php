@@ -7,14 +7,29 @@ namespace PeanutAdmin\Kernel\Idempotency;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
+use PDO;
 use PDOException;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Persistence\Pdo\PdoRepository;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use RuntimeException;
 use Throwable;
 
 final class PdoIdempotencyRepository extends PdoRepository
 {
+    private readonly TenantColumnScope $tenantScope;
+
+    public function __construct(
+        PDO $pdo,
+        TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
+        ?int $instanceTenantId = null,
+    ) {
+        parent::__construct($pdo);
+        $this->tenantScope = new TenantColumnScope($mode, $instanceTenantId);
+        $this->tenantScope->assertRuntimeConfigured();
+    }
+
     public function beginTenant(
         int $tenantId,
         int $memberId,
@@ -24,9 +39,10 @@ final class PdoIdempotencyRepository extends PdoRepository
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
+        $this->assertStorageMode();
         return $this->begin(
             'pa_tenant_idempotency_record',
-            ['tenant_id' => $tenantId, 'tenant_member_id' => $memberId],
+            $this->tenantScope->bindings($tenantId, ['tenant_member_id' => $memberId]),
             $operationKey,
             $key,
             $requestHash,
@@ -43,6 +59,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
+        $this->assertStorageMode();
         return $this->begin(
             'pa_platform_idempotency_record',
             ['platform_operator_id' => $operatorId],
@@ -62,6 +79,8 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
+        $this->assertTenantStorageRecord($id);
         $this->complete('pa_tenant_idempotency_record', $id, $responseStatus, $responseBody, $resourceType, $resourceId);
     }
 
@@ -73,6 +92,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->complete('pa_platform_idempotency_record', $id, $responseStatus, $responseBody, $resourceType, $resourceId);
     }
 
@@ -84,6 +104,8 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
+        $this->assertTenantStorageRecord($id);
         $this->storeOutcome(
             'pa_tenant_idempotency_record',
             'failed',
@@ -103,6 +125,7 @@ final class PdoIdempotencyRepository extends PdoRepository
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->storeOutcome(
             'pa_platform_idempotency_record',
             'failed',
@@ -194,6 +217,9 @@ SQL, $parameters);
             if ($row === null) {
                 throw new RuntimeException('Known idempotency record disappeared before it could be locked.');
             }
+            if ($table === 'pa_tenant_idempotency_record') {
+                $this->tenantScope->assertStorageRow($row);
+            }
 
             return $this->existing($row, $requestHash);
         }
@@ -223,6 +249,9 @@ SQL, $parameters);
         if ($row === null || ($inserted && (int) $row['id'] !== $insertedId)) {
             throw new RuntimeException('Idempotency acquisition did not return its locked record.');
         }
+        if ($table === 'pa_tenant_idempotency_record') {
+            $this->tenantScope->assertStorageRow($row);
+        }
         if ($inserted) {
             return new IdempotencyRecord((int) $insertedId, 'processing', $requestHash, null, null, null, null, true);
         }
@@ -238,12 +267,27 @@ SQL, $parameters);
     private function lockRecord(string $table, string $where, array $parameters): ?array
     {
         return $this->fetchOne(<<<SQL
-SELECT id, status, request_hash, response_status, response_body_json,
-       resource_type, resource_id
+SELECT *
 FROM {$table}
 WHERE {$where} AND operation_key = :operation_key AND idempotency_key_hash = :idempotency_key_hash
 FOR UPDATE
 SQL, $parameters);
+    }
+
+    private function assertTenantStorageRecord(int $id): void
+    {
+        $row = $this->fetchOne(
+            'SELECT * FROM pa_tenant_idempotency_record WHERE id = :id',
+            ['id' => $id],
+        );
+        if ($row !== null) {
+            $this->tenantScope->assertStorageRow($row);
+        }
+    }
+
+    private function assertStorageMode(): void
+    {
+        $this->tenantScope->assertStorageMode($this->pdo, ['pa_tenant_idempotency_record']);
     }
 
     private function format(DateTimeImmutable $value): string

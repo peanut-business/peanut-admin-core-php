@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Idempotency;
 
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
+
 final class IdempotencySchema
 {
     /** @return list<string> */
@@ -12,13 +15,15 @@ final class IdempotencySchema
         return ['pa_tenant_idempotency_record', 'pa_platform_idempotency_record'];
     }
 
-    public static function tenant(): string
-    {
-        return <<<'SQL'
+    public static function tenant(
+        TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
+    ): string {
+        $scope = new TenantColumnScope($mode);
+        return sprintf(
+            <<<'SQL'
 CREATE TABLE `pa_tenant_idempotency_record` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `tenant_id` BIGINT UNSIGNED NOT NULL,
-  `tenant_member_id` BIGINT UNSIGNED NOT NULL,
+%s  `tenant_member_id` BIGINT UNSIGNED NOT NULL,
   `operation_key` VARCHAR(160) NOT NULL,
   `idempotency_key_hash` CHAR(64) NOT NULL,
   `request_hash` CHAR(64) NOT NULL,
@@ -31,12 +36,17 @@ CREATE TABLE `pa_tenant_idempotency_record` (
   `created_at` DATETIME(3) NOT NULL,
   `updated_at` DATETIME(3) NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_tenant_idempotency` (`tenant_id`, `tenant_member_id`, `operation_key`, `idempotency_key_hash`),
+  UNIQUE KEY `uk_tenant_idempotency` (%s`tenant_member_id`, `operation_key`, `idempotency_key_hash`),
   KEY `idx_tenant_idempotency_expiry` (`expires_at`, `status`, `id`),
-  CONSTRAINT `fk_tenant_idempotency_member` FOREIGN KEY (`tenant_id`, `tenant_member_id`) REFERENCES `pa_tenant_member` (`tenant_id`, `id`) ON DELETE RESTRICT,
+  CONSTRAINT `fk_tenant_idempotency_member` FOREIGN KEY (%s`tenant_member_id`) REFERENCES `pa_tenant_member` (%s`id`) ON DELETE RESTRICT,
   CONSTRAINT `chk_tenant_idempotency_status` CHECK (`status` IN ('processing','completed','failed'))
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-SQL;
+SQL,
+            $scope->whenTenant("  `tenant_id` BIGINT UNSIGNED NOT NULL,\n"),
+            $scope->whenTenant('`tenant_id`, '),
+            $scope->whenTenant('`tenant_id`, '),
+            $scope->whenTenant('`tenant_id`, '),
+        );
     }
 
     public static function platform(): string
