@@ -7,7 +7,7 @@ namespace PeanutAdmin\ArtifactRevision;
 final class Package
 {
     public const MODULE_KEY = 'peanut.artifact-revision';
-    public const VERSION = '0.1.0-alpha.10';
+    public const VERSION = '0.1.0-alpha.11';
 
     public const CREATE_OPERATION = 'artifact-revision.create';
     public const FINALIZE_OPERATION = 'artifact-revision.finalize';

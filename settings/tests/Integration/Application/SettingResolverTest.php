@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use PeanutAdmin\Kernel\Authorization\PermissionRequirement;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Kernel\Host\ExternalOperationDefinition;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Settings\Application\EffectiveSetting;
 use PeanutAdmin\Settings\Application\SettingAdminService;
 use PeanutAdmin\Settings\Application\SettingException;
@@ -15,15 +16,73 @@ use PeanutAdmin\Settings\Application\SettingResolver;
 use PeanutAdmin\Settings\Application\TargetSettingWriter;
 use PeanutAdmin\Settings\Cache\ArrayRevisionedSettingCache;
 use PeanutAdmin\Settings\Cache\RevisionedSettingCache;
+use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
 use PeanutAdmin\Settings\Secret\SecretProtector;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
+use PeanutAdmin\Settings\Tests\Integration\Schema\SettingsMigrationRunner;
 use PeanutAdmin\Settings\Tests\Integration\Support\SettingsDatabaseTestCase;
 
 require_once dirname(__DIR__) . '/Support/SettingsDatabaseTestCase.php';
 
 final class SettingResolverTest extends SettingsDatabaseTestCase
 {
+    public function testInstanceScopePreservesResolutionAndRejectsAnotherLogicalTenant(): void
+    {
+        $alpha = $this->tenant('alpha');
+        $beta = $this->tenant('beta');
+        $this->runner->rollbackAll();
+        $this->runner = new SettingsMigrationRunner(
+            $this->database,
+            TenantPersistenceMode::InstanceScoped,
+        );
+        $this->runner->migrate();
+        $registry = $this->registry([$this->definition()], targets: [[
+            'module_key' => 'example.module',
+            'resource_key' => 'example.project',
+            'operation' => 'updateProjectSetting',
+            'target_cardinality' => 'one_required',
+        ]]);
+        $repository = new PdoSettingRepository(
+            $this->database,
+            TenantPersistenceMode::InstanceScoped,
+            $alpha['tenant_id'],
+        );
+        $repository->synchronize($registry, new DateTimeImmutable(self::NOW . ' UTC'));
+        $definition = $registry->require('example.module', 'display-mode');
+        $protector = $this->protector();
+        $admin = new SettingAdminService($repository, $protector);
+        $writer = new TargetSettingWriter($repository, $protector);
+        $authorized = $this->authorized($alpha, 'project-1', $this->operation());
+        $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
+
+        $admin->replaceTenant(
+            $definition,
+            $alpha['tenant_id'],
+            $alpha['member_id'],
+            'comfortable',
+            $now,
+            null,
+            null,
+            '*',
+        );
+        $writer->replace($authorized, $definition, 'compact', $now, null, null, '*');
+        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        self::assertSame('compact', $resolver->resolveTarget($definition, $authorized, $now)->value);
+        self::assertSame(
+            'comfortable',
+            $writer->unset($authorized, $definition, $now, '"rev-1"')->value,
+        );
+        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        self::assertSame('comfortable', $resolver->resolveTarget($definition, $authorized, $now)->value);
+        self::assertSame(1, (int) $this->scalar('SELECT COUNT(*) FROM pa_setting_tenant_value'));
+        self::assertSame(1, (int) $this->scalar('SELECT COUNT(*) FROM pa_setting_target_value'));
+        $this->expectSettingError(
+            'SETTING_NOT_FOUND',
+            fn() => $resolver->resolveTenant($definition, $beta['tenant_id'], $now),
+        );
+    }
+
     public function testResolvesTargetThenTenantThenDeploymentThenDefaultAtTimeBoundaries(): void
     {
         [$registry, $repository, $protector] = $this->runtime();

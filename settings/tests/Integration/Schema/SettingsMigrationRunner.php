@@ -5,17 +5,21 @@ declare(strict_types=1);
 namespace PeanutAdmin\Settings\Tests\Integration\Schema;
 
 use PDO;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Settings\Database\Schema;
 
 final readonly class SettingsMigrationRunner
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(
+        private PDO $pdo,
+        private TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
+    ) {}
 
     public function migrate(): void
     {
         foreach (Schema::tableNames() as $table) {
             if (!$this->exists($table)) {
-                $this->pdo->exec(Schema::createSql($table));
+                $this->pdo->exec(Schema::createSql($table, $this->mode));
             }
         }
     }
