@@ -14,6 +14,7 @@ final class ModuleProviderBindings
     {
         $bindings = [];
         foreach ($providers as $provider) {
+            /** @var array<array-key, mixed> $contribution */
             $contribution = $provider->bindings();
             ksort($contribution, SORT_STRING);
             foreach ($contribution as $contract => $implementation) {
