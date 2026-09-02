@@ -469,9 +469,10 @@ SQL, [
      */
     private function transaction(callable $operation): mixed
     {
-        $ownsTransaction = !$this->pdo->inTransaction();
-        if ($ownsTransaction) {
+        $ownsTransaction = false;
+        if (!$this->transactionActive()) {
             $this->pdo->beginTransaction();
+            $ownsTransaction = true;
         }
 
         try {
@@ -482,7 +483,7 @@ SQL, [
 
             return $result;
         } catch (Throwable $exception) {
-            if ($ownsTransaction && $this->pdo->inTransaction()) {
+            if ($ownsTransaction && $this->transactionActive()) {
                 $this->pdo->rollBack();
             }
             if ($exception instanceof PDOException && $exception->getCode() === '23000') {
@@ -491,5 +492,11 @@ SQL, [
 
             throw $exception;
         }
+    }
+
+    /** @phpstan-impure */
+    private function transactionActive(): bool
+    {
+        return $this->pdo->inTransaction();
     }
 }
