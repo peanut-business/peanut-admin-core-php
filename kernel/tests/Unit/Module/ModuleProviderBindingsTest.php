@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Unit\Module;
 
+use Closure;
 use PeanutAdmin\Kernel\Module\ModuleException;
 use PeanutAdmin\Kernel\Module\ModuleProvider;
 use PeanutAdmin\Kernel\Module\ModuleProviderBindings;
@@ -13,14 +14,15 @@ final class ModuleProviderBindingsTest extends TestCase
 {
     public function testCollectsMultipleProvidersInDeterministicContractOrder(): void
     {
+        $factory = static fn(): BindingFixtureB => new BindingFixtureBImplementation();
         $providers = [
-            new BindingFixtureProvider('example.b', [BindingFixtureB::class => BindingFixtureBImplementation::class]),
+            new BindingFixtureProvider('example.b', [BindingFixtureB::class => $factory]),
             new BindingFixtureProvider('example.a', [BindingFixtureA::class => BindingFixtureAImplementation::class]),
         ];
 
         $expected = [
             BindingFixtureA::class => BindingFixtureAImplementation::class,
-            BindingFixtureB::class => BindingFixtureBImplementation::class,
+            BindingFixtureB::class => $factory,
         ];
 
         self::assertSame($expected, ModuleProviderBindings::collect($providers));
@@ -54,7 +56,7 @@ final class BindingFixtureBImplementation implements BindingFixtureB {}
 
 final readonly class BindingFixtureProvider implements ModuleProvider
 {
-    /** @param array<class-string, class-string> $bindings */
+    /** @param array<class-string, class-string|Closure> $bindings */
     public function __construct(
         private string $key,
         private array $bindings,

@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Module;
 
+use Closure;
+
 final class ModuleProviderBindings
 {
     /**
      * @param iterable<ModuleProvider> $providers
-     * @return array<class-string, class-string>
+     * @return array<class-string, class-string|Closure>
      */
     public static function collect(iterable $providers): array
     {
@@ -19,10 +21,10 @@ final class ModuleProviderBindings
             ksort($contribution, SORT_STRING);
             foreach ($contribution as $contract => $implementation) {
                 if (!is_string($contract)
-                    || !is_string($implementation)
                     || (!interface_exists($contract) && !class_exists($contract))
-                    || !class_exists($implementation)
-                    || !is_a($implementation, $contract, true)) {
+                    || (!is_string($implementation) && !$implementation instanceof Closure)
+                    || (is_string($implementation)
+                        && (!class_exists($implementation) || !is_a($implementation, $contract, true)))) {
                     throw new ModuleException(
                         'MODULE_BINDING_INVALID',
                         "Invalid container binding from {$provider->moduleKey()}.",
