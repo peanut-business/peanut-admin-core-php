@@ -13,7 +13,11 @@ final readonly class TenantEntryBindingResolver
     public const MEMBER_CLIENT = 'member-api';
 
     /** @param null|\Closure(string,string,string):TenantSystemContext $defaultSystem */
-    public function __construct(private PDO $pdo, private ?\Closure $defaultSystem = null) {}
+    public function __construct(
+        private PDO $pdo,
+        private ?\Closure $defaultSystem = null,
+        private bool $bindingsEnabled = true,
+    ) {}
 
     public function loginTenantCode(object $request, string $clientKey, ?string $explicitTenantCode): ?string
     {
@@ -83,6 +87,9 @@ final readonly class TenantEntryBindingResolver
         $clientKey = trim($clientKey);
         if (preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $clientKey) !== 1) {
             throw new \DomainException('TENANT_ENTRY_CLIENT_INVALID');
+        }
+        if (!$this->bindingsEnabled) {
+            return null;
         }
         $statement = $this->pdo->prepare(<<<'SQL'
 SELECT b.tenant_id, b.status AS binding_status, t.code AS tenant_code, t.status AS tenant_status
