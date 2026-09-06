@@ -16,6 +16,11 @@
   "require-dev": {
     "phpunit/phpunit": "^12.5.31"
   },
+  "suggest": {
+    "aliyuncs/oss-sdk-php": "Required by hosts that construct AliyunStorageDriver.",
+    "qcloud/cos-sdk-v5": "Required by hosts that construct QcloudStorageDriver.",
+    "qiniu/php-sdk": "Required by hosts that construct QiniuStorageDriver."
+  },
   "autoload": {
     "psr-4": {
       "PeanutAdmin\\ArtifactRevision\\": "artifact-revision/src/",
