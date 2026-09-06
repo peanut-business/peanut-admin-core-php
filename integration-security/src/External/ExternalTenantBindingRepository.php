@@ -16,7 +16,7 @@ interface ExternalTenantBindingRepository
     public function byProvider(string $provider): array;
 
     /** @return list<ExternalTenantBinding> */
-    public function byTenant(string $provider, int $tenantId): array;
+    public function byTenant(string $provider, int $tenantId, bool $lock = false): array;
 
     /** @return list<ExternalTenantBinding> */
     public function byOAuthState(string $provider, string $stateHash): array;

@@ -58,7 +58,6 @@
       "required": ["provider"],
       "properties": {
         "provider": { "type": "string", "minLength": 1 },
-        "routes": { "$ref": "#/$defs/relativePath" },
         "migrations": { "$ref": "#/$defs/relativePath" },
         "seeds": { "$ref": "#/$defs/relativePath" },
         "menus": { "$ref": "#/$defs/relativePath" },

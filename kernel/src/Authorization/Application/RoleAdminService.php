@@ -441,14 +441,21 @@ SQL, [
      */
     private function transaction(callable $operation): mixed
     {
-        $this->pdo->beginTransaction();
+        $ownsTransaction = false;
+        if (!$this->transactionActive()) {
+            $this->pdo->beginTransaction();
+            $ownsTransaction = true;
+        }
+
         try {
             $result = $operation();
-            $this->pdo->commit();
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
 
             return $result;
         } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) {
+            if ($ownsTransaction && $this->transactionActive()) {
                 $this->pdo->rollBack();
             }
             if ($exception instanceof PDOException && $exception->getCode() === '23000') {
@@ -457,5 +464,11 @@ SQL, [
 
             throw $exception;
         }
+    }
+
+    /** @phpstan-impure */
+    private function transactionActive(): bool
+    {
+        return $this->pdo->inTransaction();
     }
 }

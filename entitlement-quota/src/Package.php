@@ -7,7 +7,7 @@ namespace PeanutAdmin\EntitlementQuota;
 final class Package
 {
     public const MODULE_KEY = 'peanut.entitlement-quota';
-    public const VERSION = '0.1.0-alpha.11';
+    public const VERSION = '0.1.0-alpha.12';
 
     public const CHECK_OPERATION = 'entitlement-quota.check';
     public const RESERVE_OPERATION = 'entitlement-quota.reserve';

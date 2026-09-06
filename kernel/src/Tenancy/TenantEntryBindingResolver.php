@@ -13,7 +13,11 @@ final readonly class TenantEntryBindingResolver
     public const MEMBER_CLIENT = 'member-api';
 
     /** @param null|\Closure(string,string,string):TenantSystemContext $defaultSystem */
-    public function __construct(private PDO $pdo, private ?\Closure $defaultSystem = null) {}
+    public function __construct(
+        private PDO $pdo,
+        private ?\Closure $defaultSystem = null,
+        private bool $bindingsEnabled = true,
+    ) {}
 
     public function loginTenantCode(object $request, string $clientKey, ?string $explicitTenantCode): ?string
     {
@@ -84,12 +88,15 @@ final readonly class TenantEntryBindingResolver
         if (preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $clientKey) !== 1) {
             throw new \DomainException('TENANT_ENTRY_CLIENT_INVALID');
         }
-        $statement = $this->pdo->prepare(<<<'SQL'
+        if (!$this->bindingsEnabled) {
+            return null;
+        }
+        try {
+            $statement = $this->pdo->prepare(<<<'SQL'
 SELECT b.tenant_id, b.status AS binding_status, t.code AS tenant_code, t.status AS tenant_status
 FROM pa_tenant_entry_binding b JOIN pa_tenant t ON t.id = b.tenant_id
 WHERE b.host = :host AND b.client_key = :client_key ORDER BY b.id LIMIT 2
 SQL);
-        try {
             $statement->execute(['host' => $host, 'client_key' => $clientKey]);
             $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
         } catch (\PDOException $exception) {

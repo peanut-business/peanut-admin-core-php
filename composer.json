@@ -3,7 +3,7 @@
   "description": "Peanut Admin reusable administration runtime packages",
   "type": "library",
   "license": "Apache-2.0",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0-alpha.12",
   "require": {
     "ext-fileinfo": "*",
     "ext-json": "*",
