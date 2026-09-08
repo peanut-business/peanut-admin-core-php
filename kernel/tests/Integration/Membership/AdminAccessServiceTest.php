@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Integration\Membership;
 
+use PDO;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\Application\RoleAdminService;
@@ -14,6 +15,8 @@ use PeanutAdmin\Kernel\Membership\Application\MemberAdminService;
 use PeanutAdmin\Kernel\Organization\Application\DepartmentAdminService;
 use PeanutAdmin\Kernel\Platform\Application\TenantOwnerAdminService;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
+use RuntimeException;
+use Throwable;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 
@@ -145,6 +148,156 @@ final class AdminAccessServiceTest extends DatabaseTestCase
                 self::assertSame('LAST_ACTIVE_OWNER_REQUIRED', $exception->errorCode);
             }
         }
+    }
+
+    /** Forces both owner removals to contend on MySQL before either may commit. */
+    public function testConcurrentOwnerRoleRemovalPreservesOneActiveOwner(): void
+    {
+        $ownerRole = $this->insert('pa_role', [
+            'tenant_id' => $this->tenantId, 'key' => 'core.tenant-owner',
+            'name' => 'Tenant owner', 'is_builtin' => 1,
+            'created_at' => self::NOW, 'updated_at' => self::NOW,
+        ]);
+        $secondAccount = $this->account('Second owner');
+        $secondMember = $this->member($this->tenantId, $secondAccount, 'active');
+        $owners = [[$this->actorMemberId, $this->actorAccountId], [$secondMember, $secondAccount]];
+        foreach ($owners as [$memberId]) {
+            $this->insert('pa_member_role', [
+                'tenant_id' => $this->tenantId, 'tenant_member_id' => $memberId,
+                'role_id' => $ownerRole, 'assigned_at' => self::NOW,
+            ]);
+        }
+
+        $processes = [];
+        $sockets = [];
+        $connectionIds = [];
+        $statuses = [];
+        $gate = null;
+        try {
+            foreach ($owners as [$memberId, $accountId]) {
+                $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                self::assertIsArray($pair);
+                $processId = pcntl_fork();
+                self::assertGreaterThanOrEqual(0, $processId);
+                if ($processId === 0) {
+                    fclose($pair[0]);
+                    try {
+                        $connection = $this->ownerRaceConnection();
+                        $identity = $connection->prepare('SELECT CONNECTION_ID()');
+                        $identity->execute();
+                        $connectionId = $identity->fetchColumn();
+                        fwrite($pair[1], $connectionId . "\n");
+                        if (fread($pair[1], 1) !== 'g') {
+                            throw new RuntimeException('Owner race start signal was missing.');
+                        }
+                        try {
+                            (new MemberAdminService($connection))->replaceRoles(
+                                $this->tenantId,
+                                $memberId,
+                                [],
+                                1,
+                                $memberId,
+                                $accountId,
+                                'owner-race-' . $memberId,
+                            );
+                            $outcome = 'success';
+                        } catch (AdminAccessException $exception) {
+                            $outcome = $exception->errorCode;
+                        }
+                        fwrite($pair[1], $outcome . "\n");
+                        fclose($pair[1]);
+                        exit(0);
+                    } catch (Throwable $exception) {
+                        fwrite($pair[1], 'unexpected:' . $exception::class . "\n");
+                        fclose($pair[1]);
+                        exit(1);
+                    }
+                }
+                fclose($pair[1]);
+                stream_set_timeout($pair[0], 15);
+                $processes[] = $processId;
+                $sockets[] = $pair[0];
+                $connectionIds[] = (int) fgets($pair[0]);
+            }
+
+            // Open after fork so children never inherit the connection owning this row lock.
+            $gate = $this->ownerRaceConnection();
+            $gate->beginTransaction();
+            $gate->query('SELECT id FROM pa_tenant WHERE id = ' . $this->tenantId . ' FOR UPDATE');
+            foreach ($sockets as $socket) {
+                self::assertSame(1, fwrite($socket, 'g'));
+            }
+            $waiting = $gate->prepare(<<<'SQL'
+SELECT COUNT(DISTINCT thread_state.PROCESSLIST_ID)
+FROM performance_schema.data_lock_waits lock_wait
+JOIN performance_schema.data_locks requested
+  ON requested.ENGINE_LOCK_ID = lock_wait.REQUESTING_ENGINE_LOCK_ID
+JOIN performance_schema.threads thread_state
+  ON thread_state.THREAD_ID = requested.THREAD_ID
+WHERE requested.OBJECT_SCHEMA = ? AND requested.OBJECT_NAME = 'pa_tenant'
+  AND thread_state.PROCESSLIST_ID IN (?, ?)
+SQL);
+            $deadline = microtime(true) + 15;
+            do {
+                $waiting->execute([self::DATABASE, ...$connectionIds]);
+                $waitingCount = (int) $waiting->fetchColumn();
+                if ($waitingCount === 2) {
+                    break;
+                }
+                usleep(10_000);
+            } while (microtime(true) < $deadline);
+            self::assertSame(2, $waitingCount, 'Both owner commands must reach a real tenant row-lock wait.');
+            $gate->commit();
+
+            $outcomes = [];
+            foreach ($sockets as $socket) {
+                $outcomes[] = trim((string) fgets($socket));
+            }
+            sort($outcomes);
+            self::assertSame(['LAST_ACTIVE_OWNER_REQUIRED', 'success'], $outcomes);
+        } finally {
+            if ($gate?->inTransaction()) {
+                $gate->rollBack();
+            }
+            foreach ($sockets as $socket) {
+                fclose($socket);
+            }
+            foreach ($processes as $processId) {
+                pcntl_waitpid($processId, $status);
+                $statuses[] = $status;
+            }
+            // Child exit closes inherited PDO sockets; restore the parent's fixture connections.
+            $this->database = $this->ownerRaceConnection();
+            $this->admin = $this->ownerRaceConnection();
+        }
+
+        foreach ($statuses as $status) {
+            self::assertTrue(pcntl_wifexited($status));
+            self::assertSame(0, pcntl_wexitstatus($status));
+        }
+        self::assertSame(1, (int) $this->query(<<<'SQL'
+SELECT COUNT(*) FROM pa_tenant_member member
+JOIN pa_member_role assignment ON assignment.tenant_id = member.tenant_id
+  AND assignment.tenant_member_id = member.id
+JOIN pa_role role ON role.tenant_id = assignment.tenant_id AND role.id = assignment.role_id
+WHERE member.status = 'active' AND role.`key` = 'core.tenant-owner'
+  AND role.is_builtin = 1 AND role.status = 'active'
+SQL)->fetchColumn());
+    }
+
+    /** Creates an independent native-PDO connection for the owner-lock regression. */
+    private function ownerRaceConnection(): PDO
+    {
+        return new PDO(
+            sprintf('mysql:host=127.0.0.1;port=%d;dbname=%s;charset=utf8mb4', (int) getenv('MYSQL_PORT'), self::DATABASE),
+            'root',
+            getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ],
+        );
     }
 
     public function testDepartmentTreeRejectsCyclesDepthOverflowAndStaleRevisions(): void

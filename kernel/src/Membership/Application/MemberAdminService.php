@@ -562,6 +562,8 @@ SQL, [
         int $actorAccountId,
         string $requestId,
     ): array {
+        // Serialize every owner-removal path before member locks and owner-count reads.
+        $this->requireTenantStatus($tenantId, 'active', true);
         $roleIds = array_values(array_unique($roleIds));
 
         $member = $this->requireMember($tenantId, $memberId, true);
