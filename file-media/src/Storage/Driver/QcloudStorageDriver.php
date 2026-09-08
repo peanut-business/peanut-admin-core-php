@@ -19,6 +19,7 @@ final readonly class QcloudStorageDriver implements StorageDriver
     /** @inheritDoc */
     public function put(string $objectKey, string $sourcePath): void
     {
+        $objectKey = StorageObjectKey::assert($objectKey);
         $stream = fopen($sourcePath, 'rb');
         if (!is_resource($stream)) {
             throw new \RuntimeException('待上传文件不可读');
@@ -27,7 +28,7 @@ final readonly class QcloudStorageDriver implements StorageDriver
         try {
             $this->client->putObject([
                 'Bucket' => $this->bucket,
-                'Key' => StorageObjectKey::assert($objectKey),
+                'Key' => $objectKey,
                 'Body' => $stream,
                 'ACL' => 'private',
             ]);

@@ -11,9 +11,12 @@ final class StorageObjectKey
     public static function assert(string $objectKey): string
     {
         $objectKey = trim(str_replace('\\', '/', $objectKey), '/');
+        $segments = explode('/', $objectKey);
         if ($objectKey === ''
             || str_contains($objectKey, '..')
-            || preg_match('#^[A-Za-z0-9][A-Za-z0-9/._-]{1,254}$#D', $objectKey) !== 1) {
+            || in_array('', $segments, true)
+            || in_array('.', $segments, true)
+            || preg_match('#^[A-Za-z0-9][A-Za-z0-9/._-]{0,254}$#D', $objectKey) !== 1) {
             throw new \InvalidArgumentException('存储对象路径无效');
         }
 
