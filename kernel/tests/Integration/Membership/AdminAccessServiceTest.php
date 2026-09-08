@@ -457,7 +457,11 @@ SQL)->fetchColumn());
         self::assertSame(['atomic-role'], $updated['role_keys']);
     }
 
-    /** Captures every persisted surface owned by the aggregate, including audits. */
+    /**
+     * Captures every persisted surface owned by the aggregate, including audits.
+     *
+     * @return array<string, array<int, array<string, mixed>>>
+     */
     private function administrationState(): array
     {
         $state = [];
