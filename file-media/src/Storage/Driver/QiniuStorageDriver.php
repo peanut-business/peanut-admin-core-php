@@ -55,8 +55,9 @@ final readonly class QiniuStorageDriver implements StorageDriver
         }
 
         $payload = json_decode($response['body'], true);
-        if ($response['status'] < 200 || $response['status'] >= 300 || !is_array($payload)
-            || trim((string) ($payload['key'] ?? '')) === '') {
+        $returnedKey = is_array($payload) ? trim((string) ($payload['key'] ?? '')) : '';
+        if ($response['status'] < 200 || $response['status'] >= 300
+            || $returnedKey === '' || !hash_equals($objectKey, $returnedKey)) {
             throw new \RuntimeException('七牛对象上传失败');
         }
     }
@@ -68,7 +69,7 @@ final readonly class QiniuStorageDriver implements StorageDriver
             $this->bucket,
             StorageObjectKey::assert($objectKey),
         );
-        $url = 'https://rs.qiniu.com/delete/' . $entry;
+        $url = 'https://rs.qiniuapi.com/delete/' . $entry;
         $response = $this->transport->request([
             'method' => 'POST',
             'url' => $url,

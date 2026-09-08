@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Api\ProblemDetails;
 use PeanutAdmin\Kernel\Api\RequestId;
+use PeanutAdmin\Kernel\Auth\AuthException;
 use PeanutAdmin\Kernel\Authorization\AuthorizationException;
 use PeanutAdmin\Kernel\Module\ModuleException;
 use Throwable;
@@ -30,6 +31,9 @@ final readonly class ProblemDetailsAdapter
     {
         if ($throwable instanceof ApiException) {
             return $throwable;
+        }
+        if ($throwable instanceof AuthException) {
+            return new ApiException($throwable->errorCode, $throwable->httpStatus, $throwable->getMessage());
         }
         if ($throwable instanceof AuthorizationException) {
             return new ApiException('AUTHZ_PERMISSION_DENIED', 403, 'Request is not authorized.');
