@@ -33,7 +33,10 @@ final class SchemaTest extends TestCase
 
         $revision = Schema::createTableSql('pa_artifact_revision');
         self::assertStringContainsString('UNIQUE KEY `uk_artifact_revision_number` (`tenant_id`, `artifact_id`, `revision_number`)', $revision);
-        self::assertStringContainsString('FOREIGN KEY (`tenant_id`, `artifact_id`, `parent_revision_id`)', $revision);
+        self::assertStringContainsString('FOREIGN KEY (`tenant_id`, `artifact_id`, `parent_revision_id`, `parent_revision_number`)', $revision);
+        self::assertStringContainsString('REFERENCES `pa_artifact_revision` (`tenant_id`, `artifact_id`, `id`, `revision_number`)', $revision);
+        self::assertStringContainsString('`parent_revision_id` IS NULL AND `parent_revision_number` IS NULL', $revision);
+        self::assertStringContainsString('`parent_revision_number` < `revision_number`', $revision);
         self::assertStringContainsString("`state` IN ('pending', 'finalized')", $revision);
         self::assertStringContainsString('`canonical_envelope_json` JSON NULL', $revision);
         self::assertStringContainsString('`canonical_envelope_sha256` CHAR(64)', $revision);

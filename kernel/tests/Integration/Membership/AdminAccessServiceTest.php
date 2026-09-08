@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Integration\Membership;
 
+use PDO;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\Application\RoleAdminService;
@@ -14,6 +15,8 @@ use PeanutAdmin\Kernel\Membership\Application\MemberAdminService;
 use PeanutAdmin\Kernel\Organization\Application\DepartmentAdminService;
 use PeanutAdmin\Kernel\Platform\Application\TenantOwnerAdminService;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
+use RuntimeException;
+use Throwable;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 
@@ -145,6 +148,240 @@ final class AdminAccessServiceTest extends DatabaseTestCase
                 self::assertSame('LAST_ACTIVE_OWNER_REQUIRED', $exception->errorCode);
             }
         }
+    }
+
+    /** Forces both owner removals to contend on MySQL before either may commit. */
+    public function testConcurrentOwnerRoleRemovalPreservesOneActiveOwner(): void
+    {
+        $ownerRole = $this->insert('pa_role', [
+            'tenant_id' => $this->tenantId, 'key' => 'core.tenant-owner',
+            'name' => 'Tenant owner', 'is_builtin' => 1,
+            'created_at' => self::NOW, 'updated_at' => self::NOW,
+        ]);
+        $secondAccount = $this->account('Second owner');
+        $secondMember = $this->member($this->tenantId, $secondAccount, 'active');
+        $owners = [[$this->actorMemberId, $this->actorAccountId], [$secondMember, $secondAccount]];
+        foreach ($owners as [$memberId]) {
+            $this->insert('pa_member_role', [
+                'tenant_id' => $this->tenantId, 'tenant_member_id' => $memberId,
+                'role_id' => $ownerRole, 'assigned_at' => self::NOW,
+            ]);
+        }
+
+        $processes = [];
+        $sockets = [];
+        $connectionIds = [];
+        $statuses = [];
+        $gate = null;
+        try {
+            foreach ($owners as [$memberId, $accountId]) {
+                $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                self::assertIsArray($pair);
+                $processId = pcntl_fork();
+                self::assertGreaterThanOrEqual(0, $processId);
+                if ($processId === 0) {
+                    fclose($pair[0]);
+                    try {
+                        $connection = $this->ownerRaceConnection();
+                        $identity = $connection->prepare('SELECT CONNECTION_ID()');
+                        $identity->execute();
+                        $connectionId = $identity->fetchColumn();
+                        fwrite($pair[1], $connectionId . "\n");
+                        if (fread($pair[1], 1) !== 'g') {
+                            throw new RuntimeException('Owner race start signal was missing.');
+                        }
+                        try {
+                            (new MemberAdminService($connection))->replaceRoles(
+                                $this->tenantId,
+                                $memberId,
+                                [],
+                                1,
+                                $memberId,
+                                $accountId,
+                                'owner-race-' . $memberId,
+                            );
+                            $outcome = 'success';
+                        } catch (AdminAccessException $exception) {
+                            $outcome = $exception->errorCode;
+                        }
+                        fwrite($pair[1], $outcome . "\n");
+                        fclose($pair[1]);
+                        exit(0);
+                    } catch (Throwable $exception) {
+                        fwrite($pair[1], 'unexpected:' . $exception::class . "\n");
+                        fclose($pair[1]);
+                        exit(1);
+                    }
+                }
+                fclose($pair[1]);
+                stream_set_timeout($pair[0], 15);
+                $processes[] = $processId;
+                $sockets[] = $pair[0];
+                $connectionIds[] = (int) fgets($pair[0]);
+            }
+
+            // Open after fork so children never inherit the connection owning this row lock.
+            $gate = $this->ownerRaceConnection();
+            $gate->beginTransaction();
+            $gate->query('SELECT id FROM pa_tenant WHERE id = ' . $this->tenantId . ' FOR UPDATE');
+            foreach ($sockets as $socket) {
+                self::assertSame(1, fwrite($socket, 'g'));
+            }
+            $waiting = $gate->prepare(<<<'SQL'
+SELECT COUNT(DISTINCT thread_state.PROCESSLIST_ID)
+FROM performance_schema.data_lock_waits lock_wait
+JOIN performance_schema.data_locks requested
+  ON requested.ENGINE_LOCK_ID = lock_wait.REQUESTING_ENGINE_LOCK_ID
+JOIN performance_schema.threads thread_state
+  ON thread_state.THREAD_ID = requested.THREAD_ID
+WHERE requested.OBJECT_SCHEMA = ? AND requested.OBJECT_NAME = 'pa_tenant'
+  AND thread_state.PROCESSLIST_ID IN (?, ?)
+SQL);
+            $deadline = microtime(true) + 15;
+            do {
+                $waiting->execute([self::DATABASE, ...$connectionIds]);
+                $waitingCount = (int) $waiting->fetchColumn();
+                if ($waitingCount === 2) {
+                    break;
+                }
+                usleep(10_000);
+            } while (microtime(true) < $deadline);
+            self::assertSame(2, $waitingCount, 'Both owner commands must reach a real tenant row-lock wait.');
+            $gate->commit();
+
+            $outcomes = [];
+            foreach ($sockets as $socket) {
+                $outcomes[] = trim((string) fgets($socket));
+            }
+            sort($outcomes);
+            self::assertSame(['LAST_ACTIVE_OWNER_REQUIRED', 'success'], $outcomes);
+        } finally {
+            if ($gate?->inTransaction()) {
+                $gate->rollBack();
+            }
+            foreach ($sockets as $socket) {
+                fclose($socket);
+            }
+            foreach ($processes as $processId) {
+                pcntl_waitpid($processId, $status);
+                $statuses[] = $status;
+            }
+            // Child exit closes inherited PDO sockets; restore the parent's fixture connections.
+            $this->database = $this->ownerRaceConnection();
+            $this->admin = $this->ownerRaceConnection();
+        }
+
+        foreach ($statuses as $status) {
+            self::assertTrue(pcntl_wifexited($status));
+            self::assertSame(0, pcntl_wexitstatus($status));
+        }
+        self::assertSame(1, (int) $this->query(<<<'SQL'
+SELECT COUNT(*) FROM pa_tenant_member member
+JOIN pa_member_role assignment ON assignment.tenant_id = member.tenant_id
+  AND assignment.tenant_member_id = member.id
+JOIN pa_role role ON role.tenant_id = assignment.tenant_id AND role.id = assignment.role_id
+WHERE member.status = 'active' AND role.`key` = 'core.tenant-owner'
+  AND role.is_builtin = 1 AND role.status = 'active'
+SQL)->fetchColumn());
+    }
+
+    /** Creates an independent native-PDO connection for the owner-lock regression. */
+    private function ownerRaceConnection(): PDO
+    {
+        return new PDO(
+            sprintf('mysql:host=127.0.0.1;port=%d;dbname=%s;charset=utf8mb4', (int) getenv('MYSQL_PORT'), self::DATABASE),
+            'root',
+            getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ],
+        );
+    }
+
+    public function testOversizedRoleCommandsFailBeforeTransactionsOrSql(): void
+    {
+        $pdo = $this->createMock(PDO::class);
+        foreach (['beginTransaction', 'prepare', 'query', 'exec'] as $method) {
+            $pdo->expects(self::never())->method($method);
+        }
+        $service = new MemberAdminService($pdo);
+        // Count the original array: repeated identifiers must not bypass the work bound.
+        $roleIds = array_fill(0, MemberAdminService::MAX_ROLE_IDS + 1, 1);
+        foreach ([
+            fn() => $service->replaceRoles(
+                $this->tenantId,
+                $this->actorMemberId,
+                $roleIds,
+                1,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'oversized-role-replace',
+            ),
+            fn() => $service->createAdministrator(
+                $this->tenantId,
+                'oversized@example.test',
+                'Oversized',
+                'Initial-password-123!',
+                null,
+                $roleIds,
+                true,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'oversized-admin-create',
+            ),
+            fn() => $service->updateAdministrator(
+                $this->tenantId,
+                $this->actorMemberId,
+                'Oversized',
+                null,
+                $roleIds,
+                true,
+                1,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'oversized-admin-update',
+            ),
+        ] as $command) {
+            try {
+                $command();
+                self::fail('Oversized role input must fail before reaching PDO.');
+            } catch (AdminAccessException $exception) {
+                self::assertSame('MEMBER_ROLE_LIMIT_EXCEEDED', $exception->errorCode);
+                self::assertSame(422, $exception->httpStatus);
+            }
+        }
+    }
+
+    public function testRoleLimitAcceptsTheBoundaryAndPreservesEmptyReplacement(): void
+    {
+        $roleIds = [];
+        for ($index = 0; $index < MemberAdminService::MAX_ROLE_IDS; ++$index) {
+            $roleIds[] = $this->role($this->tenantId, 'r' . $index);
+        }
+        $assigned = $this->members()->replaceRoles(
+            $this->tenantId,
+            $this->actorMemberId,
+            $roleIds,
+            1,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'role-limit-boundary',
+        );
+        self::assertCount(MemberAdminService::MAX_ROLE_IDS, $assigned['role_keys']);
+
+        $cleared = $this->members()->replaceRoles(
+            $this->tenantId,
+            $this->actorMemberId,
+            [],
+            (int) $assigned['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'role-limit-empty',
+        );
+        self::assertSame([], $cleared['role_keys']);
+        self::assertSame('active', $cleared['status']);
     }
 
     public function testDepartmentTreeRejectsCyclesDepthOverflowAndStaleRevisions(): void
@@ -351,6 +588,189 @@ SQL)->fetchColumn());
     private function members(): MemberAdminService
     {
         return new MemberAdminService($this->database);
+    }
+
+    public function testAdministratorCreateRollsBackAccountCredentialAndMembershipOnInvalidRelations(): void
+    {
+        $otherTenant = $this->tenant('atomic-other', 'active');
+        $foreignRole = $this->role($otherTenant, 'foreign');
+        $localRole = $this->role($this->tenantId, 'local');
+        $departmentId = $this->insert('pa_department', [
+            'tenant_id' => $otherTenant, 'code' => 'foreign', 'name' => 'Foreign',
+            'created_at' => self::NOW, 'updated_at' => self::NOW,
+        ]);
+        $before = $this->administrationState();
+
+        foreach ([[null, [$foreignRole]], [$departmentId, [$localRole]]] as [$departmentId, $roles]) {
+            $this->assertAdminStatus(404, fn() => $this->members()->createAdministrator(
+                $this->tenantId,
+                'atomic-new@example.test',
+                'Atomic new',
+                'Initial-password-123!',
+                $departmentId,
+                $roles,
+                true,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'atomic-create-invalid',
+            ));
+            self::assertSame($before, $this->administrationState());
+            self::assertFalse($this->database->inTransaction());
+        }
+
+        $created = $this->members()->createAdministrator(
+            $this->tenantId,
+            'atomic-new@example.test',
+            'Atomic new',
+            'Initial-password-123!',
+            null,
+            [$localRole],
+            true,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-create-success',
+        );
+        self::assertSame('active', $created['status']);
+        self::assertSame(['local'], $created['role_keys']);
+        self::assertSame('Atomic new', $created['display_name']);
+        self::assertFalse($this->database->inTransaction());
+    }
+
+    public function testAdministratorEditRollsBackProfileRolesRevisionsAndAuditsOnLateOwnerFailure(): void
+    {
+        $ownerRole = $this->insert('pa_role', [
+            'tenant_id' => $this->tenantId, 'key' => 'core.tenant-owner',
+            'name' => 'Tenant owner', 'is_builtin' => 1,
+            'created_at' => self::NOW, 'updated_at' => self::NOW,
+        ]);
+        $this->insert('pa_member_role', [
+            'tenant_id' => $this->tenantId, 'tenant_member_id' => $this->actorMemberId,
+            'role_id' => $ownerRole, 'assigned_at' => self::NOW,
+        ]);
+        $extraRole = $this->role($this->tenantId, 'extra');
+        $before = $this->administrationState();
+        $member = $this->members()->get($this->tenantId, $this->actorMemberId);
+
+        // The suspension guard runs after profile and role writes and their audits.
+        $this->assertAdminError('LAST_ACTIVE_OWNER_REQUIRED', fn() => $this->members()->updateAdministrator(
+            $this->tenantId,
+            $this->actorMemberId,
+            'Must roll back',
+            null,
+            [$ownerRole, $extraRole],
+            false,
+            (int) $member['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-owner',
+        ));
+        self::assertSame($before, $this->administrationState());
+        self::assertFalse($this->database->inTransaction());
+
+        $this->assertAdminError('LAST_ACTIVE_OWNER_REQUIRED', fn() => $this->members()->updateAdministrator(
+            $this->tenantId,
+            $this->actorMemberId,
+            'Must roll back',
+            null,
+            [$extraRole],
+            true,
+            (int) $member['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-remove-owner',
+        ));
+        self::assertSame($before, $this->administrationState());
+    }
+
+    public function testAdministratorEditPreservesRevisionAndTenantBoundaries(): void
+    {
+        $role = $this->role($this->tenantId, 'atomic-role');
+        $created = $this->members()->createAdministrator(
+            $this->tenantId,
+            'atomic-edit@example.test',
+            'Before',
+            'Initial-password-123!',
+            null,
+            [$role],
+            false,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-pending',
+        );
+        self::assertSame('pending', $created['status']);
+        $otherTenant = $this->tenant('atomic-edit-other', 'active');
+        $otherRole = $this->role($otherTenant, 'foreign-role');
+        $before = $this->administrationState();
+
+        $this->assertAdminStatus(404, fn() => $this->members()->updateAdministrator(
+            $this->tenantId,
+            (int) $created['id'],
+            'Must roll back',
+            null,
+            [$otherRole],
+            true,
+            (int) $created['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-foreign-role',
+        ));
+        $this->assertAdminStatus(404, fn() => $this->members()->updateAdministrator(
+            $otherTenant,
+            (int) $created['id'],
+            'Must roll back',
+            null,
+            [$otherRole],
+            true,
+            (int) $created['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-foreign-member',
+        ));
+        $this->assertAdminStatus(412, fn() => $this->members()->updateAdministrator(
+            $this->tenantId,
+            (int) $created['id'],
+            'Must roll back',
+            null,
+            [$role],
+            true,
+            (int) $created['revision'] - 1,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-stale',
+        ));
+        self::assertSame($before, $this->administrationState());
+
+        $updated = $this->members()->updateAdministrator(
+            $this->tenantId,
+            (int) $created['id'],
+            'After',
+            null,
+            [$role],
+            true,
+            (int) $created['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-success',
+        );
+        self::assertSame('After', $updated['display_name']);
+        self::assertSame('active', $updated['status']);
+        self::assertSame(['atomic-role'], $updated['role_keys']);
+    }
+
+    /**
+     * Captures every persisted surface owned by the aggregate, including audits.
+     *
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    private function administrationState(): array
+    {
+        $state = [];
+        foreach (['pa_account', 'pa_credential', 'pa_tenant', 'pa_tenant_member', 'pa_member_role', 'pa_tenant_audit_event'] as $table) {
+            $order = $table === 'pa_member_role' ? 'tenant_id, tenant_member_id, role_id' : 'id';
+            $state[$table] = $this->query("SELECT * FROM {$table} ORDER BY {$order}")->fetchAll();
+        }
+
+        return $state;
     }
 
     private function account(string $name): int

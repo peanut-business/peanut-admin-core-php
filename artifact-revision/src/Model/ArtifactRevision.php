@@ -7,6 +7,7 @@ namespace PeanutAdmin\ArtifactRevision\Model;
 use JsonException;
 use UnexpectedValueException;
 
+/** Carries one persisted revision, its constrained parent identity and canonical envelope integrity. */
 final readonly class ArtifactRevision
 {
     /** @var list<string> */
@@ -32,6 +33,7 @@ final readonly class ArtifactRevision
         public string $revisionKey,
         public int $revisionNumber,
         public ?int $parentRevisionId,
+        public ?int $parentRevisionNumber,
         public ?string $parentRevisionKey,
         public string $state,
         public int $revision,
@@ -60,6 +62,7 @@ final readonly class ArtifactRevision
             (string) $row['revision_key'],
             (int) $row['revision_number'],
             $row['parent_revision_id'] === null ? null : (int) $row['parent_revision_id'],
+            $row['parent_revision_number'] === null ? null : (int) $row['parent_revision_number'],
             !array_key_exists('parent_revision_key', $row) || $row['parent_revision_key'] === null
                 ? null
                 : (string) $row['parent_revision_key'],
@@ -100,6 +103,7 @@ final readonly class ArtifactRevision
             'revision_key' => $this->revisionKey,
             'revision_number' => $this->revisionNumber,
             'parent_revision_id' => $this->parentRevisionId,
+            'parent_revision_number' => $this->parentRevisionNumber,
             'parent_revision_key' => $this->parentRevisionKey,
             'state' => $this->state,
             'revision' => $this->revision,

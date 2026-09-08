@@ -6,6 +6,7 @@ namespace PeanutAdmin\ArtifactRevision\Database;
 
 use InvalidArgumentException;
 
+/** Owns reentrant artifact tables and database-enforced tenant-local, strictly earlier parent lineage. */
 final class Schema
 {
     /** @var array<string, string> */
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS `pa_artifact_revision` (
   `revision_key` VARCHAR(41) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   `revision_number` BIGINT UNSIGNED NOT NULL,
   `parent_revision_id` BIGINT UNSIGNED NULL,
+  `parent_revision_number` BIGINT UNSIGNED NULL,
   `state` VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
   `revision` BIGINT UNSIGNED NOT NULL DEFAULT 1,
   `payload_schema_key` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -62,16 +64,20 @@ CREATE TABLE IF NOT EXISTS `pa_artifact_revision` (
   UNIQUE KEY `uk_artifact_revision_tenant_id` (`tenant_id`, `id`),
   UNIQUE KEY `uk_artifact_revision_key` (`tenant_id`, `revision_key`),
   UNIQUE KEY `uk_artifact_revision_artifact_id` (`tenant_id`, `artifact_id`, `id`),
+  UNIQUE KEY `uk_artifact_revision_parent_identity` (`tenant_id`, `artifact_id`, `id`, `revision_number`),
   UNIQUE KEY `uk_artifact_revision_number` (`tenant_id`, `artifact_id`, `revision_number`),
   KEY `idx_artifact_revision_artifact_state` (`tenant_id`, `artifact_id`, `state`, `revision_number`),
-  KEY `idx_artifact_revision_parent` (`tenant_id`, `artifact_id`, `parent_revision_id`),
+  KEY `idx_artifact_revision_parent` (`tenant_id`, `artifact_id`, `parent_revision_id`, `parent_revision_number`),
   CONSTRAINT `fk_artifact_revision_artifact` FOREIGN KEY (`tenant_id`, `artifact_id`) REFERENCES `pa_artifact` (`tenant_id`, `id`) ON DELETE RESTRICT,
-  CONSTRAINT `fk_artifact_revision_parent` FOREIGN KEY (`tenant_id`, `artifact_id`, `parent_revision_id`) REFERENCES `pa_artifact_revision` (`tenant_id`, `artifact_id`, `id`) ON DELETE RESTRICT,
+  CONSTRAINT `fk_artifact_revision_parent` FOREIGN KEY (`tenant_id`, `artifact_id`, `parent_revision_id`, `parent_revision_number`) REFERENCES `pa_artifact_revision` (`tenant_id`, `artifact_id`, `id`, `revision_number`) ON DELETE RESTRICT,
   CONSTRAINT `fk_artifact_revision_created_member` FOREIGN KEY (`tenant_id`, `created_by_member_id`) REFERENCES `pa_tenant_member` (`tenant_id`, `id`) ON DELETE RESTRICT,
   CONSTRAINT `fk_artifact_revision_finalized_member` FOREIGN KEY (`tenant_id`, `finalized_by_member_id`) REFERENCES `pa_tenant_member` (`tenant_id`, `id`) ON DELETE RESTRICT,
   CONSTRAINT `chk_artifact_revision_key` CHECK (`revision_key` REGEXP '^revision_[0-9a-f]{32}$'),
   CONSTRAINT `chk_artifact_revision_number` CHECK (`revision_number` >= 1),
-  CONSTRAINT `chk_artifact_revision_parent` CHECK (`parent_revision_id` IS NULL OR `parent_revision_id` <> `id`),
+  CONSTRAINT `chk_artifact_revision_parent` CHECK (
+    (`parent_revision_id` IS NULL AND `parent_revision_number` IS NULL)
+    OR (`parent_revision_id` IS NOT NULL AND `parent_revision_number` IS NOT NULL AND `parent_revision_number` < `revision_number`)
+  ),
   CONSTRAINT `chk_artifact_revision_state` CHECK (`state` IN ('pending', 'finalized')),
   CONSTRAINT `chk_artifact_revision_revision` CHECK (`revision` >= 1),
   CONSTRAINT `chk_artifact_revision_schema_key` CHECK (`payload_schema_key` IS NULL OR `payload_schema_key` REGEXP '^[a-z][a-z0-9]*([.-][a-z0-9]+)*$'),

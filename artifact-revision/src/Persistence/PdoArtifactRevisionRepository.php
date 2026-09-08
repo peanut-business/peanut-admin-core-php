@@ -67,13 +67,14 @@ INSERT INTO pa_artifact (
   created_at, updated_at
 ) VALUES (
   :tenant_id, :artifact_type, :artifact_key, 1, 1, NULL,
-  :member_id, :member_id, :created_at, :updated_at
+  :created_by_member_id, :updated_by_member_id, :created_at, :updated_at
 )
 SQL, [
                 'tenant_id' => $tenantId,
                 'artifact_type' => $artifactType,
                 'artifact_key' => $artifactKey,
-                'member_id' => $memberId,
+                'created_by_member_id' => $memberId,
+                'updated_by_member_id' => $memberId,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
@@ -88,6 +89,7 @@ SQL, [
             ?? throw new RuntimeException('The inserted artifact could not be read back.');
     }
 
+    /** Locks the artifact and binds an optional finalized, earlier parent to its exact stored number. */
     public function createPendingRevision(
         int $tenantId,
         int $artifactId,
@@ -104,6 +106,7 @@ SQL, [
         }
 
         $revisionNumber = $artifact->nextRevisionNumber;
+        $parentRevisionNumber = null;
         if ($parentRevisionId !== null) {
             $parent = $this->revisionById($tenantId, $artifactId, $parentRevisionId, true);
             if ($parent === null || !$parent->isFinalized()) {
@@ -112,18 +115,19 @@ SQL, [
             if ($parent->revisionNumber >= $revisionNumber) {
                 throw $this->conflict('The artifact parent revision is not earlier than the new revision.');
             }
+            $parentRevisionNumber = $parent->revisionNumber;
         }
 
         try {
             $this->execute(<<<'SQL'
 INSERT INTO pa_artifact_revision (
-  tenant_id, artifact_id, revision_key, revision_number, parent_revision_id,
+  tenant_id, artifact_id, revision_key, revision_number, parent_revision_id, parent_revision_number,
   state, revision, payload_schema_key, payload_schema_version, payload_ref,
   payload_sha256, attachment_manifest_sha256, canonical_envelope_json,
   canonical_envelope_sha256, created_by_member_id, finalized_by_member_id,
   created_at, finalized_at
 ) VALUES (
-  :tenant_id, :artifact_id, :revision_key, :revision_number, :parent_revision_id,
+  :tenant_id, :artifact_id, :revision_key, :revision_number, :parent_revision_id, :parent_revision_number,
   'pending', 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   :member_id, NULL, :created_at, NULL
 )
@@ -133,6 +137,7 @@ SQL, [
                 'revision_key' => $revisionKey,
                 'revision_number' => $revisionNumber,
                 'parent_revision_id' => $parentRevisionId,
+                'parent_revision_number' => $parentRevisionNumber,
                 'member_id' => $memberId,
                 'created_at' => $now,
             ]);

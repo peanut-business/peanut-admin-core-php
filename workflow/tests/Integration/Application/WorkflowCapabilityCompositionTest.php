@@ -186,6 +186,8 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
             ['workflow' => 3, 'audit' => 1, 'notification' => 1, 'task' => 1, 'idempotency' => 1],
             $checkpoints,
         );
+        self::assertSame(count($checkpoints), $this->checkpointCount($checkpoints));
+        self::assertFalse($this->database->inTransaction());
     }
 
     public function testComposesRealAuthorizationNotificationAndTaskContractsWithoutReplayDuplicates(): void

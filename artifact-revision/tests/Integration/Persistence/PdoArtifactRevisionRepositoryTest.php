@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace PeanutAdmin\ArtifactRevision\Tests\Integration\Persistence;
 
 use PDO;
+use PDOException;
 use PeanutAdmin\ArtifactRevision\Database\Schema;
+use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
 use PeanutAdmin\ArtifactRevision\Persistence\PdoArtifactRevisionRepository;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -113,7 +115,15 @@ final class PdoArtifactRevisionRepositoryTest extends TestCase
             $this->now(),
         );
         self::assertTrue($first->isFinalized());
-        self::assertSame(hash('sha256', $first->canonicalEnvelopeJson ?? ''), $first->canonicalEnvelopeSha256);
+        $expectedEnvelope = $first->expectedEnvelope();
+        $persistedEnvelope = $first->canonicalEnvelope();
+        ksort($expectedEnvelope, SORT_STRING);
+        ksort($persistedEnvelope, SORT_STRING);
+        self::assertSame($expectedEnvelope, $persistedEnvelope);
+        self::assertSame(
+            hash('sha256', ArtifactRevision::encodeEnvelope($first->expectedEnvelope())),
+            $first->canonicalEnvelopeSha256,
+        );
 
         $artifact = $repository->lockOrCreateArtifact(
             $tenantId,
@@ -148,6 +158,7 @@ final class PdoArtifactRevisionRepositoryTest extends TestCase
         );
 
         self::assertSame($first->revisionKey, $second->parentRevisionKey);
+        self::assertSame($first->revisionNumber, $second->parentRevisionNumber);
         self::assertSame(2, $second->revisionNumber);
         self::assertNull($repository->revision(
             $otherTenantId,
@@ -159,6 +170,30 @@ final class PdoArtifactRevisionRepositoryTest extends TestCase
             $second->id,
             $repository->artifact($tenantId, 'document.article', 'article-1')?->latestFinalizedRevisionId,
         );
+
+        // Enforce lineage even for direct SQL, including forged parent numbers and partial NULL pairs.
+        foreach ([
+            [$first->id, $second->id, $second->revisionNumber, 3819],
+            [$second->id, $second->id, $second->revisionNumber, 3819],
+            [$second->id, $second->id, $first->revisionNumber, 1452],
+            [$second->id, $first->id, null, 3819],
+            [$second->id, null, $first->revisionNumber, 3819],
+        ] as [$revisionId, $parentId, $parentNumber, $driverError]) {
+            try {
+                $this->pdo->prepare(<<<'SQL'
+UPDATE pa_artifact_revision SET parent_revision_id = ?, parent_revision_number = ? WHERE id = ?
+SQL)->execute([$parentId, $parentNumber, $revisionId]);
+                self::fail('The database must reject self, later, forged or incomplete parent lineage.');
+            } catch (PDOException $exception) {
+                self::assertSame($driverError, $exception->errorInfo[1]);
+            }
+        }
+        self::assertSame($first->revisionKey, $repository->revision(
+            $tenantId,
+            'document.article',
+            'article-1',
+            $second->revisionKey,
+        )?->parentRevisionKey);
     }
 
     public function testOptimisticAndImmutableGuardsRejectStaleWrites(): void
