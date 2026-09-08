@@ -16,12 +16,139 @@ use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use Throwable;
 
+/** Owns tenant member administration and atomic profile, role and status commands. */
 final readonly class MemberAdminService
 {
     public function __construct(
         private PDO $pdo,
         private PasswordHasher $passwords = new PasswordHasher(),
     ) {}
+
+    /**
+     * Creates an administrator in one owned PDO transaction, including credentials,
+     * department, roles, activation, revisions and success audits. The host supplies
+     * an authorized tenant actor. Any failure rolls back every write; an existing
+     * account credential is never overwritten. Disabled creation remains pending.
+     * @param list<int> $roleIds
+     * @return array<string, mixed>
+     */
+    public function createAdministrator(
+        int $tenantId,
+        string $email,
+        string $displayName,
+        ?string $initialPassword,
+        ?int $primaryDepartmentId,
+        array $roleIds,
+        bool $enabled,
+        int $actorMemberId,
+        int $actorAccountId,
+        string $requestId,
+    ): array {
+        return $this->transaction(function () use (
+            $tenantId, $email, $displayName, $initialPassword, $primaryDepartmentId,
+            $roleIds, $enabled, $actorMemberId, $actorAccountId, $requestId,
+        ): array {
+            $member = $this->createPendingInTransaction(
+                $tenantId, $email, $displayName, $initialPassword,
+                $actorMemberId, $actorAccountId, $requestId,
+            );
+            if ($primaryDepartmentId !== null) {
+                $member = $this->updateInTransaction(
+                    $tenantId, (int) $member['id'], $displayName, $primaryDepartmentId,
+                    (int) $member['revision'], $actorMemberId, $actorAccountId, $requestId,
+                );
+            }
+
+            return $this->configureAdministratorInTransaction(
+                $tenantId, $member, $roleIds,
+                $enabled, $actorMemberId, $actorAccountId, $requestId,
+            );
+        });
+    }
+
+    /**
+     * Edits profile, roles and status atomically using the caller's member revision.
+     * The host supplies an authorized tenant actor; tenant/role/department scope and
+     * the final active owner guard remain enforced. Failures roll back all writes,
+     * revision increments and success audits. Account credentials are not editable.
+     * @param list<int> $roleIds
+     * @return array<string, mixed>
+     */
+    public function updateAdministrator(
+        int $tenantId,
+        int $memberId,
+        string $displayName,
+        ?int $primaryDepartmentId,
+        array $roleIds,
+        bool $enabled,
+        int $expectedRevision,
+        int $actorMemberId,
+        int $actorAccountId,
+        string $requestId,
+    ): array {
+        return $this->transaction(function () use (
+            $tenantId, $memberId, $displayName, $primaryDepartmentId, $roleIds,
+            $enabled, $expectedRevision, $actorMemberId, $actorAccountId, $requestId,
+        ): array {
+            $this->requireTenantStatus($tenantId, 'active', true);
+            $member = $this->requireMember($tenantId, $memberId, true);
+            if ((int) $member['authorization_revision'] !== $expectedRevision) {
+                throw AdminAccessException::revisionMismatch();
+            }
+            $member = $this->updateInTransaction(
+                $tenantId, $memberId, $displayName, $primaryDepartmentId,
+                $expectedRevision, $actorMemberId, $actorAccountId, $requestId,
+            );
+
+            return $this->configureAdministratorInTransaction(
+                $tenantId, $member, $roleIds, $enabled,
+                $actorMemberId, $actorAccountId, $requestId,
+            );
+        });
+    }
+
+    /**
+     * Applies roles and status under the aggregate's tenant lock and PDO
+     * transaction. It uses revision results from each operation and preserves
+     * pending/left status semantics when no existing transition applies.
+     * @param array<string, mixed> $member
+     * @param list<int> $roleIds
+     * @return array<string, mixed>
+     */
+    private function configureAdministratorInTransaction(
+        int $tenantId,
+        array $member,
+        array $roleIds,
+        bool $enabled,
+        int $actorMemberId,
+        int $actorAccountId,
+        string $requestId,
+    ): array {
+        if ($roleIds === []) {
+            throw AdminAccessException::invalid('ADMIN_ROLE_REQUIRED', 'An administrator role is required.');
+        }
+        $memberId = (int) $member['id'];
+        $member = $this->replaceRolesInTransaction(
+            $tenantId, $memberId, $roleIds, (int) $member['revision'],
+            $actorMemberId, $actorAccountId, $requestId,
+        );
+        if ($enabled && in_array($member['status'], ['pending', 'suspended'], true)) {
+            return $this->transitionInTransaction(
+                $tenantId, $memberId, ['pending', 'suspended'], 'active',
+                (int) $member['revision'], $actorMemberId, $actorAccountId,
+                $requestId, 'core.member.activate',
+            );
+        }
+        if (!$enabled && $member['status'] === 'active') {
+            return $this->transitionInTransaction(
+                $tenantId, $memberId, ['active'], 'suspended',
+                (int) $member['revision'], $actorMemberId, $actorAccountId,
+                $requestId, 'core.member.suspend',
+            );
+        }
+
+        return $member;
+    }
 
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function list(int $tenantId, PageRequest $page): array
@@ -79,6 +206,30 @@ SQL);
         int $actorAccountId,
         string $requestId,
     ): array {
+        return $this->transaction(fn(): array => $this->createPendingInTransaction(
+            $tenantId,
+            $email,
+            $displayName,
+            $initialPassword,
+            $actorMemberId,
+            $actorAccountId,
+            $requestId,
+        ));
+    }
+
+    /**
+     * Executes within the owning command transaction; failures propagate for full rollback.
+     * @return array<string, mixed>
+     */
+    private function createPendingInTransaction(
+        int $tenantId,
+        string $email,
+        string $displayName,
+        ?string $initialPassword,
+        int $actorMemberId,
+        int $actorAccountId,
+        string $requestId,
+    ): array {
         try {
             $normalizedEmail = EmailAddress::fromString($email)->value();
         } catch (InvalidArgumentException) {
@@ -86,69 +237,60 @@ SQL);
         }
         $identifier = $normalizedEmail;
 
-        return $this->transaction(function () use (
-            $tenantId,
-            $identifier,
-            $displayName,
-            $initialPassword,
-            $actorMemberId,
-            $actorAccountId,
-            $requestId,
-        ): array {
-            $this->requireTenantStatus($tenantId, 'active', true);
-            $credential = $this->fetchOne(
-                "SELECT id, account_id, status FROM pa_credential WHERE identifier_type = 'email' AND identifier_normalized = :identifier FOR UPDATE",
-                ['identifier' => $identifier],
-            );
-            if ($credential === null) {
-                if ($initialPassword === null || $initialPassword === '') {
-                    throw AdminAccessException::invalid(
-                        'INITIAL_PASSWORD_REQUIRED',
-                        'An initial password is required for a new account.',
-                    );
-                }
-                $accountId = $this->createAccountAndCredential($identifier, $displayName, $initialPassword);
-            } else {
-                if ($initialPassword !== null) {
-                    throw AdminAccessException::invalid(
-                        'INITIAL_PASSWORD_NOT_ALLOWED',
-                        'An existing account credential cannot be overwritten.',
-                    );
-                }
-                if ($credential['status'] !== 'active') {
-                    throw AdminAccessException::conflict('CREDENTIAL_INACTIVE', 'The account credential is inactive.');
-                }
-                $accountId = (int) $credential['account_id'];
-                $account = $this->fetchOne('SELECT status FROM pa_account WHERE id = :id FOR UPDATE', ['id' => $accountId]);
-                if ($account === null || $account['status'] !== 'active') {
-                    throw AdminAccessException::conflict('ACCOUNT_INACTIVE', 'The account is inactive.');
-                }
+        $this->requireTenantStatus($tenantId, 'active', true);
+        $credential = $this->fetchOne(
+            "SELECT id, account_id, status FROM pa_credential WHERE identifier_type = 'email' AND identifier_normalized = :identifier FOR UPDATE",
+            ['identifier' => $identifier],
+        );
+        if ($credential === null) {
+            if ($initialPassword === null || $initialPassword === '') {
+                throw AdminAccessException::invalid(
+                    'INITIAL_PASSWORD_REQUIRED',
+                    'An initial password is required for a new account.',
+                );
             }
-
-            $existing = $this->fetchOne(
-                'SELECT id, status FROM pa_tenant_member WHERE tenant_id = :tenant_id AND account_id = :account_id FOR UPDATE',
-                ['tenant_id' => $tenantId, 'account_id' => $accountId],
-            );
-            if ($existing !== null && $existing['status'] !== 'left') {
-                throw AdminAccessException::conflict('MEMBER_ALREADY_EXISTS', 'The account is already a tenant member.');
+            $accountId = $this->createAccountAndCredential($identifier, $displayName, $initialPassword);
+        } else {
+            if ($initialPassword !== null) {
+                throw AdminAccessException::invalid(
+                    'INITIAL_PASSWORD_NOT_ALLOWED',
+                    'An existing account credential cannot be overwritten.',
+                );
             }
+            if ($credential['status'] !== 'active') {
+                throw AdminAccessException::conflict('CREDENTIAL_INACTIVE', 'The account credential is inactive.');
+            }
+            $accountId = (int) $credential['account_id'];
+            $account = $this->fetchOne('SELECT status FROM pa_account WHERE id = :id FOR UPDATE', ['id' => $accountId]);
+            if ($account === null || $account['status'] !== 'active') {
+                throw AdminAccessException::conflict('ACCOUNT_INACTIVE', 'The account is inactive.');
+            }
+        }
 
-            $now = $this->now();
-            if ($existing === null) {
-                $this->execute(<<<'SQL'
+        $existing = $this->fetchOne(
+            'SELECT id, status FROM pa_tenant_member WHERE tenant_id = :tenant_id AND account_id = :account_id FOR UPDATE',
+            ['tenant_id' => $tenantId, 'account_id' => $accountId],
+        );
+        if ($existing !== null && $existing['status'] !== 'left') {
+            throw AdminAccessException::conflict('MEMBER_ALREADY_EXISTS', 'The account is already a tenant member.');
+        }
+
+        $now = $this->now();
+        if ($existing === null) {
+            $this->execute(<<<'SQL'
 INSERT INTO pa_tenant_member (tenant_id, account_id, display_name, status, created_at, updated_at)
 VALUES (:tenant_id, :account_id, :display_name, 'pending', :created_at, :updated_at)
 SQL, [
-                    'tenant_id' => $tenantId,
-                    'account_id' => $accountId,
-                    'display_name' => $displayName,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ]);
-                $memberId = (int) $this->pdo->lastInsertId();
-            } else {
-                $memberId = (int) $existing['id'];
-                $this->execute(<<<'SQL'
+                'tenant_id' => $tenantId,
+                'account_id' => $accountId,
+                'display_name' => $displayName,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $memberId = (int) $this->pdo->lastInsertId();
+        } else {
+            $memberId = (int) $existing['id'];
+            $this->execute(<<<'SQL'
 UPDATE pa_tenant_member
 SET display_name = :display_name, status = 'pending', primary_department_id = NULL,
     security_revision = security_revision + 1,
@@ -156,30 +298,29 @@ SET display_name = :display_name, status = 'pending', primary_department_id = NU
     joined_at = NULL, suspended_at = NULL, left_at = NULL, updated_at = :updated_at
 WHERE tenant_id = :tenant_id AND id = :member_id
 SQL, [
-                    'display_name' => $displayName,
-                    'updated_at' => $now,
-                    'tenant_id' => $tenantId,
-                    'member_id' => $memberId,
-                ]);
-                $this->execute(
-                    'DELETE FROM pa_member_role WHERE tenant_id = :tenant_id AND tenant_member_id = :member_id',
-                    ['tenant_id' => $tenantId, 'member_id' => $memberId],
-                );
-            }
-            $this->bumpTenantAuthorization($tenantId, $now);
-            $this->audit(
-                $tenantId,
-                $actorMemberId,
-                $actorAccountId,
-                'tenant.member.pending-created',
-                'core.member.create',
-                'member',
-                $memberId,
-                $requestId,
+                'display_name' => $displayName,
+                'updated_at' => $now,
+                'tenant_id' => $tenantId,
+                'member_id' => $memberId,
+            ]);
+            $this->execute(
+                'DELETE FROM pa_member_role WHERE tenant_id = :tenant_id AND tenant_member_id = :member_id',
+                ['tenant_id' => $tenantId, 'member_id' => $memberId],
             );
+        }
+        $this->bumpTenantAuthorization($tenantId, $now);
+        $this->audit(
+            $tenantId,
+            $actorMemberId,
+            $actorAccountId,
+            'tenant.member.pending-created',
+            'core.member.create',
+            'member',
+            $memberId,
+            $requestId,
+        );
 
-            return $this->get($tenantId, $memberId);
-        });
+        return $this->get($tenantId, $memberId);
     }
 
     /** @return array<string, mixed> */
@@ -193,7 +334,7 @@ SQL, [
         int $actorAccountId,
         string $requestId,
     ): array {
-        return $this->transaction(function () use (
+        return $this->transaction(fn(): array => $this->updateInTransaction(
             $tenantId,
             $memberId,
             $displayName,
@@ -202,22 +343,38 @@ SQL, [
             $actorMemberId,
             $actorAccountId,
             $requestId,
-        ): array {
-            $member = $this->requireMember($tenantId, $memberId, true);
-            if ((int) $member['authorization_revision'] !== $expectedRevision) {
-                throw AdminAccessException::revisionMismatch();
+        ));
+    }
+
+    /**
+     * Executes within the owning command transaction; failures propagate for full rollback.
+     * @return array<string, mixed>
+     */
+    private function updateInTransaction(
+        int $tenantId,
+        int $memberId,
+        ?string $displayName,
+        ?int $primaryDepartmentId,
+        int $expectedRevision,
+        int $actorMemberId,
+        int $actorAccountId,
+        string $requestId,
+    ): array {
+        $member = $this->requireMember($tenantId, $memberId, true);
+        if ((int) $member['authorization_revision'] !== $expectedRevision) {
+            throw AdminAccessException::revisionMismatch();
+        }
+        if ($primaryDepartmentId !== null) {
+            $department = $this->fetchOne(
+                "SELECT id FROM pa_department WHERE tenant_id = :tenant_id AND id = :department_id AND status = 'active'",
+                ['tenant_id' => $tenantId, 'department_id' => $primaryDepartmentId],
+            );
+            if ($department === null) {
+                throw AdminAccessException::notFound();
             }
-            if ($primaryDepartmentId !== null) {
-                $department = $this->fetchOne(
-                    "SELECT id FROM pa_department WHERE tenant_id = :tenant_id AND id = :department_id AND status = 'active'",
-                    ['tenant_id' => $tenantId, 'department_id' => $primaryDepartmentId],
-                );
-                if ($department === null) {
-                    throw AdminAccessException::notFound();
-                }
-            }
-            $now = $this->now();
-            $updated = $this->execute(<<<'SQL'
+        }
+        $now = $this->now();
+        $updated = $this->execute(<<<'SQL'
 UPDATE pa_tenant_member
 SET display_name = :display_name,
     primary_department_id = :department_id,
@@ -225,21 +382,20 @@ SET display_name = :display_name,
     updated_at = :updated_at
 WHERE tenant_id = :tenant_id AND id = :member_id AND authorization_revision = :expected_revision
 SQL, [
-                'display_name' => $displayName,
-                'department_id' => $primaryDepartmentId,
-                'updated_at' => $now,
-                'tenant_id' => $tenantId,
-                'member_id' => $memberId,
-                'expected_revision' => $expectedRevision,
-            ]);
-            if ($updated !== 1) {
-                throw AdminAccessException::revisionMismatch();
-            }
-            $this->bumpTenantAuthorization($tenantId, $now);
-            $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.member.updated', 'core.member.update', 'member', $memberId, $requestId);
+            'display_name' => $displayName,
+            'department_id' => $primaryDepartmentId,
+            'updated_at' => $now,
+            'tenant_id' => $tenantId,
+            'member_id' => $memberId,
+            'expected_revision' => $expectedRevision,
+        ]);
+        if ($updated !== 1) {
+            throw AdminAccessException::revisionMismatch();
+        }
+        $this->bumpTenantAuthorization($tenantId, $now);
+        $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.member.updated', 'core.member.update', 'member', $memberId, $requestId);
 
-            return $this->get($tenantId, $memberId);
-        });
+        return $this->get($tenantId, $memberId);
     }
 
     /** @return array<string, mixed> */
@@ -321,9 +477,7 @@ SQL, [
         int $actorAccountId,
         string $requestId,
     ): array {
-        $roleIds = array_values(array_unique($roleIds));
-
-        return $this->transaction(function () use (
+        return $this->transaction(fn(): array => $this->replaceRolesInTransaction(
             $tenantId,
             $memberId,
             $roleIds,
@@ -331,59 +485,76 @@ SQL, [
             $actorMemberId,
             $actorAccountId,
             $requestId,
-        ): array {
-            $member = $this->requireMember($tenantId, $memberId, true);
-            if ((int) $member['authorization_revision'] !== $expectedRevision) {
-                throw AdminAccessException::revisionMismatch();
-            }
-            $roles = $this->rolesByIds($tenantId, $roleIds);
-            if (count($roles) !== count($roleIds)) {
-                throw AdminAccessException::notFound();
-            }
-            $currentlyOwner = $this->memberIsOwner($tenantId, $memberId);
-            $keepsOwner = false;
-            foreach ($roles as $role) {
-                if ($role['key'] === 'core.tenant-owner' && (int) $role['is_builtin'] === 1) {
-                    $keepsOwner = true;
-                    break;
-                }
-            }
-            if ($currentlyOwner && !$keepsOwner) {
-                $this->assertNotLastActiveOwner($tenantId, $memberId);
-            }
+        ));
+    }
 
-            $this->execute(
-                'DELETE FROM pa_member_role WHERE tenant_id = :tenant_id AND tenant_member_id = :member_id',
-                ['tenant_id' => $tenantId, 'member_id' => $memberId],
-            );
-            $now = $this->now();
-            foreach ($roleIds as $roleId) {
-                $this->execute(<<<'SQL'
+    /**
+     * Executes within the owning command transaction; failures propagate for full rollback.
+     * @param list<int> $roleIds
+     * @return array<string, mixed>
+     */
+    private function replaceRolesInTransaction(
+        int $tenantId,
+        int $memberId,
+        array $roleIds,
+        int $expectedRevision,
+        int $actorMemberId,
+        int $actorAccountId,
+        string $requestId,
+    ): array {
+        $roleIds = array_values(array_unique($roleIds));
+
+        $member = $this->requireMember($tenantId, $memberId, true);
+        if ((int) $member['authorization_revision'] !== $expectedRevision) {
+            throw AdminAccessException::revisionMismatch();
+        }
+        $roles = $this->rolesByIds($tenantId, $roleIds);
+        if (count($roles) !== count($roleIds)) {
+            throw AdminAccessException::notFound();
+        }
+        $currentlyOwner = $this->memberIsOwner($tenantId, $memberId);
+        $keepsOwner = false;
+        foreach ($roles as $role) {
+            if ($role['key'] === 'core.tenant-owner' && (int) $role['is_builtin'] === 1) {
+                $keepsOwner = true;
+                break;
+            }
+        }
+        if ($currentlyOwner && !$keepsOwner) {
+            $this->assertNotLastActiveOwner($tenantId, $memberId);
+        }
+
+        $this->execute(
+            'DELETE FROM pa_member_role WHERE tenant_id = :tenant_id AND tenant_member_id = :member_id',
+            ['tenant_id' => $tenantId, 'member_id' => $memberId],
+        );
+        $now = $this->now();
+        foreach ($roleIds as $roleId) {
+            $this->execute(<<<'SQL'
 INSERT INTO pa_member_role (tenant_id, tenant_member_id, role_id, assigned_by_member_id, assigned_at)
 VALUES (:tenant_id, :member_id, :role_id, :assigner_id, :assigned_at)
 SQL, [
-                    'tenant_id' => $tenantId,
-                    'member_id' => $memberId,
-                    'role_id' => $roleId,
-                    'assigner_id' => $actorMemberId,
-                    'assigned_at' => $now,
-                ]);
-            }
-            $this->execute(<<<'SQL'
+                'tenant_id' => $tenantId,
+                'member_id' => $memberId,
+                'role_id' => $roleId,
+                'assigner_id' => $actorMemberId,
+                'assigned_at' => $now,
+            ]);
+        }
+        $this->execute(<<<'SQL'
 UPDATE pa_tenant_member
 SET authorization_revision = authorization_revision + 1, updated_at = :updated_at
 WHERE tenant_id = :tenant_id AND id = :member_id AND authorization_revision = :expected_revision
 SQL, [
-                'updated_at' => $now,
-                'tenant_id' => $tenantId,
-                'member_id' => $memberId,
-                'expected_revision' => $expectedRevision,
-            ]);
-            $this->bumpTenantAuthorization($tenantId, $now);
-            $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.member.roles-replaced', 'core.member.role.assign', 'member', $memberId, $requestId);
+            'updated_at' => $now,
+            'tenant_id' => $tenantId,
+            'member_id' => $memberId,
+            'expected_revision' => $expectedRevision,
+        ]);
+        $this->bumpTenantAuthorization($tenantId, $now);
+        $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.member.roles-replaced', 'core.member.role.assign', 'member', $memberId, $requestId);
 
-            return $this->get($tenantId, $memberId);
-        });
+        return $this->get($tenantId, $memberId);
     }
 
     /**
@@ -401,7 +572,7 @@ SQL, [
         string $requestId,
         string $action,
     ): array {
-        return $this->transaction(function () use (
+        return $this->transaction(fn(): array => $this->transitionInTransaction(
             $tenantId,
             $memberId,
             $fromStatuses,
@@ -411,21 +582,39 @@ SQL, [
             $actorAccountId,
             $requestId,
             $action,
-        ): array {
-            $this->requireTenantStatus($tenantId, 'active', true);
-            $member = $this->requireMember($tenantId, $memberId, true);
-            if ((int) $member['authorization_revision'] !== $expectedRevision) {
-                throw AdminAccessException::revisionMismatch();
-            }
-            if (!in_array($member['status'], $fromStatuses, true)) {
-                throw AdminAccessException::conflict('MEMBER_STATUS_CONFLICT', 'The member status transition is not allowed.');
-            }
-            if (in_array($nextStatus, ['suspended', 'left'], true) && $this->memberIsOwner($tenantId, $memberId)) {
-                $this->assertNotLastActiveOwner($tenantId, $memberId);
-            }
+        ));
+    }
 
-            $now = $this->now();
-            $updated = $this->execute(<<<'SQL'
+    /**
+     * Executes within the owning command transaction; failures propagate for full rollback.
+     * @param list<string> $fromStatuses
+     * @return array<string, mixed>
+     */
+    private function transitionInTransaction(
+        int $tenantId,
+        int $memberId,
+        array $fromStatuses,
+        string $nextStatus,
+        int $expectedRevision,
+        int $actorMemberId,
+        int $actorAccountId,
+        string $requestId,
+        string $action,
+    ): array {
+        $this->requireTenantStatus($tenantId, 'active', true);
+        $member = $this->requireMember($tenantId, $memberId, true);
+        if ((int) $member['authorization_revision'] !== $expectedRevision) {
+            throw AdminAccessException::revisionMismatch();
+        }
+        if (!in_array($member['status'], $fromStatuses, true)) {
+            throw AdminAccessException::conflict('MEMBER_STATUS_CONFLICT', 'The member status transition is not allowed.');
+        }
+        if (in_array($nextStatus, ['suspended', 'left'], true) && $this->memberIsOwner($tenantId, $memberId)) {
+            $this->assertNotLastActiveOwner($tenantId, $memberId);
+        }
+
+        $now = $this->now();
+        $updated = $this->execute(<<<'SQL'
 UPDATE pa_tenant_member
 SET status = :next_status,
     security_revision = security_revision + 1,
@@ -436,26 +625,25 @@ SET status = :next_status,
     updated_at = :updated_at
 WHERE tenant_id = :tenant_id AND id = :member_id AND authorization_revision = :expected_revision
 SQL, [
-                'next_status' => $nextStatus,
-                'active_status' => $nextStatus,
-                'joined_at' => $now,
-                'suspended_status' => $nextStatus,
-                'suspended_at' => $now,
-                'left_status' => $nextStatus,
-                'left_at' => $now,
-                'updated_at' => $now,
-                'tenant_id' => $tenantId,
-                'member_id' => $memberId,
-                'expected_revision' => $expectedRevision,
-            ]);
-            if ($updated !== 1) {
-                throw AdminAccessException::revisionMismatch();
-            }
-            $this->bumpTenantAuthorization($tenantId, $now);
-            $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.member.' . $nextStatus, $action, 'member', $memberId, $requestId);
+            'next_status' => $nextStatus,
+            'active_status' => $nextStatus,
+            'joined_at' => $now,
+            'suspended_status' => $nextStatus,
+            'suspended_at' => $now,
+            'left_status' => $nextStatus,
+            'left_at' => $now,
+            'updated_at' => $now,
+            'tenant_id' => $tenantId,
+            'member_id' => $memberId,
+            'expected_revision' => $expectedRevision,
+        ]);
+        if ($updated !== 1) {
+            throw AdminAccessException::revisionMismatch();
+        }
+        $this->bumpTenantAuthorization($tenantId, $now);
+        $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.member.' . $nextStatus, $action, 'member', $memberId, $requestId);
 
-            return $this->get($tenantId, $memberId);
-        });
+        return $this->get($tenantId, $memberId);
     }
 
     private function createAccountAndCredential(string $identifier, string $displayName, string $password): int
