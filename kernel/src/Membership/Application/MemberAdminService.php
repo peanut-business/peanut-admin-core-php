@@ -19,6 +19,9 @@ use Throwable;
 /** Owns tenant member administration and atomic profile, role and status commands. */
 final readonly class MemberAdminService
 {
+    /** Matches the existing 100-item administration page and notification batch limits. */
+    public const MAX_ROLE_IDS = 100;
+
     public function __construct(
         private PDO $pdo,
         private PasswordHasher $passwords = new PasswordHasher(),
@@ -44,6 +47,8 @@ final readonly class MemberAdminService
         int $actorAccountId,
         string $requestId,
     ): array {
+        $this->assertRoleIdsLimit($roleIds);
+
         return $this->transaction(function () use (
             $tenantId,
             $email,
@@ -110,6 +115,8 @@ final readonly class MemberAdminService
         int $actorAccountId,
         string $requestId,
     ): array {
+        $this->assertRoleIdsLimit($roleIds);
+
         return $this->transaction(function () use (
             $tenantId,
             $memberId,
@@ -537,6 +544,8 @@ SQL, [
         int $actorAccountId,
         string $requestId,
     ): array {
+        $this->assertRoleIdsLimit($roleIds);
+
         return $this->transaction(fn(): array => $this->replaceRolesInTransaction(
             $tenantId,
             $memberId,
@@ -546,6 +555,20 @@ SQL, [
             $actorAccountId,
             $requestId,
         ));
+    }
+
+    /**
+     * Rejects oversized raw input before deduplication, transactions or SQL work.
+     * @param list<int> $roleIds
+     */
+    private function assertRoleIdsLimit(array $roleIds): void
+    {
+        if (count($roleIds) > self::MAX_ROLE_IDS) {
+            throw AdminAccessException::invalid(
+                'MEMBER_ROLE_LIMIT_EXCEEDED',
+                'At most ' . self::MAX_ROLE_IDS . ' role identifiers may be supplied.',
+            );
+        }
     }
 
     /**

@@ -300,6 +300,90 @@ SQL)->fetchColumn());
         );
     }
 
+    public function testOversizedRoleCommandsFailBeforeTransactionsOrSql(): void
+    {
+        $pdo = $this->createMock(PDO::class);
+        foreach (['beginTransaction', 'prepare', 'query', 'exec'] as $method) {
+            $pdo->expects(self::never())->method($method);
+        }
+        $service = new MemberAdminService($pdo);
+        // Count the original array: repeated identifiers must not bypass the work bound.
+        $roleIds = array_fill(0, MemberAdminService::MAX_ROLE_IDS + 1, 1);
+        foreach ([
+            fn() => $service->replaceRoles(
+                $this->tenantId,
+                $this->actorMemberId,
+                $roleIds,
+                1,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'oversized-role-replace',
+            ),
+            fn() => $service->createAdministrator(
+                $this->tenantId,
+                'oversized@example.test',
+                'Oversized',
+                'Initial-password-123!',
+                null,
+                $roleIds,
+                true,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'oversized-admin-create',
+            ),
+            fn() => $service->updateAdministrator(
+                $this->tenantId,
+                $this->actorMemberId,
+                'Oversized',
+                null,
+                $roleIds,
+                true,
+                1,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'oversized-admin-update',
+            ),
+        ] as $command) {
+            try {
+                $command();
+                self::fail('Oversized role input must fail before reaching PDO.');
+            } catch (AdminAccessException $exception) {
+                self::assertSame('MEMBER_ROLE_LIMIT_EXCEEDED', $exception->errorCode);
+                self::assertSame(422, $exception->httpStatus);
+            }
+        }
+    }
+
+    public function testRoleLimitAcceptsTheBoundaryAndPreservesEmptyReplacement(): void
+    {
+        $roleIds = [];
+        for ($index = 0; $index < MemberAdminService::MAX_ROLE_IDS; ++$index) {
+            $roleIds[] = $this->role($this->tenantId, 'r' . $index);
+        }
+        $assigned = $this->members()->replaceRoles(
+            $this->tenantId,
+            $this->actorMemberId,
+            $roleIds,
+            1,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'role-limit-boundary',
+        );
+        self::assertCount(MemberAdminService::MAX_ROLE_IDS, $assigned['role_keys']);
+
+        $cleared = $this->members()->replaceRoles(
+            $this->tenantId,
+            $this->actorMemberId,
+            [],
+            (int) $assigned['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'role-limit-empty',
+        );
+        self::assertSame([], $cleared['role_keys']);
+        self::assertSame('active', $cleared['status']);
+    }
+
     public function testDepartmentTreeRejectsCyclesDepthOverflowAndStaleRevisions(): void
     {
         $service = new DepartmentAdminService($this->database);
