@@ -7,6 +7,7 @@ namespace PeanutAdmin\EntitlementQuota\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
+use PDOException;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementGrantSnapshot;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeter;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeterRegistry;
@@ -830,6 +831,10 @@ final readonly class EntitlementQuotaService
 
     private function mapRepositoryFailure(RuntimeException $exception): EntitlementQuotaException
     {
+        // Driver messages contain SQLSTATE and must not be interpreted as domain state conflicts.
+        if ($exception instanceof PDOException) {
+            return EntitlementQuotaException::internal();
+        }
         $message = strtolower($exception->getMessage());
         if (str_contains($message, 'snapshot')
             || str_contains($message, 'digest')
@@ -878,6 +883,8 @@ final readonly class EntitlementQuotaService
     /** @param array<string, mixed> $value */
     private function failureFromArray(array $value): EntitlementQuotaException
     {
+        // MySQL JSON objects do not preserve insertion order; validate the exact key set canonically.
+        ksort($value, SORT_STRING);
         if (array_keys($value) !== ['error_code', 'http_status', 'message']
             || $value['error_code'] !== 'ENTITLEMENT_QUOTA_CONFLICT'
             || $value['http_status'] !== 409

@@ -59,7 +59,7 @@ INSERT INTO pa_workflow_definition (
   updated_by_member_id, created_at, updated_at, retired_at
 ) VALUES (
   :tenant_id, :module_key, :workflow_key, 'draft', :graph_json,
-  :graph_sha256, 0, 1, :member_id, :member_id, :created_at, :updated_at, NULL
+  :graph_sha256, 0, 1, :created_by_member_id, :updated_by_member_id, :created_at, :updated_at, NULL
 )
 SQL, [
                     'tenant_id' => $tenantId,
@@ -67,7 +67,8 @@ SQL, [
                     'workflow_key' => $workflowKey,
                     'graph_json' => $graph->canonicalJson,
                     'graph_sha256' => $graph->sha256,
-                    'member_id' => $memberId,
+                    'created_by_member_id' => $memberId,
+                    'updated_by_member_id' => $memberId,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
@@ -253,7 +254,7 @@ INSERT INTO pa_workflow_instance (
 ) VALUES (
   :instance_key, :tenant_id, :definition_id, :definition_version, :subject_type,
   :subject_key, :subject_revision_key, :subject_revision_sha256, :current_node_key,
-  'active', :member_id, :member_id, 1, :created_at, :updated_at, NULL, NULL
+  'active', :initiated_by_member_id, :last_actor_member_id, 1, :created_at, :updated_at, NULL, NULL
 )
 SQL, [
                 'instance_key' => $instanceKey,
@@ -265,7 +266,8 @@ SQL, [
                 'subject_revision_key' => $subjectRevisionKey,
                 'subject_revision_sha256' => $subjectRevisionSha256,
                 'current_node_key' => $currentNodeKey,
-                'member_id' => $initiatedByMemberId,
+                'initiated_by_member_id' => $initiatedByMemberId,
+                'last_actor_member_id' => $initiatedByMemberId,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
@@ -364,10 +366,11 @@ SQL, ['tenant_id' => $tenantId, 'instance_id' => $instanceId, 'node_key' => $nod
 UPDATE pa_workflow_work_item
 SET status = 'completed', decision = :decision, completed_by_member_id = :member_id,
     revision = revision + 1, updated_at = :updated_at, completed_at = :completed_at
-WHERE tenant_id = :tenant_id AND id = :id AND assignee_member_id = :member_id AND status = 'pending'
+WHERE tenant_id = :tenant_id AND id = :id AND assignee_member_id = :assignee_member_id AND status = 'pending'
 SQL, [
             'decision' => $decision,
             'member_id' => $memberId,
+            'assignee_member_id' => $memberId,
             'updated_at' => $now,
             'completed_at' => $now,
             'tenant_id' => $tenantId,

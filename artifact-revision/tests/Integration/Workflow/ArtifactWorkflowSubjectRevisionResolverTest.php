@@ -122,6 +122,7 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
             1,
             null,
             null,
+            null,
             $state,
             $finalized ? 2 : 1,
             $finalized ? 'article.body' : null,

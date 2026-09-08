@@ -305,7 +305,7 @@ SQL);
     private function columnSignatures(): array
     {
         $statement = $this->pdo->query(<<<'SQL'
-SELECT table_name, GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR ',') AS columns
+SELECT table_name AS table_name, GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR ',') AS columns
 FROM information_schema.columns
 WHERE table_schema = DATABASE() AND table_name LIKE 'pa_workflow_%'
 GROUP BY table_name
@@ -323,7 +323,8 @@ SQL);
     private function generatedColumnSignatures(): array
     {
         $statement = $this->pdo->query(<<<'SQL'
-SELECT table_name, column_name, extra, generation_expression
+SELECT table_name AS table_name, column_name AS column_name, extra AS extra,
+       generation_expression AS generation_expression
 FROM information_schema.columns
 WHERE table_schema = DATABASE() AND table_name LIKE 'pa_workflow_%'
   AND generation_expression <> ''
@@ -354,7 +355,7 @@ SQL);
     private function indexSignatures(): array
     {
         $statement = $this->pdo->query(<<<'SQL'
-SELECT table_name, index_name, non_unique,
+SELECT table_name AS table_name, index_name AS index_name, non_unique AS non_unique,
        GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ',') AS columns
 FROM information_schema.statistics
 WHERE table_schema = DATABASE() AND table_name LIKE 'pa_workflow_%'
@@ -406,7 +407,7 @@ SQL);
     private function checkConstraintSignatures(): array
     {
         $statement = $this->pdo->query(<<<'SQL'
-SELECT tc.table_name, tc.constraint_name, cc.check_clause
+SELECT tc.table_name AS table_name, tc.constraint_name AS constraint_name, cc.check_clause AS check_clause
 FROM information_schema.table_constraints tc
 JOIN information_schema.check_constraints cc
   ON cc.constraint_schema = tc.constraint_schema
