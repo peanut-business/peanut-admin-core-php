@@ -366,18 +366,32 @@ SQL)->fetchColumn());
 
         foreach ([[null, [$foreignRole]], [$departmentId, [$localRole]]] as [$departmentId, $roles]) {
             $this->assertAdminStatus(404, fn() => $this->members()->createAdministrator(
-                $this->tenantId, 'atomic-new@example.test', 'Atomic new',
-                'Initial-password-123!', $departmentId, $roles, true,
-                $this->actorMemberId, $this->actorAccountId, 'atomic-create-invalid',
+                $this->tenantId,
+                'atomic-new@example.test',
+                'Atomic new',
+                'Initial-password-123!',
+                $departmentId,
+                $roles,
+                true,
+                $this->actorMemberId,
+                $this->actorAccountId,
+                'atomic-create-invalid',
             ));
             self::assertSame($before, $this->administrationState());
             self::assertFalse($this->database->inTransaction());
         }
 
         $created = $this->members()->createAdministrator(
-            $this->tenantId, 'atomic-new@example.test', 'Atomic new',
-            'Initial-password-123!', null, [$localRole], true,
-            $this->actorMemberId, $this->actorAccountId, 'atomic-create-success',
+            $this->tenantId,
+            'atomic-new@example.test',
+            'Atomic new',
+            'Initial-password-123!',
+            null,
+            [$localRole],
+            true,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-create-success',
         );
         self::assertSame('active', $created['status']);
         self::assertSame(['local'], $created['role_keys']);
@@ -402,17 +416,31 @@ SQL)->fetchColumn());
 
         // The suspension guard runs after profile and role writes and their audits.
         $this->assertAdminError('LAST_ACTIVE_OWNER_REQUIRED', fn() => $this->members()->updateAdministrator(
-            $this->tenantId, $this->actorMemberId, 'Must roll back', null,
-            [$ownerRole, $extraRole], false, (int) $member['revision'],
-            $this->actorMemberId, $this->actorAccountId, 'atomic-edit-owner',
+            $this->tenantId,
+            $this->actorMemberId,
+            'Must roll back',
+            null,
+            [$ownerRole, $extraRole],
+            false,
+            (int) $member['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-owner',
         ));
         self::assertSame($before, $this->administrationState());
         self::assertFalse($this->database->inTransaction());
 
         $this->assertAdminError('LAST_ACTIVE_OWNER_REQUIRED', fn() => $this->members()->updateAdministrator(
-            $this->tenantId, $this->actorMemberId, 'Must roll back', null,
-            [$extraRole], true, (int) $member['revision'],
-            $this->actorMemberId, $this->actorAccountId, 'atomic-edit-remove-owner',
+            $this->tenantId,
+            $this->actorMemberId,
+            'Must roll back',
+            null,
+            [$extraRole],
+            true,
+            (int) $member['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-remove-owner',
         ));
         self::assertSame($before, $this->administrationState());
     }
@@ -421,9 +449,16 @@ SQL)->fetchColumn());
     {
         $role = $this->role($this->tenantId, 'atomic-role');
         $created = $this->members()->createAdministrator(
-            $this->tenantId, 'atomic-edit@example.test', 'Before',
-            'Initial-password-123!', null, [$role], false,
-            $this->actorMemberId, $this->actorAccountId, 'atomic-pending',
+            $this->tenantId,
+            'atomic-edit@example.test',
+            'Before',
+            'Initial-password-123!',
+            null,
+            [$role],
+            false,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-pending',
         );
         self::assertSame('pending', $created['status']);
         $otherTenant = $this->tenant('atomic-edit-other', 'active');
@@ -431,26 +466,54 @@ SQL)->fetchColumn());
         $before = $this->administrationState();
 
         $this->assertAdminStatus(404, fn() => $this->members()->updateAdministrator(
-            $this->tenantId, (int) $created['id'], 'Must roll back', null,
-            [$otherRole], true, (int) $created['revision'],
-            $this->actorMemberId, $this->actorAccountId, 'atomic-edit-foreign-role',
+            $this->tenantId,
+            (int) $created['id'],
+            'Must roll back',
+            null,
+            [$otherRole],
+            true,
+            (int) $created['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-foreign-role',
         ));
         $this->assertAdminStatus(404, fn() => $this->members()->updateAdministrator(
-            $otherTenant, (int) $created['id'], 'Must roll back', null,
-            [$otherRole], true, (int) $created['revision'],
-            $this->actorMemberId, $this->actorAccountId, 'atomic-edit-foreign-member',
+            $otherTenant,
+            (int) $created['id'],
+            'Must roll back',
+            null,
+            [$otherRole],
+            true,
+            (int) $created['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-foreign-member',
         ));
         $this->assertAdminStatus(412, fn() => $this->members()->updateAdministrator(
-            $this->tenantId, (int) $created['id'], 'Must roll back', null,
-            [$role], true, (int) $created['revision'] - 1,
-            $this->actorMemberId, $this->actorAccountId, 'atomic-edit-stale',
+            $this->tenantId,
+            (int) $created['id'],
+            'Must roll back',
+            null,
+            [$role],
+            true,
+            (int) $created['revision'] - 1,
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-stale',
         ));
         self::assertSame($before, $this->administrationState());
 
         $updated = $this->members()->updateAdministrator(
-            $this->tenantId, (int) $created['id'], 'After', null,
-            [$role], true, (int) $created['revision'],
-            $this->actorMemberId, $this->actorAccountId, 'atomic-edit-success',
+            $this->tenantId,
+            (int) $created['id'],
+            'After',
+            null,
+            [$role],
+            true,
+            (int) $created['revision'],
+            $this->actorMemberId,
+            $this->actorAccountId,
+            'atomic-edit-success',
         );
         self::assertSame('After', $updated['display_name']);
         self::assertSame('active', $updated['status']);

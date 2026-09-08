@@ -45,23 +45,47 @@ final readonly class MemberAdminService
         string $requestId,
     ): array {
         return $this->transaction(function () use (
-            $tenantId, $email, $displayName, $initialPassword, $primaryDepartmentId,
-            $roleIds, $enabled, $actorMemberId, $actorAccountId, $requestId,
+            $tenantId,
+            $email,
+            $displayName,
+            $initialPassword,
+            $primaryDepartmentId,
+            $roleIds,
+            $enabled,
+            $actorMemberId,
+            $actorAccountId,
+            $requestId,
         ): array {
             $member = $this->createPendingInTransaction(
-                $tenantId, $email, $displayName, $initialPassword,
-                $actorMemberId, $actorAccountId, $requestId,
+                $tenantId,
+                $email,
+                $displayName,
+                $initialPassword,
+                $actorMemberId,
+                $actorAccountId,
+                $requestId,
             );
             if ($primaryDepartmentId !== null) {
                 $member = $this->updateInTransaction(
-                    $tenantId, (int) $member['id'], $displayName, $primaryDepartmentId,
-                    (int) $member['revision'], $actorMemberId, $actorAccountId, $requestId,
+                    $tenantId,
+                    (int) $member['id'],
+                    $displayName,
+                    $primaryDepartmentId,
+                    (int) $member['revision'],
+                    $actorMemberId,
+                    $actorAccountId,
+                    $requestId,
                 );
             }
 
             return $this->configureAdministratorInTransaction(
-                $tenantId, $member, $roleIds,
-                $enabled, $actorMemberId, $actorAccountId, $requestId,
+                $tenantId,
+                $member,
+                $roleIds,
+                $enabled,
+                $actorMemberId,
+                $actorAccountId,
+                $requestId,
             );
         });
     }
@@ -87,8 +111,16 @@ final readonly class MemberAdminService
         string $requestId,
     ): array {
         return $this->transaction(function () use (
-            $tenantId, $memberId, $displayName, $primaryDepartmentId, $roleIds,
-            $enabled, $expectedRevision, $actorMemberId, $actorAccountId, $requestId,
+            $tenantId,
+            $memberId,
+            $displayName,
+            $primaryDepartmentId,
+            $roleIds,
+            $enabled,
+            $expectedRevision,
+            $actorMemberId,
+            $actorAccountId,
+            $requestId,
         ): array {
             $this->requireTenantStatus($tenantId, 'active', true);
             $member = $this->requireMember($tenantId, $memberId, true);
@@ -96,13 +128,24 @@ final readonly class MemberAdminService
                 throw AdminAccessException::revisionMismatch();
             }
             $member = $this->updateInTransaction(
-                $tenantId, $memberId, $displayName, $primaryDepartmentId,
-                $expectedRevision, $actorMemberId, $actorAccountId, $requestId,
+                $tenantId,
+                $memberId,
+                $displayName,
+                $primaryDepartmentId,
+                $expectedRevision,
+                $actorMemberId,
+                $actorAccountId,
+                $requestId,
             );
 
             return $this->configureAdministratorInTransaction(
-                $tenantId, $member, $roleIds, $enabled,
-                $actorMemberId, $actorAccountId, $requestId,
+                $tenantId,
+                $member,
+                $roleIds,
+                $enabled,
+                $actorMemberId,
+                $actorAccountId,
+                $requestId,
             );
         });
     }
@@ -129,21 +172,38 @@ final readonly class MemberAdminService
         }
         $memberId = (int) $member['id'];
         $member = $this->replaceRolesInTransaction(
-            $tenantId, $memberId, $roleIds, (int) $member['revision'],
-            $actorMemberId, $actorAccountId, $requestId,
+            $tenantId,
+            $memberId,
+            $roleIds,
+            (int) $member['revision'],
+            $actorMemberId,
+            $actorAccountId,
+            $requestId,
         );
         if ($enabled && in_array($member['status'], ['pending', 'suspended'], true)) {
             return $this->transitionInTransaction(
-                $tenantId, $memberId, ['pending', 'suspended'], 'active',
-                (int) $member['revision'], $actorMemberId, $actorAccountId,
-                $requestId, 'core.member.activate',
+                $tenantId,
+                $memberId,
+                ['pending', 'suspended'],
+                'active',
+                (int) $member['revision'],
+                $actorMemberId,
+                $actorAccountId,
+                $requestId,
+                'core.member.activate',
             );
         }
         if (!$enabled && $member['status'] === 'active') {
             return $this->transitionInTransaction(
-                $tenantId, $memberId, ['active'], 'suspended',
-                (int) $member['revision'], $actorMemberId, $actorAccountId,
-                $requestId, 'core.member.suspend',
+                $tenantId,
+                $memberId,
+                ['active'],
+                'suspended',
+                (int) $member['revision'],
+                $actorMemberId,
+                $actorAccountId,
+                $requestId,
+                'core.member.suspend',
             );
         }
 
