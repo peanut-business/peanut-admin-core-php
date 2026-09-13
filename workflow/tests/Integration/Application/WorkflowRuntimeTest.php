@@ -1828,14 +1828,18 @@ final class RecordingWorkflowPublisher implements WorkflowSideEffectPublisher
 
     public function __construct(private readonly PDO $pdo) {}
 
+    public function assertTransactionParticipation(): void
+    {
+        if (!$this->pdo->inTransaction()) {
+            throw new RuntimeException('Workflow side effects require the command transaction.');
+        }
+    }
+
     public function publish(
         AuthorizedOperationContext $context,
         WorkflowTransitionEffects $effects,
         string $parentIdempotencyKey,
     ): void {
-        if (!$this->pdo->inTransaction()) {
-            throw new RuntimeException('Workflow side effects require the command transaction.');
-        }
         ++$this->publishCount;
     }
 }
@@ -1843,6 +1847,13 @@ final class RecordingWorkflowPublisher implements WorkflowSideEffectPublisher
 final readonly class FailingWorkflowPublisher implements WorkflowSideEffectPublisher
 {
     public function __construct(private PDO $pdo) {}
+
+    public function assertTransactionParticipation(): void
+    {
+        if (!$this->pdo->inTransaction()) {
+            throw new RuntimeException('Workflow side effects require the command transaction.');
+        }
+    }
 
     public function publish(
         AuthorizedOperationContext $context,

@@ -8,6 +8,9 @@ use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 
 interface WorkflowSideEffectPublisher
 {
+    /** Fail unless this publisher participates in the command's active transaction. */
+    public function assertTransactionParticipation(): void;
+
     public function publish(
         AuthorizedOperationContext $context,
         WorkflowTransitionEffects $effects,

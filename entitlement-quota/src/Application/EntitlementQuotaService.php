@@ -7,6 +7,7 @@ namespace PeanutAdmin\EntitlementQuota\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
+use PDOException;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementGrantSnapshot;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeter;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeterRegistry;
@@ -826,6 +827,10 @@ final readonly class EntitlementQuotaService
 
     private function mapRepositoryFailure(RuntimeException $exception): EntitlementQuotaException
     {
+        // Native PDO errors include SQLSTATE text; that transport detail is never a domain state conflict.
+        if ($exception instanceof PDOException) {
+            return EntitlementQuotaException::internal();
+        }
         $message = strtolower($exception->getMessage());
         if (str_contains($message, 'snapshot')
             || str_contains($message, 'digest')

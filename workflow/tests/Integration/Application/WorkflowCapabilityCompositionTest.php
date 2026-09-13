@@ -233,15 +233,12 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
         self::assertSame('review', $started->currentNodeKey);
         self::assertGreaterThan(0, $this->workflowAuthorization->decideTargetCalls);
 
-        $beforeMismatch = $this->effectState();
         $otherConnection = $this->connection();
-        try {
-            $this->runtime(new CapabilityWorkflowPublisher($otherConnection, null, null, $this->tasks));
-            self::fail('A side-effect adapter on another PDO must fail before a workflow write.');
-        } catch (WorkflowException $exception) {
-            self::assertSame('WORKFLOW_PROVIDER_UNAVAILABLE', $exception->errorCode);
-        }
-        self::assertSame($beforeMismatch, $this->effectState());
+        $this->expectTransitionRollback(
+            new CapabilityWorkflowPublisher($otherConnection, null, null, $this->tasks),
+            (string) $started->instanceKey,
+            'WORKFLOW_PROVIDER_UNAVAILABLE',
+        );
 
         $missingProvider = $this->publisher(null);
         $this->expectTransitionRollback($missingProvider, (string) $started->instanceKey, 'WORKFLOW_PROVIDER_UNAVAILABLE');
@@ -958,15 +955,19 @@ final class CapabilityWorkflowPublisher implements WorkflowSideEffectPublisher
         private readonly TrustedJobPublisher $tasks,
     ) {}
 
+    public function assertTransactionParticipation(): void
+    {
+        if (!$this->pdo->inTransaction()) {
+            throw WorkflowException::providerUnavailable();
+        }
+    }
+
     public function publish(
         AuthorizedOperationContext $context,
         WorkflowTransitionEffects $effects,
         string $parentIdempotencyKey,
     ): void {
         ++$this->publishCalls;
-        if (!$this->pdo->inTransaction()) {
-            throw WorkflowException::providerUnavailable();
-        }
         try {
             foreach ($effects->notificationIntents as $index => $intent) {
                 if (!$this->notifications instanceof NotificationService

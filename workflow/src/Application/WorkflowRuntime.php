@@ -905,6 +905,7 @@ final readonly class WorkflowRuntime
                 $expires,
                 $operation,
             ): WorkflowReceipt {
+                $this->sideEffects->assertTransactionParticipation();
                 $record = $this->idempotency->beginTenant(
                     $context->tenantContext->tenantId,
                     $context->tenantContext->memberId,
