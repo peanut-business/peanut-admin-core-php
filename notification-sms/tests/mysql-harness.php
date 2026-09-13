@@ -40,7 +40,7 @@ use PeanutAdmin\NotificationSms\Sms\SmsRecipient;
 use PeanutAdmin\NotificationSms\Task\NotificationOutboxDispatcher;
 use PeanutAdmin\NotificationSms\Task\OutboxTaskSubmissionProvider;
 use PeanutAdmin\TaskJob\Database\Schema as TaskJobSchema;
-use PeanutAdmin\TaskJob\Persistence\PdoTaskJobRepository;
+use PeanutAdmin\TaskJob\Persistence\TaskJobStore;
 use PeanutAdmin\TaskJob\Submission\TaskSubmissionRegistry;
 use PeanutAdmin\TaskJob\Submission\TrustedJobPublisher;
 
@@ -191,7 +191,8 @@ SQL);
     same(1, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message WHERE template_revision = 1')->fetchColumn(), 'message row');
 
     $publisher = new TrustedJobPublisher(
-        new PdoTaskJobRepository($pdo),
+        new TaskJobStore($connection),
+        $transactions,
         new TaskSubmissionRegistry([
             new OutboxTaskSubmissionProvider('inbox'),
             new OutboxTaskSubmissionProvider('sms'),

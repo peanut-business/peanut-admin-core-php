@@ -7,21 +7,20 @@ namespace PeanutAdmin\TaskJob\Persistence;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
-use PDO;
-use PDOException;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\TaskJob\Application\JobRecord;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Execution\JobClaim;
-use Throwable;
+use think\db\exception\PDOException;
+use think\db\PDOConnection;
 
-final readonly class PdoTaskJobRepository
+final readonly class TaskJobStore
 {
     private TenantColumnScope $tenantScope;
 
     public function __construct(
-        private PDO $pdo,
+        private PDOConnection $connection,
         TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
         ?int $instanceTenantId = null,
     ) {
@@ -43,14 +42,9 @@ final readonly class PdoTaskJobRepository
         int $initialDelaySeconds,
     ): JobRecord {
         $this->assertStorageMode();
-        $ownsTransaction = !$this->pdo->inTransaction();
-        if ($ownsTransaction) {
-            $this->begin();
-        }
-        try {
-            $created = false;
-            $statement = $this->pdo->prepare(sprintf(
-                <<<'SQL'
+        $created = false;
+        $sql = sprintf(
+            <<<'SQL'
 INSERT INTO pa_task_job (
   job_key, %stask_type, handler_key, payload_json, payload_hash,
   trusted_envelope, idempotency_key_hash, request_hash, status, max_attempts,
@@ -61,58 +55,50 @@ INSERT INTO pa_task_job (
   TIMESTAMPADD(SECOND, :initial_delay, UTC_TIMESTAMP(3)), :member_id, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3)
 )
 SQL,
-                $this->tenantScope->whenTenant('tenant_id, '),
-                $this->tenantScope->whenTenant(':tenant_id, '),
-            ));
-            try {
-                $statement->execute($this->tenantScope->bindings($tenantId, [
-                    'job_key' => $jobKey,
-                    'task_type' => $taskType,
-                    'handler_key' => $handlerKey,
-                    'payload_json' => $payloadJson,
-                    'payload_hash' => hash('sha256', $payloadJson),
-                    'trusted_envelope' => $trustedEnvelope,
-                    'idempotency_key_hash' => $idempotencyKeyHash,
-                    'request_hash' => $requestHash,
-                    'max_attempts' => $maxAttempts,
-                    'initial_delay' => $initialDelaySeconds,
-                    'member_id' => $memberId,
-                ]));
-                $id = (int) $this->pdo->lastInsertId();
-                $created = true;
-            } catch (PDOException $exception) {
-                if ($idempotencyKeyHash === null || $exception->getCode() !== '23000') {
-                    throw $exception;
-                }
-                $existing = $this->idempotentRow($tenantId, $memberId, $taskType, $idempotencyKeyHash, true);
-                if ($existing === null || !hash_equals((string) $existing['request_hash'], $requestHash)) {
-                    throw TaskJobException::conflict();
-                }
-                $id = (int) $existing['id'];
+            $this->tenantScope->whenTenant('tenant_id, '),
+            $this->tenantScope->whenTenant(':tenant_id, '),
+        );
+        $parameters = $this->tenantScope->bindings($tenantId, [
+            'job_key' => $jobKey,
+            'task_type' => $taskType,
+            'handler_key' => $handlerKey,
+            'payload_json' => $payloadJson,
+            'payload_hash' => hash('sha256', $payloadJson),
+            'trusted_envelope' => $trustedEnvelope,
+            'idempotency_key_hash' => $idempotencyKeyHash,
+            'request_hash' => $requestHash,
+            'max_attempts' => $maxAttempts,
+            'initial_delay' => $initialDelaySeconds,
+            'member_id' => $memberId,
+        ]);
+        try {
+            $this->connection->execute($sql, $parameters);
+            $id = $this->lastInsertId();
+            $created = true;
+        } catch (PDOException $exception) {
+            if ($idempotencyKeyHash === null || !$this->isDuplicate($exception)) {
+                throw $exception;
             }
-            $row = $this->rowById($tenantId, $id, true);
-            if ($row === null || !hash_equals((string) $row['request_hash'], $requestHash)) {
+            $existing = $this->idempotentRow($tenantId, $memberId, $taskType, $idempotencyKeyHash, true);
+            if ($existing === null || !hash_equals((string) $existing['request_hash'], $requestHash)) {
                 throw TaskJobException::conflict();
             }
-            if ($created) {
-                $this->insertEvent($tenantId, $id, 'tenant.task.submitted', $memberId, [
-                    'task_type' => $taskType,
-                    'producer_resource' => $this->envelopeField($trustedEnvelope, 'resource_key'),
-                    'producer_operation' => $this->envelopeField($trustedEnvelope, 'operation'),
-                    'max_attempts' => $maxAttempts,
-                ]);
-            }
-            if ($ownsTransaction) {
-                $this->pdo->commit();
-            }
-
-            return $this->map($row, $tenantId);
-        } catch (Throwable $exception) {
-            if ($ownsTransaction) {
-                $this->rollback();
-            }
-            throw $exception;
+            $id = (int) $existing['id'];
         }
+        $row = $this->rowById($tenantId, $id, true);
+        if ($row === null || !hash_equals((string) $row['request_hash'], $requestHash)) {
+            throw TaskJobException::conflict();
+        }
+        if ($created) {
+            $this->insertEvent($tenantId, $id, 'tenant.task.submitted', $memberId, [
+                'task_type' => $taskType,
+                'producer_resource' => $this->envelopeField($trustedEnvelope, 'resource_key'),
+                'producer_operation' => $this->envelopeField($trustedEnvelope, 'operation'),
+                'max_attempts' => $maxAttempts,
+            ]);
+        }
+
+        return $this->map($row, $tenantId);
     }
 
     /** @return array{items: list<JobRecord>, page: int, page_size: int, total: int} */
@@ -123,41 +109,36 @@ SQL,
             throw TaskJobException::invalid();
         }
         $offset = ($page - 1) * $pageSize;
-        $count = $this->pdo->prepare(
-            'SELECT COUNT(*) FROM pa_task_job WHERE ' . $this->tenantScope->where('status = :status'),
+        $parameters = $this->tenantScope->bindings($tenantId, ['status' => $status]);
+        $count = $this->one(
+            'SELECT COUNT(*) AS aggregate FROM pa_task_job WHERE ' . $this->tenantScope->where('status = :status'),
+            $parameters,
         );
-        $count->execute($this->tenantScope->bindings($tenantId, ['status' => $status]));
-        $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $rows = $this->connection->query(sprintf(<<<'SQL'
 SELECT * FROM pa_task_job
 WHERE %s
-ORDER BY id DESC LIMIT :limit OFFSET :offset
-SQL, $this->tenantScope->where('status = :status')));
-        $this->tenantScope->bind($statement, $tenantId);
-        $statement->bindValue('status', $status);
-        $statement->bindValue('limit', $pageSize, PDO::PARAM_INT);
-        $statement->bindValue('offset', $offset, PDO::PARAM_INT);
-        $statement->execute();
+ORDER BY id DESC LIMIT %d OFFSET %d
+SQL, $this->tenantScope->where('status = :status'), $pageSize, $offset), $parameters);
 
         return [
-            'items' => array_map(
+            'items' => array_values(array_map(
                 fn(array $row): JobRecord => $this->map($row, $tenantId),
-                $statement->fetchAll(PDO::FETCH_ASSOC),
-            ),
+                $rows,
+            )),
             'page' => $page,
             'page_size' => $pageSize,
-            'total' => (int) $count->fetchColumn(),
+            'total' => (int) ($count['aggregate'] ?? 0),
         ];
     }
 
     public function get(int $tenantId, string $jobKey): JobRecord
     {
         $this->assertStorageMode();
-        $statement = $this->pdo->prepare(
+        $row = $this->one(
             'SELECT * FROM pa_task_job WHERE ' . $this->tenantScope->where('job_key = :job_key'),
+            $this->tenantScope->bindings($tenantId, ['job_key' => $jobKey]),
         );
-        $statement->execute($this->tenantScope->bindings($tenantId, ['job_key' => $jobKey]));
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+        if ($row === null) {
             throw TaskJobException::notFound();
         }
 
@@ -167,173 +148,130 @@ SQL, $this->tenantScope->where('status = :status')));
     public function cancel(int $tenantId, int $actorMemberId, string $jobKey, int $revision): JobRecord
     {
         $this->assertStorageMode();
-        $ownsTransaction = !$this->pdo->inTransaction();
-        if ($ownsTransaction) {
-            $this->begin();
+        $row = $this->rowByJobKey($tenantId, $jobKey, true);
+        if ($row === null) {
+            throw TaskJobException::notFound();
         }
-        try {
-            $row = $this->rowByJobKey($tenantId, $jobKey, true);
-            if ($row === null) {
-                throw TaskJobException::notFound();
-            }
-            $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $affected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job
 SET status = 'cancelled', completed_at = UTC_TIMESTAMP(3), revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
 WHERE %s
-SQL, $this->tenantScope->where("job_key = :job_key AND status = 'queued' AND revision = :revision")));
-            $statement->execute($this->tenantScope->bindings($tenantId, [
-                'job_key' => $jobKey,
-                'revision' => $revision,
-            ]));
-            if ($statement->rowCount() !== 1) {
-                throw TaskJobException::stateConflict();
-            }
-            $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.cancelled', $actorMemberId, ['revision' => $revision + 1]);
-            $updated = $this->rowById($tenantId, (int) $row['id'], false);
-            if ($ownsTransaction) {
-                $this->pdo->commit();
-            }
-            return $this->map($updated ?? throw TaskJobException::internal(), $tenantId);
-        } catch (Throwable $exception) {
-            if ($ownsTransaction) {
-                $this->rollback();
-            }
-            throw $exception;
+SQL, $this->tenantScope->where("job_key = :job_key AND status = 'queued' AND revision = :revision")), $this->tenantScope->bindings($tenantId, [
+            'job_key' => $jobKey,
+            'revision' => $revision,
+        ]));
+        if ($affected !== 1) {
+            throw TaskJobException::stateConflict();
         }
+        $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.cancelled', $actorMemberId, ['revision' => $revision + 1]);
+        $updated = $this->rowById($tenantId, (int) $row['id'], false);
+        return $this->map($updated ?? throw TaskJobException::internal(), $tenantId);
     }
 
     public function retryDead(int $tenantId, int $actorMemberId, string $jobKey, int $revision): JobRecord
     {
         $this->assertStorageMode();
-        $ownsTransaction = !$this->pdo->inTransaction();
-        if ($ownsTransaction) {
-            $this->begin();
+        $row = $this->rowByJobKey($tenantId, $jobKey, true);
+        if ($row === null) {
+            throw TaskJobException::notFound();
         }
-        try {
-            $row = $this->rowByJobKey($tenantId, $jobKey, true);
-            if ($row === null) {
-                throw TaskJobException::notFound();
-            }
-            $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $affected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job
 SET status = 'queued', max_attempts = attempt_count + 1, available_at = UTC_TIMESTAMP(3),
     last_error_code = NULL, completed_at = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
 WHERE %s
   AND attempt_count < 10
-SQL, $this->tenantScope->where("job_key = :job_key AND status = 'dead' AND revision = :revision")));
-            $statement->execute($this->tenantScope->bindings($tenantId, [
-                'job_key' => $jobKey,
-                'revision' => $revision,
-            ]));
-            if ($statement->rowCount() !== 1) {
-                throw TaskJobException::stateConflict();
-            }
-            $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.retried', $actorMemberId, ['revision' => $revision + 1]);
-            $updated = $this->rowById($tenantId, (int) $row['id'], false);
-            if ($ownsTransaction) {
-                $this->pdo->commit();
-            }
-            return $this->map($updated ?? throw TaskJobException::internal(), $tenantId);
-        } catch (Throwable $exception) {
-            if ($ownsTransaction) {
-                $this->rollback();
-            }
-            throw $exception;
+SQL, $this->tenantScope->where("job_key = :job_key AND status = 'dead' AND revision = :revision")), $this->tenantScope->bindings($tenantId, [
+            'job_key' => $jobKey,
+            'revision' => $revision,
+        ]));
+        if ($affected !== 1) {
+            throw TaskJobException::stateConflict();
         }
+        $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.retried', $actorMemberId, ['revision' => $revision + 1]);
+        $updated = $this->rowById($tenantId, (int) $row['id'], false);
+        return $this->map($updated ?? throw TaskJobException::internal(), $tenantId);
     }
 
     public function claim(int $tenantId, string $workerId, int $leaseSeconds): ?JobClaim
     {
         $this->assertStorageMode();
-        $this->begin();
-        try {
-            $this->recoverExpired($tenantId);
-            $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $this->recoverExpired($tenantId);
+        $row = $this->one(sprintf(<<<'SQL'
 SELECT * FROM pa_task_job
 WHERE %s
 ORDER BY priority DESC, id ASC LIMIT 1 FOR UPDATE SKIP LOCKED
-SQL, $this->tenantScope->where("status = 'queued' AND available_at <= UTC_TIMESTAMP(3)")));
-            $statement->execute($this->tenantScope->bindings($tenantId));
-            $row = $statement->fetch(PDO::FETCH_ASSOC);
-            if (!is_array($row)) {
-                $this->pdo->commit();
-                return null;
-            }
-            $this->tenantScope->tenantId($row, $tenantId);
-            $payload = $this->payload((string) $row['payload_json']);
-            $this->assertPayloadHash($row, $payload);
-            $leaseToken = bin2hex(random_bytes(32));
-            $leaseHash = hash('sha256', $leaseToken);
-            $workerHash = hash('sha256', $workerId);
-            $attempt = (int) $row['attempt_count'] + 1;
-            $update = $this->pdo->prepare(sprintf(<<<'SQL'
+SQL, $this->tenantScope->where("status = 'queued' AND available_at <= UTC_TIMESTAMP(3)")), $this->tenantScope->bindings($tenantId));
+        if ($row === null) {
+            return null;
+        }
+        $this->tenantScope->tenantId($row, $tenantId);
+        $payload = $this->payload((string) $row['payload_json']);
+        $this->assertPayloadHash($row, $payload);
+        $leaseToken = bin2hex(random_bytes(32));
+        $leaseHash = hash('sha256', $leaseToken);
+        $workerHash = hash('sha256', $workerId);
+        $attempt = (int) $row['attempt_count'] + 1;
+        $affected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job
 SET status = 'running', attempt_count = :attempt, lease_owner_hash = :worker_hash,
     lease_token_hash = :lease_hash, lease_expires_at = TIMESTAMPADD(SECOND, :lease_seconds, UTC_TIMESTAMP(3)),
     revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
 WHERE id = :id%s AND status = 'queued'
-SQL, $this->tenantScope->andWhere()));
-            $update->execute($this->tenantScope->bindings($tenantId, [
-                'attempt' => $attempt,
-                'worker_hash' => $workerHash,
-                'lease_hash' => $leaseHash,
-                'lease_seconds' => $leaseSeconds,
-                'id' => $row['id'],
-            ]));
-            if ($update->rowCount() !== 1) {
-                throw TaskJobException::stateConflict();
-            }
-            $insert = $this->pdo->prepare(sprintf(
-                <<<'SQL'
+SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($tenantId, [
+            'attempt' => $attempt,
+            'worker_hash' => $workerHash,
+            'lease_hash' => $leaseHash,
+            'lease_seconds' => $leaseSeconds,
+            'id' => $row['id'],
+        ]));
+        if ($affected !== 1) {
+            throw TaskJobException::stateConflict();
+        }
+        $this->connection->execute(sprintf(
+            <<<'SQL'
 INSERT INTO pa_task_job_attempt (
   %sjob_id, attempt_number, worker_id_hash, lease_token_hash, status, started_at
 ) VALUES (%s:job_id, :attempt, :worker_hash, :lease_hash, 'running', UTC_TIMESTAMP(3))
 SQL,
-                $this->tenantScope->whenTenant('tenant_id, '),
-                $this->tenantScope->whenTenant(':tenant_id, '),
-            ));
-            $insert->execute($this->tenantScope->bindings($tenantId, [
-                'job_id' => $row['id'],
-                'attempt' => $attempt,
-                'worker_hash' => $workerHash,
-                'lease_hash' => $leaseHash,
-            ]));
-            $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.claimed', null, ['attempt' => $attempt]);
-            $this->pdo->commit();
+            $this->tenantScope->whenTenant('tenant_id, '),
+            $this->tenantScope->whenTenant(':tenant_id, '),
+        ), $this->tenantScope->bindings($tenantId, [
+            'job_id' => $row['id'],
+            'attempt' => $attempt,
+            'worker_hash' => $workerHash,
+            'lease_hash' => $leaseHash,
+        ]));
+        $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.claimed', null, ['attempt' => $attempt]);
 
-            return new JobClaim(
-                (int) $row['id'],
-                (string) $row['job_key'],
-                $tenantId,
-                (string) $row['handler_key'],
-                $payload,
-                (string) $row['trusted_envelope'],
-                $attempt,
-                (int) $row['max_attempts'],
-                $leaseToken,
-            );
-        } catch (Throwable $exception) {
-            $this->rollback();
-            throw $exception;
-        }
+        return new JobClaim(
+            (int) $row['id'],
+            (string) $row['job_key'],
+            $tenantId,
+            (string) $row['handler_key'],
+            $payload,
+            (string) $row['trusted_envelope'],
+            $attempt,
+            (int) $row['max_attempts'],
+            $leaseToken,
+        );
     }
 
     public function renew(JobClaim $claim, int $leaseSeconds): void
     {
         $this->assertStorageMode();
         $this->rowById($claim->tenantId, $claim->id, false);
-        $statement = $this->pdo->prepare(sprintf(<<<'SQL'
+        $affected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job
 SET lease_expires_at = TIMESTAMPADD(SECOND, :lease_seconds, UTC_TIMESTAMP(3)), updated_at = UTC_TIMESTAMP(3)
 WHERE id = :id%s AND status = 'running'
   AND lease_token_hash = :lease_hash AND lease_expires_at > UTC_TIMESTAMP(3)
-SQL, $this->tenantScope->andWhere()));
-        $statement->execute($this->tenantScope->bindings($claim->tenantId, [
+SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($claim->tenantId, [
             'lease_seconds' => $leaseSeconds,
             'id' => $claim->id,
             'lease_hash' => hash('sha256', $claim->leaseToken),
         ]));
-        if ($statement->rowCount() !== 1) {
+        if ($affected !== 1) {
             throw TaskJobException::stateConflict();
         }
     }
@@ -341,7 +279,7 @@ SQL, $this->tenantScope->andWhere()));
     public function assertExecutable(JobClaim $claim): void
     {
         $this->assertStorageMode();
-        $statement = $this->pdo->prepare(sprintf(
+        $row = $this->one(sprintf(
             <<<'SQL'
 SELECT job.*,
        job.lease_token_hash AS job_lease_token_hash,
@@ -357,17 +295,15 @@ WHERE job.id = :id%s AND job.status = 'running'
 SQL,
             $this->tenantScope->join('attempt.tenant_id', 'job.tenant_id'),
             $this->tenantScope->andWhere('job.tenant_id'),
-        ));
-        $statement->execute($this->tenantScope->bindings($claim->tenantId, [
+        ), $this->tenantScope->bindings($claim->tenantId, [
             'id' => $claim->id,
             'attempt' => $claim->attemptNumber,
         ]));
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (is_array($row)) {
+        if ($row !== null) {
             $this->tenantScope->tenantId($row, $claim->tenantId);
         }
         $leaseHash = hash('sha256', $claim->leaseToken);
-        if (!is_array($row)
+        if ($row === null
             || (int) $row['lease_valid'] !== 1
             || !is_string($row['job_lease_token_hash'])
             || !is_string($row['attempt_lease_token_hash'])
@@ -404,38 +340,35 @@ SQL,
 
     private function finish(JobClaim $claim, string $outcome, ?string $errorCode, int $backoffSeconds): string
     {
-        $this->begin();
-        try {
-            $row = $this->rowById($claim->tenantId, $claim->id, true);
-            $leaseHash = hash('sha256', $claim->leaseToken);
-            if ($row === null
-                || $row['status'] !== 'running'
-                || !is_string($row['lease_token_hash'])
-                || !hash_equals($row['lease_token_hash'], $leaseHash)
-                || (int) $row['attempt_count'] !== $claim->attemptNumber
-            ) {
-                throw TaskJobException::stateConflict();
-            }
-            $canRetry = $outcome === 'retry' && $claim->attemptNumber < (int) $row['max_attempts'];
-            $jobStatus = $outcome === 'succeeded' ? 'succeeded' : ($canRetry ? 'queued' : 'dead');
-            $attemptStatus = $outcome === 'succeeded' ? 'succeeded' : ($canRetry ? 'retry' : 'dead');
-            $attempt = $this->pdo->prepare(sprintf(<<<'SQL'
+        $row = $this->rowById($claim->tenantId, $claim->id, true);
+        $leaseHash = hash('sha256', $claim->leaseToken);
+        if ($row === null
+            || $row['status'] !== 'running'
+            || !is_string($row['lease_token_hash'])
+            || !hash_equals($row['lease_token_hash'], $leaseHash)
+            || (int) $row['attempt_count'] !== $claim->attemptNumber
+        ) {
+            throw TaskJobException::stateConflict();
+        }
+        $canRetry = $outcome === 'retry' && $claim->attemptNumber < (int) $row['max_attempts'];
+        $jobStatus = $outcome === 'succeeded' ? 'succeeded' : ($canRetry ? 'queued' : 'dead');
+        $attemptStatus = $outcome === 'succeeded' ? 'succeeded' : ($canRetry ? 'retry' : 'dead');
+        $attemptAffected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job_attempt
 SET status = :status, error_code = :error_code, completed_at = UTC_TIMESTAMP(3)
 WHERE %s
   AND status = 'running' AND lease_token_hash = :lease_hash
-SQL, $this->tenantScope->where('job_id = :job_id AND attempt_number = :attempt')));
-            $attempt->execute($this->tenantScope->bindings($claim->tenantId, [
-                'status' => $attemptStatus,
-                'error_code' => $errorCode,
-                'job_id' => $claim->id,
-                'attempt' => $claim->attemptNumber,
-                'lease_hash' => $leaseHash,
-            ]));
-            if ($attempt->rowCount() !== 1) {
-                throw TaskJobException::stateConflict();
-            }
-            $job = $this->pdo->prepare(sprintf(<<<'SQL'
+SQL, $this->tenantScope->where('job_id = :job_id AND attempt_number = :attempt')), $this->tenantScope->bindings($claim->tenantId, [
+            'status' => $attemptStatus,
+            'error_code' => $errorCode,
+            'job_id' => $claim->id,
+            'attempt' => $claim->attemptNumber,
+            'lease_hash' => $leaseHash,
+        ]));
+        if ($attemptAffected !== 1) {
+            throw TaskJobException::stateConflict();
+        }
+        $jobAffected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job
 SET status = :status, available_at = TIMESTAMPADD(SECOND, :backoff, UTC_TIMESTAMP(3)),
     lease_owner_hash = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
@@ -443,38 +376,32 @@ SET status = :status, available_at = TIMESTAMPADD(SECOND, :backoff, UTC_TIMESTAM
     revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
 WHERE id = :id%s AND status = 'running'
   AND lease_token_hash = :lease_hash AND lease_expires_at > UTC_TIMESTAMP(3)
-SQL, $this->tenantScope->andWhere()));
-            $job->execute($this->tenantScope->bindings($claim->tenantId, [
-                'status' => $jobStatus,
-                'backoff' => $canRetry ? $backoffSeconds : 0,
-                'error_code' => $errorCode,
-                'completed_at' => $jobStatus === 'queued' ? null : $this->now(),
-                'id' => $claim->id,
-                'lease_hash' => $leaseHash,
-            ]));
-            if ($job->rowCount() !== 1) {
-                throw TaskJobException::stateConflict();
-            }
-            $event = $jobStatus === 'queued' ? 'tenant.task.retry_scheduled' : 'tenant.task.' . $jobStatus;
-            $metadata = ['attempt' => $claim->attemptNumber];
-            if ($errorCode !== null) {
-                $metadata['error_code'] = $errorCode;
-            }
-            if ($canRetry) {
-                $metadata['backoff_seconds'] = $backoffSeconds;
-            }
-            $this->insertEvent($claim->tenantId, $claim->id, $event, null, $metadata);
-            $this->pdo->commit();
-            return $jobStatus;
-        } catch (Throwable $exception) {
-            $this->rollback();
-            throw $exception;
+SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($claim->tenantId, [
+            'status' => $jobStatus,
+            'backoff' => $canRetry ? $backoffSeconds : 0,
+            'error_code' => $errorCode,
+            'completed_at' => $jobStatus === 'queued' ? null : $this->now(),
+            'id' => $claim->id,
+            'lease_hash' => $leaseHash,
+        ]));
+        if ($jobAffected !== 1) {
+            throw TaskJobException::stateConflict();
         }
+        $event = $jobStatus === 'queued' ? 'tenant.task.retry_scheduled' : 'tenant.task.' . $jobStatus;
+        $metadata = ['attempt' => $claim->attemptNumber];
+        if ($errorCode !== null) {
+            $metadata['error_code'] = $errorCode;
+        }
+        if ($canRetry) {
+            $metadata['backoff_seconds'] = $backoffSeconds;
+        }
+        $this->insertEvent($claim->tenantId, $claim->id, $event, null, $metadata);
+        return $jobStatus;
     }
 
     private function recoverExpired(int $tenantId): void
     {
-        $statement = $this->pdo->prepare(sprintf(
+        $rows = $this->connection->query(sprintf(
             <<<'SQL'
 SELECT job.*,
        job.lease_token_hash AS job_lease_token_hash,
@@ -490,9 +417,8 @@ ORDER BY job.id ASC FOR UPDATE
 SQL,
             $this->tenantScope->join('attempt.tenant_id', 'job.tenant_id'),
             $this->tenantScope->where("job.status = 'running'", 'job.tenant_id'),
-        ));
-        $statement->execute($this->tenantScope->bindings($tenantId));
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        ), $this->tenantScope->bindings($tenantId));
+        foreach ($rows as $row) {
             $this->tenantScope->tenantId($row, $tenantId);
             if (!is_string($row['job_lease_token_hash'])
                 || !is_string($row['attempt_lease_token_hash'])
@@ -501,35 +427,33 @@ SQL,
                 throw TaskJobException::internal();
             }
             $dead = (int) $row['attempt_count'] >= (int) $row['max_attempts'];
-            $attempt = $this->pdo->prepare(sprintf(<<<'SQL'
+            $attemptAffected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job_attempt
 SET status = 'abandoned', error_code = 'TASK_LEASE_EXPIRED', completed_at = UTC_TIMESTAMP(3)
 WHERE %s
   AND status = 'running' AND lease_token_hash = :lease_hash
-SQL, $this->tenantScope->where('job_id = :job_id AND attempt_number = :attempt')));
-            $attempt->execute($this->tenantScope->bindings($tenantId, [
+SQL, $this->tenantScope->where('job_id = :job_id AND attempt_number = :attempt')), $this->tenantScope->bindings($tenantId, [
                 'job_id' => $row['id'],
                 'attempt' => $row['attempt_count'],
                 'lease_hash' => $row['job_lease_token_hash'],
             ]));
-            if ($attempt->rowCount() !== 1) {
+            if ($attemptAffected !== 1) {
                 throw TaskJobException::internal();
             }
-            $update = $this->pdo->prepare(sprintf(<<<'SQL'
+            $updateAffected = $this->connection->execute(sprintf(<<<'SQL'
 UPDATE pa_task_job
 SET status = :status, available_at = UTC_TIMESTAMP(3), lease_owner_hash = NULL,
     lease_token_hash = NULL, lease_expires_at = NULL, last_error_code = 'TASK_LEASE_EXPIRED',
     completed_at = :completed_at, revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
 WHERE %s
   AND lease_token_hash = :lease_hash AND lease_expires_at <= UTC_TIMESTAMP(3)
-SQL, $this->tenantScope->where("id = :id AND status = 'running'")));
-            $update->execute($this->tenantScope->bindings($tenantId, [
+SQL, $this->tenantScope->where("id = :id AND status = 'running'")), $this->tenantScope->bindings($tenantId, [
                 'status' => $dead ? 'dead' : 'queued',
                 'completed_at' => $dead ? $this->now() : null,
                 'id' => $row['id'],
                 'lease_hash' => $row['job_lease_token_hash'],
             ]));
-            if ($update->rowCount() !== 1) {
+            if ($updateAffected !== 1) {
                 throw TaskJobException::stateConflict();
             }
             $this->insertEvent($tenantId, (int) $row['id'], $dead ? 'tenant.task.dead' : 'tenant.task.lease_recovered', null, [
@@ -542,31 +466,29 @@ SQL, $this->tenantScope->where("id = :id AND status = 'running'")));
     /** @return array<string, mixed>|null */
     private function rowById(int $tenantId, int $id, bool $lock): ?array
     {
-        $statement = $this->pdo->prepare(
+        $row = $this->one(
             'SELECT * FROM pa_task_job WHERE ' . $this->tenantScope->where('id = :id')
             . ($lock ? ' FOR UPDATE' : ''),
+            $this->tenantScope->bindings($tenantId, ['id' => $id]),
         );
-        $statement->execute($this->tenantScope->bindings($tenantId, ['id' => $id]));
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (is_array($row)) {
+        if ($row !== null) {
             $this->tenantScope->tenantId($row, $tenantId);
         }
-        return is_array($row) ? $row : null;
+        return $row;
     }
 
     /** @return array<string, mixed>|null */
     private function rowByJobKey(int $tenantId, string $jobKey, bool $lock): ?array
     {
-        $statement = $this->pdo->prepare(
+        $row = $this->one(
             'SELECT * FROM pa_task_job WHERE ' . $this->tenantScope->where('job_key = :job_key')
             . ($lock ? ' FOR UPDATE' : ''),
+            $this->tenantScope->bindings($tenantId, ['job_key' => $jobKey]),
         );
-        $statement->execute($this->tenantScope->bindings($tenantId, ['job_key' => $jobKey]));
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (is_array($row)) {
+        if ($row !== null) {
             $this->tenantScope->tenantId($row, $tenantId);
         }
-        return is_array($row) ? $row : null;
+        return $row;
     }
 
     /** @param array<string, bool|int|string|null> $metadata */
@@ -577,15 +499,14 @@ SQL, $this->tenantScope->where("id = :id AND status = 'running'")));
         } catch (JsonException) {
             throw TaskJobException::internal();
         }
-        $statement = $this->pdo->prepare(sprintf(
+        $this->connection->execute(sprintf(
             <<<'SQL'
 INSERT INTO pa_task_job_event (%sjob_id, event_key, actor_member_id, metadata_json, occurred_at)
 VALUES (%s:job_id, :event_key, :actor_member_id, :metadata_json, UTC_TIMESTAMP(3))
 SQL,
             $this->tenantScope->whenTenant('tenant_id, '),
             $this->tenantScope->whenTenant(':tenant_id, '),
-        ));
-        $statement->execute($this->tenantScope->bindings($tenantId, [
+        ), $this->tenantScope->bindings($tenantId, [
             'job_id' => $jobId,
             'event_key' => $event,
             'actor_member_id' => $memberId,
@@ -610,19 +531,16 @@ SQL,
     /** @return array<string, mixed>|null */
     private function idempotentRow(int $tenantId, int $memberId, string $taskType, string $keyHash, bool $lock): ?array
     {
-        $statement = $this->pdo->prepare(sprintf(<<<SQL
+        return $this->one(sprintf(<<<SQL
 SELECT * FROM pa_task_job
 WHERE %s
   AND task_type = :task_type AND idempotency_key_hash = :key_hash
 LIMIT 1{$this->lock($lock)}
-SQL, $this->tenantScope->where('created_by_member_id = :member_id')));
-        $statement->execute($this->tenantScope->bindings($tenantId, [
+SQL, $this->tenantScope->where('created_by_member_id = :member_id')), $this->tenantScope->bindings($tenantId, [
             'member_id' => $memberId,
             'task_type' => $taskType,
             'key_hash' => $keyHash,
         ]));
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        return is_array($row) ? $row : null;
     }
 
     private function lock(bool $lock): string
@@ -664,7 +582,10 @@ SQL, $this->tenantScope->where('created_by_member_id = :member_id')));
         return $value;
     }
 
-    /** @param array<string, mixed> $row @param array<string, mixed> $payload */
+    /**
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $payload
+     */
     private function assertPayloadHash(array $row, array $payload): void
     {
         $stored = $row['payload_hash'] ?? null;
@@ -700,37 +621,48 @@ SQL, $this->tenantScope->where('created_by_member_id = :member_id')));
         return $value;
     }
 
-    private function begin(): void
-    {
-        if ($this->pdo->inTransaction() || !$this->pdo->beginTransaction()) {
-            throw TaskJobException::internal();
-        }
-    }
-
     private function assertStorageMode(): void
     {
-        $this->tenantScope->assertStorageMode($this->pdo, [
+        $this->tenantScope->assertStorageMode($this->connection->connect(), [
             'pa_task_job',
             'pa_task_job_attempt',
             'pa_task_job_event',
         ]);
     }
 
-    private function rollback(): void
-    {
-        if ($this->pdo->inTransaction()) {
-            $this->pdo->rollBack();
-        }
-    }
-
     private function now(): string
     {
-        $statement = $this->pdo->query('SELECT UTC_TIMESTAMP(3)');
-        $value = $statement === false ? false : $statement->fetchColumn();
+        $value = $this->one('SELECT UTC_TIMESTAMP(3) AS current_time')['current_time'] ?? null;
         if (!is_string($value)) {
             throw TaskJobException::internal();
         }
         return $value;
+    }
+
+    private function lastInsertId(): int
+    {
+        $id = $this->one('SELECT LAST_INSERT_ID() AS id')['id'] ?? null;
+        if ((!is_int($id) && !(is_string($id) && ctype_digit($id))) || (int) $id < 1) {
+            throw TaskJobException::internal();
+        }
+        return (int) $id;
+    }
+
+    /**
+     * @param array<string, mixed> $parameters
+     * @return array<string, mixed>|null
+     */
+    private function one(string $sql, array $parameters = []): ?array
+    {
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
+        return is_array($row) ? $row : null;
+    }
+
+    private function isDuplicate(PDOException $exception): bool
+    {
+        $error = $exception->getData()['PDO Error Info'] ?? [];
+        return (string) ($error['SQLSTATE'] ?? $exception->getCode()) === '23000'
+            && (int) ($error['Driver Error Code'] ?? 0) === 1062;
     }
 
     private function timestamp(mixed $value): string

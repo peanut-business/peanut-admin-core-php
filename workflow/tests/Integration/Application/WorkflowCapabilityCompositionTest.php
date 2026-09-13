@@ -53,7 +53,7 @@ use PeanutAdmin\NotificationSms\Database\Schema as NotificationSchema;
 use PeanutAdmin\NotificationSms\Package as NotificationPackage;
 use PeanutAdmin\NotificationSms\Persistence\NotificationStore;
 use PeanutAdmin\TaskJob\Database\Schema as TaskJobSchema;
-use PeanutAdmin\TaskJob\Persistence\PdoTaskJobRepository;
+use PeanutAdmin\TaskJob\Persistence\TaskJobStore;
 use PeanutAdmin\TaskJob\Submission\TaskSubmission;
 use PeanutAdmin\TaskJob\Submission\TaskSubmissionProvider;
 use PeanutAdmin\TaskJob\Submission\TaskSubmissionRegistry;
@@ -75,6 +75,7 @@ use PeanutAdmin\Workflow\Package as WorkflowPackage;
 use PeanutAdmin\Workflow\Persistence\WorkflowStore;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
+use think\db\PDOConnection;
 use Throwable;
 
 require_once dirname(__DIR__, 4) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
@@ -104,6 +105,7 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
     private CapabilityWorkflowAuthorization $workflowAuthorization;
     private NotificationService $notifications;
     private TrustedJobPublisher $tasks;
+    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -127,16 +129,17 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
         }
         $this->createHostFixtureTables();
         $this->seedAuthorities();
-        $notificationConnection = ThinkPhpTestConnection::fromPdo($this->database);
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->notifications = new NotificationService(
-            new NotificationStore($notificationConnection),
-            new ThinkPhpTransactionManager($notificationConnection),
+            new NotificationStore($this->connection),
+            new ThinkPhpTransactionManager($this->connection),
             new CapabilityRecipientResolver($this->database),
             new CapabilityNotificationAttachments(),
             new TemplateRenderer(),
         );
         $this->tasks = new TrustedJobPublisher(
-            new PdoTaskJobRepository($this->database),
+            new TaskJobStore($this->connection),
+            new ThinkPhpTransactionManager($this->connection),
             new TaskSubmissionRegistry([new CapabilityTaskSubmissionProvider()]),
             new TrustedEnvelopeCodec(self::ENVELOPE_KEY),
         );
@@ -271,7 +274,8 @@ SQL);
         );
 
         $wrongTaskContext = new TrustedJobPublisher(
-            new PdoTaskJobRepository($this->database),
+            new TaskJobStore($this->connection),
+            new ThinkPhpTransactionManager($this->connection),
             new TaskSubmissionRegistry([new MismatchedCapabilityTaskSubmissionProvider()]),
             new TrustedEnvelopeCodec(self::ENVELOPE_KEY),
         );
@@ -404,11 +408,9 @@ SQL);
 
     private function runtime(CapabilityWorkflowPublisher $publisher): WorkflowRuntime
     {
-        $connection = ThinkPhpTestConnection::fromPdo($this->database);
-
         return new WorkflowRuntime(
-            new WorkflowStore($connection),
-            new ThinkPhpTransactionManager($connection),
+            new WorkflowStore($this->connection),
+            new ThinkPhpTransactionManager($this->connection),
             new PdoIdempotencyRepository($this->database),
             new PdoAuditRepository($this->database),
             new CapabilityWorkflowAssignments($this->database),

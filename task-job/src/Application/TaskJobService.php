@@ -5,14 +5,16 @@ declare(strict_types=1);
 namespace PeanutAdmin\TaskJob\Application;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\TaskJob\Persistence\PdoTaskJobRepository;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use PeanutAdmin\TaskJob\Persistence\TaskJobStore;
 
 final readonly class TaskJobService
 {
     public const RESOURCE_KEY = 'peanut.task-job';
 
     public function __construct(
-        private PdoTaskJobRepository $repository,
+        private TaskJobStore $repository,
+        private TransactionManager $transactions,
     ) {}
 
     /** @return array{items: list<JobRecord>, page: int, page_size: int, total: int} */
@@ -40,7 +42,9 @@ final readonly class TaskJobService
         if ($revision < 1) {
             throw TaskJobException::invalid();
         }
-        return $this->repository->cancel($context->tenantContext->tenantId, $context->tenantContext->memberId, $jobKey, $revision);
+        return $this->transactions->run(
+            fn(): JobRecord => $this->repository->cancel($context->tenantContext->tenantId, $context->tenantContext->memberId, $jobKey, $revision),
+        );
     }
 
     public function retry(AuthorizedOperationContext $context, string $jobKey, int $revision): JobRecord
@@ -50,7 +54,9 @@ final readonly class TaskJobService
         if ($revision < 1) {
             throw TaskJobException::invalid();
         }
-        return $this->repository->retryDead($context->tenantContext->tenantId, $context->tenantContext->memberId, $jobKey, $revision);
+        return $this->transactions->run(
+            fn(): JobRecord => $this->repository->retryDead($context->tenantContext->tenantId, $context->tenantContext->memberId, $jobKey, $revision),
+        );
     }
 
     private function assertOperation(AuthorizedOperationContext $context, string $operation): void

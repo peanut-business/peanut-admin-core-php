@@ -7,14 +7,16 @@ namespace PeanutAdmin\TaskJob\Submission;
 use JsonException;
 use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use PeanutAdmin\TaskJob\Application\JobRecord;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
-use PeanutAdmin\TaskJob\Persistence\PdoTaskJobRepository;
+use PeanutAdmin\TaskJob\Persistence\TaskJobStore;
 
 final readonly class TrustedJobPublisher
 {
     public function __construct(
-        private PdoTaskJobRepository $repository,
+        private TaskJobStore $repository,
+        private TransactionManager $transactions,
         private TaskSubmissionRegistry $submissions,
         private TrustedEnvelopeCodec $envelopes,
     ) {}
@@ -54,18 +56,20 @@ final readonly class TrustedJobPublisher
             'max_attempts' => $submission->maxAttempts,
             'initial_delay_seconds' => $submission->initialDelaySeconds,
         ]));
-        $job = $this->repository->enqueue(
-            $context->tenantContext->tenantId,
-            $context->tenantContext->memberId,
-            $jobKey,
-            $taskType,
-            $submission->handlerKey,
-            $payload,
-            $this->envelopes->issue($context, $jobKey, $context->tenantContext->requestId),
-            hash('sha256', $idempotencyKey),
-            $requestHash,
-            $submission->maxAttempts,
-            $submission->initialDelaySeconds,
+        $job = $this->transactions->run(
+            fn(): JobRecord => $this->repository->enqueue(
+                $context->tenantContext->tenantId,
+                $context->tenantContext->memberId,
+                $jobKey,
+                $taskType,
+                $submission->handlerKey,
+                $payload,
+                $this->envelopes->issue($context, $jobKey, $context->tenantContext->requestId),
+                hash('sha256', $idempotencyKey),
+                $requestHash,
+                $submission->maxAttempts,
+                $submission->initialDelaySeconds,
+            ),
         );
         return $job;
     }
@@ -86,9 +90,6 @@ final readonly class TrustedJobPublisher
                 ksort($value, SORT_STRING);
             }
             foreach ($value as $key => $item) {
-                if (!is_int($key) && !is_string($key)) {
-                    throw TaskJobException::invalid();
-                }
                 $value[$key] = $this->normalize($item, $depth + 1);
             }
             return $value;
