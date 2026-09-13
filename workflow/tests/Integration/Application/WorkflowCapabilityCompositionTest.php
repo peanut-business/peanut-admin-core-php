@@ -7,6 +7,7 @@ namespace PeanutAdmin\Workflow\Tests\Integration\Application;
 use DateTimeImmutable;
 use PDO;
 use PDOException;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\DataPermission\Catalog\PdoResourceOperationCatalog;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
@@ -37,6 +38,9 @@ use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
+use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
+use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
 use PeanutAdmin\NotificationSms\Application\AttachmentResolver as NotificationAttachmentResolver;
@@ -68,6 +72,7 @@ use PeanutAdmin\Workflow\Application\WorkflowException;
 use PeanutAdmin\Workflow\Application\WorkflowRuntime;
 use PeanutAdmin\Workflow\Database\Schema as WorkflowSchema;
 use PeanutAdmin\Workflow\Package as WorkflowPackage;
+use PeanutAdmin\Workflow\Persistence\WorkflowStore;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 use Throwable;
@@ -397,8 +402,13 @@ SQL);
 
     private function runtime(CapabilityWorkflowPublisher $publisher): WorkflowRuntime
     {
+        $connection = ThinkPhpTestConnection::fromPdo($this->database);
+
         return new WorkflowRuntime(
-            $this->database,
+            new WorkflowStore($connection),
+            new ThinkPhpTransactionManager($connection),
+            new PdoIdempotencyRepository($this->database),
+            new PdoAuditRepository($this->database),
             new CapabilityWorkflowAssignments($this->database),
             $this->workflowAuthorization,
             new CapabilitySubjectRevisionResolver($this->database),
@@ -777,11 +787,6 @@ final class CapabilityWorkflowAuthorization implements WorkflowAuthorizationReso
         private readonly DataPermissionEngine $data,
     ) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function authorize(
         AuthorizedOperationContext $trustedBasis,
         string $resourceKey,
@@ -861,11 +866,6 @@ final readonly class CapabilityWorkflowAssignments implements WorkflowAssignment
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function resolve(
         AuthorizedOperationContext $context,
         array $rules,
@@ -904,11 +904,6 @@ final readonly class CapabilitySubjectRevisionResolver implements WorkflowSubjec
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function resolve(
         AuthorizedOperationContext $context,
         string $subjectType,
@@ -940,11 +935,6 @@ final readonly class CapabilityWorkflowAttachments implements WorkflowAttachment
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function snapshot(AuthorizedOperationContext $context, string $fileKey): WorkflowAttachment
     {
         throw WorkflowException::attachmentUnavailable();
@@ -963,19 +953,13 @@ final class CapabilityWorkflowPublisher implements WorkflowSideEffectPublisher
         private readonly TrustedJobPublisher $tasks,
     ) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function publish(
-        PDO $pdo,
         AuthorizedOperationContext $context,
         WorkflowTransitionEffects $effects,
         string $parentIdempotencyKey,
     ): void {
         ++$this->publishCalls;
-        if ($pdo !== $this->pdo || !$pdo->inTransaction()) {
+        if (!$this->pdo->inTransaction()) {
             throw WorkflowException::providerUnavailable();
         }
         try {

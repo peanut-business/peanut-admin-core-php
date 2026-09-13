@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Workflow\Application;
 
-use PDO;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
@@ -14,28 +13,15 @@ use PeanutAdmin\Workflow\Definition\WorkflowDefinitionVersion;
 use PeanutAdmin\Workflow\Instance\WorkflowEvent;
 use PeanutAdmin\Workflow\Instance\WorkflowInstance;
 use PeanutAdmin\Workflow\Package;
-use PeanutAdmin\Workflow\Persistence\PdoWorkflowRepository;
+use PeanutAdmin\Workflow\Persistence\WorkflowRepository;
 use Throwable;
 
 final readonly class WorkflowQueryService
 {
-    private PdoWorkflowRepository $repository;
-
     public function __construct(
-        PDO $pdo,
+        private WorkflowRepository $repository,
         private WorkflowAuthorizationResolver $authorization,
-    ) {
-        try {
-            if ($authorization->connection() !== $pdo) {
-                throw WorkflowException::providerUnavailable();
-            }
-        } catch (WorkflowException $exception) {
-            throw $exception;
-        } catch (Throwable) {
-            throw WorkflowException::internal();
-        }
-        $this->repository = new PdoWorkflowRepository($pdo);
-    }
+    ) {}
 
     /** @return array<string, mixed> */
     public function definition(

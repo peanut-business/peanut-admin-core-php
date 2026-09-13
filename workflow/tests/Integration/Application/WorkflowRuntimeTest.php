@@ -6,6 +6,7 @@ namespace PeanutAdmin\Workflow\Tests\Integration\Application;
 
 use DateTimeImmutable;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
@@ -13,7 +14,10 @@ use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
+use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
+use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
 use PeanutAdmin\Kernel\Persistence\Schema\KernelSchema;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PeanutAdmin\Workflow\Adapter\WorkflowAssignmentResolver;
 use PeanutAdmin\Workflow\Adapter\WorkflowAttachment;
 use PeanutAdmin\Workflow\Adapter\WorkflowAttachmentResolver;
@@ -28,6 +32,7 @@ use PeanutAdmin\Workflow\Application\WorkflowRuntime;
 use PeanutAdmin\Workflow\Database\Schema;
 use PeanutAdmin\Workflow\Definition\WorkflowGraph;
 use PeanutAdmin\Workflow\Package;
+use PeanutAdmin\Workflow\Persistence\WorkflowStore;
 use PeanutAdmin\Workflow\Tests\Unit\Definition\WorkflowGraphTest;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
@@ -152,7 +157,7 @@ final class WorkflowRuntimeTest extends TestCase
     {
         $pdo = new PDO('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
         $context = $this->tenantContext(1, 11, 101, 'req_workflow_query');
-        $query = new WorkflowQueryService($pdo, new AllowingWorkflowAuthorization($pdo));
+        $query = $this->queryFor($pdo, new AllowingWorkflowAuthorization($pdo));
 
         try {
             $query->definition($this->definitionContext($context, 'read'), 'module.sample', 'approval');
@@ -174,8 +179,7 @@ final class WorkflowRuntimeTest extends TestCase
             ->execute([$tenantId]);
         $tenantContext = $this->tenantContext($tenantId, 11, 101, 'req_workflow_runtime');
         $publisher = new RecordingWorkflowPublisher($this->pdo);
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -262,8 +266,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [$tenantId, $context] = $this->seedTenantContext('req_workflow_assignment');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -316,8 +319,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_failure');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -381,8 +383,7 @@ final class WorkflowRuntimeTest extends TestCase
         $this->pdo->prepare("INSERT INTO pa_tenant_member (id, tenant_id, account_id, status) VALUES (12, ?, 102, 'active')")
             ->execute([$tenantId]);
         $secondContext = $this->tenantContext($tenantId, 12, 102, 'req_workflow_all_second');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new DeclaredWorkflowAssignments($this->pdo),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -492,8 +493,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_return');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -599,8 +599,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_boundaries');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -720,8 +719,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_concurrent_seed');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -770,7 +768,7 @@ final class WorkflowRuntimeTest extends TestCase
                 fread($sockets[1], 1);
                 try {
                     $pdo = $this->connection();
-                    $childRuntime = new WorkflowRuntime(
+                    $childRuntime = $this->runtimeFor(
                         $pdo,
                         new FixedWorkflowAssignments($pdo, 11),
                         new AllowingWorkflowAuthorization($pdo),
@@ -840,8 +838,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_failure_matrix');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -963,8 +960,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_remaining_checkpoints');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -1141,8 +1137,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_queries');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -1182,7 +1177,7 @@ final class WorkflowRuntimeTest extends TestCase
             [],
             'workflow-query-start',
         );
-        $query = new WorkflowQueryService($this->pdo, new AllowingWorkflowAuthorization($this->pdo));
+        $query = $this->queryFor($this->pdo, new AllowingWorkflowAuthorization($this->pdo));
 
         $definition = $query->definition(
             $this->definitionContext($context, 'read'),
@@ -1276,8 +1271,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_corruption');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -1309,7 +1303,7 @@ final class WorkflowRuntimeTest extends TestCase
             [],
             'workflow-corruption-start',
         );
-        $query = new WorkflowQueryService($this->pdo, new AllowingWorkflowAuthorization($this->pdo));
+        $query = $this->queryFor($this->pdo, new AllowingWorkflowAuthorization($this->pdo));
         $graphDigest = WorkflowGraph::fromArray(WorkflowGraphTest::validGraph())->sha256;
 
         $this->pdo->exec("UPDATE pa_workflow_definition SET draft_graph_sha256 = '" . str_repeat('0', 64) . "'");
@@ -1360,8 +1354,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_query_authz');
-        $runtime = new WorkflowRuntime(
-            $this->pdo,
+        $runtime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -1393,7 +1386,7 @@ final class WorkflowRuntimeTest extends TestCase
             [],
             'workflow-query-authz-start',
         );
-        $query = new WorkflowQueryService($this->pdo, new DenyingWorkflowAuthorization($this->pdo));
+        $query = $this->queryFor($this->pdo, new DenyingWorkflowAuthorization($this->pdo));
 
         try {
             $query->instance($this->definitionContext($context, 'read'), (string) $started->instanceKey);
@@ -1410,8 +1403,7 @@ final class WorkflowRuntimeTest extends TestCase
             self::markTestSkipped('Run through P1-WORKFLOW-RUNTIME-001 MySQL qualification.');
         }
         [, $context] = $this->seedTenantContext('req_workflow_attachment');
-        $setupRuntime = new WorkflowRuntime(
-            $this->pdo,
+        $setupRuntime = $this->runtime(
             new FixedWorkflowAssignments($this->pdo, 11),
             new AllowingWorkflowAuthorization($this->pdo),
             new FixedWorkflowSubject($this->pdo),
@@ -1435,8 +1427,7 @@ final class WorkflowRuntimeTest extends TestCase
         );
 
         foreach (['archived', 'cross-tenant'] as $index => $reason) {
-            $runtime = new WorkflowRuntime(
-                $this->pdo,
+            $runtime = $this->runtime(
                 new FixedWorkflowAssignments($this->pdo, 11),
                 new AllowingWorkflowAuthorization($this->pdo),
                 new FixedWorkflowSubject($this->pdo),
@@ -1509,6 +1500,54 @@ final class WorkflowRuntimeTest extends TestCase
             ->execute([$memberId, $tenantId, $accountId]);
 
         return [$tenantId, $this->tenantContext($tenantId, $memberId, $accountId, $requestId)];
+    }
+
+    private function runtime(
+        WorkflowAssignmentResolver $assignments,
+        WorkflowAuthorizationResolver $authorization,
+        WorkflowSubjectRevisionResolver $subjects,
+        WorkflowAttachmentResolver $attachments,
+        WorkflowSideEffectPublisher $sideEffects,
+    ): WorkflowRuntime {
+        return $this->runtimeFor(
+            $this->pdo,
+            $assignments,
+            $authorization,
+            $subjects,
+            $attachments,
+            $sideEffects,
+        );
+    }
+
+    private function runtimeFor(
+        PDO $pdo,
+        WorkflowAssignmentResolver $assignments,
+        WorkflowAuthorizationResolver $authorization,
+        WorkflowSubjectRevisionResolver $subjects,
+        WorkflowAttachmentResolver $attachments,
+        WorkflowSideEffectPublisher $sideEffects,
+    ): WorkflowRuntime {
+        $connection = ThinkPhpTestConnection::fromPdo($pdo);
+
+        return new WorkflowRuntime(
+            new WorkflowStore($connection),
+            new ThinkPhpTransactionManager($connection),
+            new PdoIdempotencyRepository($pdo),
+            new PdoAuditRepository($pdo),
+            $assignments,
+            $authorization,
+            $subjects,
+            $attachments,
+            $sideEffects,
+        );
+    }
+
+    private function queryFor(PDO $pdo, WorkflowAuthorizationResolver $authorization): WorkflowQueryService
+    {
+        return new WorkflowQueryService(
+            new WorkflowStore(ThinkPhpTestConnection::fromPdo($pdo)),
+            $authorization,
+        );
     }
 
     private function createKernelFixtures(): void
@@ -1677,11 +1716,6 @@ final readonly class FixedWorkflowAssignments implements WorkflowAssignmentResol
 {
     public function __construct(private PDO $pdo, private int $memberId) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function resolve(
         AuthorizedOperationContext $context,
         array $rules,
@@ -1695,11 +1729,6 @@ final readonly class FixedWorkflowAssignments implements WorkflowAssignmentResol
 final readonly class DeclaredWorkflowAssignments implements WorkflowAssignmentResolver
 {
     public function __construct(private PDO $pdo) {}
-
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
 
     public function resolve(
         AuthorizedOperationContext $context,
@@ -1727,11 +1756,6 @@ final readonly class AllowingWorkflowAuthorization implements WorkflowAuthorizat
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function authorize(
         AuthorizedOperationContext $trustedBasis,
         string $resourceKey,
@@ -1753,11 +1777,6 @@ final readonly class DenyingWorkflowAuthorization implements WorkflowAuthorizati
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function authorize(
         AuthorizedOperationContext $trustedBasis,
         string $resourceKey,
@@ -1773,11 +1792,6 @@ final readonly class FixedWorkflowSubject implements WorkflowSubjectRevisionReso
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function resolve(
         AuthorizedOperationContext $context,
         string $subjectType,
@@ -1792,11 +1806,6 @@ final readonly class EmptyWorkflowAttachments implements WorkflowAttachmentResol
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function snapshot(AuthorizedOperationContext $context, string $fileKey): WorkflowAttachment
     {
         throw new RuntimeException('The runtime test declares no attachment keys.');
@@ -1806,11 +1815,6 @@ final readonly class EmptyWorkflowAttachments implements WorkflowAttachmentResol
 final readonly class RejectingWorkflowAttachments implements WorkflowAttachmentResolver
 {
     public function __construct(private PDO $pdo) {}
-
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
 
     public function snapshot(AuthorizedOperationContext $context, string $fileKey): WorkflowAttachment
     {
@@ -1824,19 +1828,13 @@ final class RecordingWorkflowPublisher implements WorkflowSideEffectPublisher
 
     public function __construct(private readonly PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function publish(
-        PDO $pdo,
         AuthorizedOperationContext $context,
         WorkflowTransitionEffects $effects,
         string $parentIdempotencyKey,
     ): void {
-        if ($pdo !== $this->pdo) {
-            throw new RuntimeException('Workflow side effects must use the command PDO.');
+        if (!$this->pdo->inTransaction()) {
+            throw new RuntimeException('Workflow side effects require the command transaction.');
         }
         ++$this->publishCount;
     }
@@ -1846,13 +1844,7 @@ final readonly class FailingWorkflowPublisher implements WorkflowSideEffectPubli
 {
     public function __construct(private PDO $pdo) {}
 
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
-
     public function publish(
-        PDO $pdo,
         AuthorizedOperationContext $context,
         WorkflowTransitionEffects $effects,
         string $parentIdempotencyKey,

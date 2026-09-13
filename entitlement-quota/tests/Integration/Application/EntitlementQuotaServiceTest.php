@@ -7,6 +7,7 @@ namespace PeanutAdmin\EntitlementQuota\Tests\Integration\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\EntitlementQuota\Application\EntitlementQuotaException;
 use PeanutAdmin\EntitlementQuota\Application\EntitlementQuotaReceipt;
 use PeanutAdmin\EntitlementQuota\Application\EntitlementQuotaService;
@@ -16,7 +17,7 @@ use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeterRegistry;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementPolicyProvider;
 use PeanutAdmin\EntitlementQuota\Database\Schema;
 use PeanutAdmin\EntitlementQuota\Package;
-use PeanutAdmin\EntitlementQuota\Persistence\PdoEntitlementQuotaRepository;
+use PeanutAdmin\EntitlementQuota\Persistence\EntitlementQuotaStore;
 use PeanutAdmin\Kernel\Auth\Clock;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
@@ -24,11 +25,15 @@ use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
+use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
+use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
 use PeanutAdmin\Kernel\Persistence\Schema\KernelSchema;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ReflectionMethod;
 use RuntimeException;
+use think\db\PDOConnection;
 
 final class EntitlementQuotaServiceTest extends TestCase
 {
@@ -39,6 +44,7 @@ final class EntitlementQuotaServiceTest extends TestCase
 
     private PDO $admin;
     private PDO $pdo;
+    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -67,6 +73,8 @@ final class EntitlementQuotaServiceTest extends TestCase
             $password,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
         );
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->pdo);
+        $this->pdo = $this->connection->connect();
         $this->createKernelFixtures();
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
@@ -301,9 +309,12 @@ final class EntitlementQuotaServiceTest extends TestCase
         $authorized = $this->quotaContext($context, self::TARGET_KEY);
 
         $missingRegistry = new EntitlementQuotaService(
-            new PdoEntitlementQuotaRepository($this->pdo),
+            new EntitlementQuotaStore($this->connection),
             new FixedEntitlementMeterRegistry(null),
             new MutableEntitlementPolicyProvider($this->snapshot()),
+            new ThinkPhpTransactionManager($this->connection),
+            new PdoIdempotencyRepository($this->pdo),
+            new PdoAuditRepository($this->pdo),
             $clock,
         );
         $this->assertQuotaError('ENTITLEMENT_QUOTA_DENIED', fn() => $missingRegistry->usage(
@@ -460,9 +471,12 @@ SQL);
         MutableEntitlementClock $clock,
     ): EntitlementQuotaService {
         return new EntitlementQuotaService(
-            new PdoEntitlementQuotaRepository($this->pdo),
+            new EntitlementQuotaStore($this->connection),
             new FixedEntitlementMeterRegistry(new EntitlementMeter(self::METER, self::TARGET_TYPE, 'record')),
             $provider,
+            new ThinkPhpTransactionManager($this->connection),
+            new PdoIdempotencyRepository($this->pdo),
+            new PdoAuditRepository($this->pdo),
             $clock,
         );
     }

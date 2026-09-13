@@ -7,14 +7,13 @@ namespace PeanutAdmin\Workflow\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
-use PDO;
 use PeanutAdmin\Kernel\Api\ApiException;
+use PeanutAdmin\Kernel\Audit\AuditRepository;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
 use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use PeanutAdmin\Workflow\Adapter\WorkflowAssignmentResolver;
 use PeanutAdmin\Workflow\Adapter\WorkflowAttachmentResolver;
 use PeanutAdmin\Workflow\Adapter\WorkflowAuthorizationResolver;
@@ -29,40 +28,22 @@ use PeanutAdmin\Workflow\Definition\WorkflowTransition;
 use PeanutAdmin\Workflow\Instance\WorkflowInstance;
 use PeanutAdmin\Workflow\Instance\WorkflowWorkItem;
 use PeanutAdmin\Workflow\Package;
-use PeanutAdmin\Workflow\Persistence\PdoWorkflowRepository;
+use PeanutAdmin\Workflow\Persistence\WorkflowRepository;
 use Throwable;
 
 final readonly class WorkflowRuntime
 {
-    private PdoWorkflowRepository $repository;
-    private PdoTransactionManager $transactions;
-    private PdoIdempotencyRepository $idempotency;
-    private PdoAuditRepository $audit;
-
     public function __construct(
-        private PDO $pdo,
+        private WorkflowRepository $repository,
+        private TransactionManager $transactions,
+        private PdoIdempotencyRepository $idempotency,
+        private AuditRepository $audit,
         private WorkflowAssignmentResolver $assignments,
         private WorkflowAuthorizationResolver $authorization,
         private WorkflowSubjectRevisionResolver $subjects,
         private WorkflowAttachmentResolver $attachments,
         private WorkflowSideEffectPublisher $sideEffects,
-    ) {
-        try {
-            foreach ([$assignments, $authorization, $subjects, $attachments, $sideEffects] as $adapter) {
-                if ($adapter->connection() !== $pdo) {
-                    throw WorkflowException::providerUnavailable();
-                }
-            }
-        } catch (WorkflowException $exception) {
-            throw $exception;
-        } catch (Throwable) {
-            throw WorkflowException::internal();
-        }
-        $this->repository = new PdoWorkflowRepository($pdo);
-        $this->transactions = new PdoTransactionManager($pdo);
-        $this->idempotency = new PdoIdempotencyRepository($pdo);
-        $this->audit = new PdoAuditRepository($pdo);
-    }
+    ) {}
 
     /** @param array<string, mixed> $graph */
     public function saveDraft(
@@ -827,7 +808,7 @@ final readonly class WorkflowRuntime
             $notifications,
             $tasks,
         );
-        $this->sideEffects->publish($this->pdo, $context, $effects, $parentIdempotencyKey);
+        $this->sideEffects->publish($context, $effects, $parentIdempotencyKey);
     }
 
     private function auditTransition(

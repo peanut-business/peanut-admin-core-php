@@ -7,7 +7,6 @@ namespace PeanutAdmin\EntitlementQuota\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
-use PDOException;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementGrantSnapshot;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeter;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeterRegistry;
@@ -18,13 +17,13 @@ use PeanutAdmin\EntitlementQuota\Model\EntitlementUsageWindow;
 use PeanutAdmin\EntitlementQuota\Package;
 use PeanutAdmin\EntitlementQuota\Persistence\EntitlementQuotaRepository;
 use PeanutAdmin\Kernel\Api\ApiException;
+use PeanutAdmin\Kernel\Audit\AuditRepository;
 use PeanutAdmin\Kernel\Auth\Clock;
 use PeanutAdmin\Kernel\Auth\SystemClock;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
 use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use RuntimeException;
 use Throwable;
 use UnexpectedValueException;
@@ -32,21 +31,17 @@ use UnexpectedValueException;
 final readonly class EntitlementQuotaService
 {
     private Clock $clock;
-    private PdoTransactionManager $transactions;
-    private PdoIdempotencyRepository $idempotency;
-    private PdoAuditRepository $audit;
 
     public function __construct(
         private EntitlementQuotaRepository $repository,
         private EntitlementMeterRegistry $meters,
         private EntitlementPolicyProvider $policies,
+        private TransactionManager $transactions,
+        private PdoIdempotencyRepository $idempotency,
+        private AuditRepository $audit,
         ?Clock $clock = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
-        $pdo = $repository->connection();
-        $this->transactions = new PdoTransactionManager($pdo);
-        $this->idempotency = new PdoIdempotencyRepository($pdo);
-        $this->audit = new PdoAuditRepository($pdo);
     }
 
     public function check(
@@ -831,10 +826,6 @@ final readonly class EntitlementQuotaService
 
     private function mapRepositoryFailure(RuntimeException $exception): EntitlementQuotaException
     {
-        // Driver messages contain SQLSTATE and must not be interpreted as domain state conflicts.
-        if ($exception instanceof PDOException) {
-            return EntitlementQuotaException::internal();
-        }
         $message = strtolower($exception->getMessage());
         if (str_contains($message, 'snapshot')
             || str_contains($message, 'digest')

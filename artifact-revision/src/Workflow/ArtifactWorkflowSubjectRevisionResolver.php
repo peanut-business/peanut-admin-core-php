@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\ArtifactRevision\Workflow;
 
-use PDO;
 use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionRepository;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Workflow\Adapter\WorkflowSubjectRevisionResolver;
@@ -15,14 +14,8 @@ use UnexpectedValueException;
 final readonly class ArtifactWorkflowSubjectRevisionResolver implements WorkflowSubjectRevisionResolver
 {
     public function __construct(
-        private PDO $pdo,
         private ArtifactRevisionRepository $repository,
     ) {}
-
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
 
     public function resolve(
         AuthorizedOperationContext $context,

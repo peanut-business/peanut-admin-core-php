@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Workflow\Persistence;
 
-use PDO;
-use PDOException;
 use PeanutAdmin\Workflow\Application\WorkflowException;
 use PeanutAdmin\Workflow\Definition\WorkflowDefinition;
 use PeanutAdmin\Workflow\Definition\WorkflowDefinitionVersion;
@@ -13,15 +11,12 @@ use PeanutAdmin\Workflow\Definition\WorkflowGraph;
 use PeanutAdmin\Workflow\Instance\WorkflowEvent;
 use PeanutAdmin\Workflow\Instance\WorkflowInstance;
 use PeanutAdmin\Workflow\Instance\WorkflowWorkItem;
+use think\db\exception\PDOException;
+use think\db\PDOConnection;
 
-final readonly class PdoWorkflowRepository implements WorkflowRepository
+final readonly class WorkflowStore implements WorkflowRepository
 {
-    public function __construct(private PDO $pdo) {}
-
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
+    public function __construct(private PDOConnection $connection) {}
 
     public function definition(int $tenantId, string $moduleKey, string $workflowKey, bool $forUpdate = false): ?WorkflowDefinition
     {
@@ -575,37 +570,45 @@ ORDER BY id ASC LIMIT {$pageSize}
 SQL, ['tenant_id' => $tenantId, 'instance_id' => $instanceId, 'after_sequence' => $afterSequence]));
     }
 
-    /** @param array<string, int|string|null> $parameters @return array<string, mixed>|null */
+    /**
+     * @param array<string, int|string|null> $parameters
+     * @return array<string, mixed>|null
+     */
     private function one(string $sql, array $parameters): ?array
     {
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
 
         return is_array($row) ? $row : null;
     }
 
-    /** @param array<string, int|string|null> $parameters @return list<array<string, mixed>> */
+    /**
+     * @param array<string, int|string|null> $parameters
+     * @return list<array<string, mixed>>
+     */
     private function all(string $sql, array $parameters): array
     {
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($parameters);
-        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $this->connection->query($sql, $parameters);
+        $result = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $result[] = $row;
+            }
+        }
 
-        return array_values(array_filter($rows, 'is_array'));
+        return $result;
     }
 
     /** @param array<string, int|string|null> $parameters */
     private function execute(string $sql, array $parameters): int
     {
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($parameters);
-
-        return $statement->rowCount();
+        return $this->connection->execute($sql, $parameters);
     }
 
     private function duplicate(PDOException $exception): bool
     {
-        return $exception->getCode() === '23000' && ($exception->errorInfo[1] ?? null) === 1062;
+        $error = $exception->getData()['PDO Error Info'] ?? [];
+
+        return (string) ($error['SQLSTATE'] ?? $exception->getCode()) === '23000'
+            && (int) ($error['Driver Error Code'] ?? 0) === 1062;
     }
 }

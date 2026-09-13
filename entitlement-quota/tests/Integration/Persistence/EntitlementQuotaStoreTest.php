@@ -5,22 +5,25 @@ declare(strict_types=1);
 namespace PeanutAdmin\EntitlementQuota\Tests\Integration\Persistence;
 
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\EntitlementQuota\Database\Schema;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementPolicyRevision;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementUsageWindow;
-use PeanutAdmin\EntitlementQuota\Persistence\PdoEntitlementQuotaRepository;
+use PeanutAdmin\EntitlementQuota\Persistence\EntitlementQuotaStore;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use think\db\PDOConnection;
 use Throwable;
 use UnexpectedValueException;
 
-final class PdoEntitlementQuotaRepositoryTest extends TestCase
+final class EntitlementQuotaStoreTest extends TestCase
 {
     private const DATABASE = 'peanut_admin_p1_entitlement_repository_test';
 
     private PDO $admin;
     private PDO $pdo;
-    private PdoEntitlementQuotaRepository $repository;
+    private PDOConnection $connection;
+    private EntitlementQuotaStore $repository;
 
     protected function setUp(): void
     {
@@ -49,11 +52,13 @@ final class PdoEntitlementQuotaRepositoryTest extends TestCase
             $password,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
         );
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->pdo);
+        $this->pdo = $this->connection->connect();
         $this->createKernelFixtures();
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
         }
-        $this->repository = new PdoEntitlementQuotaRepository($this->pdo);
+        $this->repository = new EntitlementQuotaStore($this->connection);
     }
 
     protected function tearDown(): void

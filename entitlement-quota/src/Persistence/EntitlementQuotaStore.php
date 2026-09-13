@@ -5,24 +5,18 @@ declare(strict_types=1);
 namespace PeanutAdmin\EntitlementQuota\Persistence;
 
 use InvalidArgumentException;
-use PDO;
-use PDOException;
-use PDOStatement;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementGrant;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementPolicyRevision;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementReservation;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementUsageWindow;
 use RuntimeException;
+use think\db\exception\PDOException;
+use think\db\PDOConnection;
 use UnexpectedValueException;
 
-final readonly class PdoEntitlementQuotaRepository implements EntitlementQuotaRepository
+final readonly class EntitlementQuotaStore implements EntitlementQuotaRepository
 {
-    public function __construct(private PDO $pdo) {}
-
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
+    public function __construct(private PDOConnection $connection) {}
 
     public function grant(int $tenantId, string $grantKey, bool $forUpdate = false): ?EntitlementGrant
     {
@@ -487,19 +481,18 @@ SQL, [
         int $memberId,
         string $now,
     ): void {
-        $statement = $this->statement(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT * FROM pa_entitlement_reservation
 WHERE tenant_id = :tenant_id AND usage_window_id = :usage_window_id
   AND state = 'pending' AND expires_at <= :comparison_time
 ORDER BY id
 FOR UPDATE
-SQL);
-        $statement->execute([
+SQL, [
             'tenant_id' => $tenantId,
             'usage_window_id' => $window->id,
             'comparison_time' => $now,
         ]);
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($rows as $row) {
             if (!is_array($row)) {
                 throw new UnexpectedValueException('The entitlement reservation row is invalid.');
             }
@@ -585,12 +578,13 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
         return $row === null ? null : EntitlementUsageWindow::fromRow($row);
     }
 
-    /** @param array<string, int|string|null> $parameters */
+    /**
+     * @param array<string, int|string|null> $parameters
+     * @return array<string, mixed>|null
+     */
     private function fetchOne(string $sql, array $parameters): ?array
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
 
         return is_array($row) ? $row : null;
     }
@@ -598,20 +592,7 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
     /** @param array<string, int|string|null> $parameters */
     private function execute(string $sql, array $parameters): int
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-
-        return $statement->rowCount();
-    }
-
-    private function statement(string $sql): PDOStatement
-    {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new RuntimeException('Could not prepare entitlement quota statement.');
-        }
-
-        return $statement;
+        return $this->connection->execute($sql, $parameters);
     }
 
     private function checkedAdd(int $left, int $right): int
@@ -638,13 +619,15 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
 
     private function isDuplicate(PDOException $exception): bool
     {
-        return (string) ($exception->errorInfo[0] ?? $exception->getCode()) === '23000'
-            && (int) ($exception->errorInfo[1] ?? 0) === 1062;
+        $error = $exception->getData()['PDO Error Info'] ?? [];
+
+        return (string) ($error['SQLSTATE'] ?? $exception->getCode()) === '23000'
+            && (int) ($error['Driver Error Code'] ?? 0) === 1062;
     }
 
     private function requireTransaction(): void
     {
-        if (!$this->pdo->inTransaction()) {
+        if (!$this->connection->connect()->inTransaction()) {
             throw new RuntimeException('Entitlement quota writes require one caller-owned transaction.');
         }
     }

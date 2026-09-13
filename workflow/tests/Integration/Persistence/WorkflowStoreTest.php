@@ -5,20 +5,23 @@ declare(strict_types=1);
 namespace PeanutAdmin\Workflow\Tests\Integration\Persistence;
 
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Workflow\Application\WorkflowException;
 use PeanutAdmin\Workflow\Database\Schema;
 use PeanutAdmin\Workflow\Definition\WorkflowGraph;
-use PeanutAdmin\Workflow\Persistence\PdoWorkflowRepository;
+use PeanutAdmin\Workflow\Persistence\WorkflowStore;
 use PeanutAdmin\Workflow\Tests\Unit\Definition\WorkflowGraphTest;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use think\db\PDOConnection;
 
-final class PdoWorkflowRepositoryTest extends TestCase
+final class WorkflowStoreTest extends TestCase
 {
     private const DATABASE = 'peanut_admin_p1_wf01_repository_test';
 
     private PDO $admin;
     private PDO $pdo;
+    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -44,6 +47,8 @@ final class PdoWorkflowRepositoryTest extends TestCase
             $password,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
         );
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->pdo);
+        $this->pdo = $this->connection->connect();
         $this->pdo->exec('CREATE TABLE pa_tenant (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id)) ENGINE=InnoDB');
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
@@ -162,7 +167,7 @@ final class PdoWorkflowRepositoryTest extends TestCase
     {
         $this->pdo->exec('INSERT INTO pa_tenant VALUES ()');
         $tenantId = (int) $this->pdo->lastInsertId();
-        $repository = new PdoWorkflowRepository($this->pdo);
+        $repository = new WorkflowStore($this->connection);
         $graph = WorkflowGraph::fromArray(WorkflowGraphTest::validGraph());
         $now = '2026-08-11 00:00:00.000';
         $draft = $repository->saveDraft($tenantId, 11, 'module.sample', 'approval', $graph, null, $now);
@@ -192,7 +197,7 @@ final class PdoWorkflowRepositoryTest extends TestCase
     {
         $this->pdo->exec('INSERT INTO pa_tenant VALUES ()');
         $tenantId = (int) $this->pdo->lastInsertId();
-        $repository = new PdoWorkflowRepository($this->pdo);
+        $repository = new WorkflowStore($this->connection);
         $graph = WorkflowGraph::fromArray(WorkflowGraphTest::validGraph());
         $now = '2026-08-11 00:00:00.000';
 

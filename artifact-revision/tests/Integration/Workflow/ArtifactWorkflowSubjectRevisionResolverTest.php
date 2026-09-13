@@ -6,7 +6,6 @@ namespace PeanutAdmin\ArtifactRevision\Tests\Integration\Workflow;
 
 use DateTimeImmutable;
 use LogicException;
-use PDO;
 use PeanutAdmin\ArtifactRevision\Model\Artifact;
 use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
 use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionRepository;
@@ -26,10 +25,8 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
     {
         $revision = $this->revision('finalized');
         $repository = new ArtifactRevisionResolverRepository($revision);
-        $pdo = new PDO('sqlite::memory:');
-        $resolver = new ArtifactWorkflowSubjectRevisionResolver($pdo, $repository);
+        $resolver = new ArtifactWorkflowSubjectRevisionResolver($repository);
 
-        self::assertSame($pdo, $resolver->connection());
         self::assertSame([
             'revision_key' => $revision->revisionKey,
             'sha256' => $revision->canonicalEnvelopeSha256,
@@ -45,7 +42,7 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
     {
         $pending = new ArtifactRevisionResolverRepository($this->revision('pending'));
         $this->assertWorkflowError('WORKFLOW_SUBJECT_REVISION_CONFLICT', fn() => (
-            new ArtifactWorkflowSubjectRevisionResolver(new PDO('sqlite::memory:'), $pending)
+            new ArtifactWorkflowSubjectRevisionResolver($pending)
         )->resolve(
             $this->context(1, 'document.article', 'article-1'),
             'document.article',
@@ -55,7 +52,7 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
 
         $missing = new ArtifactRevisionResolverRepository(null);
         $this->assertWorkflowError('WORKFLOW_SUBJECT_REVISION_CONFLICT', fn() => (
-            new ArtifactWorkflowSubjectRevisionResolver(new PDO('sqlite::memory:'), $missing)
+            new ArtifactWorkflowSubjectRevisionResolver($missing)
         )->resolve(
             $this->context(2, 'document.article', 'article-1'),
             'document.article',
@@ -65,7 +62,7 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
 
         $finalized = new ArtifactRevisionResolverRepository($this->revision('finalized'));
         $this->assertWorkflowError('WORKFLOW_SUBJECT_NOT_FOUND', fn() => (
-            new ArtifactWorkflowSubjectRevisionResolver(new PDO('sqlite::memory:'), $finalized)
+            new ArtifactWorkflowSubjectRevisionResolver($finalized)
         )->resolve(
             $this->context(1, 'document.article', 'article-2'),
             'document.article',
@@ -73,7 +70,7 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
             'revision_' . str_repeat('a', 32),
         ));
         $this->assertWorkflowError('WORKFLOW_SUBJECT_REVISION_CONFLICT', fn() => (
-            new ArtifactWorkflowSubjectRevisionResolver(new PDO('sqlite::memory:'), $finalized)
+            new ArtifactWorkflowSubjectRevisionResolver($finalized)
         )->resolve(
             $this->context(1, 'document.article', 'article-1'),
             'document.article',
@@ -86,7 +83,7 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
     {
         $repository = new ArtifactRevisionResolverRepository(null, true);
         $this->assertWorkflowError('INTERNAL_ERROR', fn() => (
-            new ArtifactWorkflowSubjectRevisionResolver(new PDO('sqlite::memory:'), $repository)
+            new ArtifactWorkflowSubjectRevisionResolver($repository)
         )->resolve(
             $this->context(1, 'document.article', 'article-1'),
             'document.article',

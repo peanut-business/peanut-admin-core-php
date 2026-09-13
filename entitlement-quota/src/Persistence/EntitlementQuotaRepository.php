@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\EntitlementQuota\Persistence;
 
-use PDO;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementGrant;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementPolicyRevision;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementReservation;
@@ -12,8 +11,6 @@ use PeanutAdmin\EntitlementQuota\Model\EntitlementUsageWindow;
 
 interface EntitlementQuotaRepository
 {
-    public function connection(): PDO;
-
     public function grant(int $tenantId, string $grantKey, bool $forUpdate = false): ?EntitlementGrant;
 
     /**
