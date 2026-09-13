@@ -11,7 +11,8 @@
     "ext-pdo": "*",
     "ext-sodium": "*",
     "opis/json-schema": "^2.6.0",
-    "php": "^8.3"
+    "php": "^8.3",
+    "topthink/think-orm": "^4.0.51"
   },
   "require-dev": {
     "phpunit/phpunit": "^12.5.31"
