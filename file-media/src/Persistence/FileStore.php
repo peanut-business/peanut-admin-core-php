@@ -6,16 +6,16 @@ namespace PeanutAdmin\FileMedia\Persistence;
 
 use DateTimeImmutable;
 use DateTimeZone;
-use PDO;
 use PeanutAdmin\FileMedia\Application\FileMediaException;
 use PeanutAdmin\FileMedia\Application\FileObject;
 use PeanutAdmin\FileMedia\Application\UploadDescriptor;
 use PeanutAdmin\FileMedia\Storage\StoredObject;
 use PeanutAdmin\Kernel\Auth\TenantContext;
+use think\db\PDOConnection;
 
-final readonly class PdoFileRepository
+final readonly class FileStore
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(private PDOConnection $connection) {}
 
     public function create(
         TenantContext $context,
@@ -25,7 +25,7 @@ final readonly class PdoFileRepository
     ): FileObject {
         $this->assertTenantActor($context);
         $now = $this->databaseNow();
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $this->connection->execute(<<<'SQL'
 INSERT INTO pa_file_object (
   file_key, tenant_id, storage_provider_key, storage_key, original_name,
   media_type, size_bytes, sha256, status, created_by_member_id, revision,
@@ -35,8 +35,7 @@ INSERT INTO pa_file_object (
   :media_type, :size_bytes, :sha256, 'ready', :member_id, 1,
   :created_at, :updated_at, NULL
 )
-SQL);
-        $statement->execute([
+SQL, [
             'file_key' => $fileKey,
             'tenant_id' => $context->tenantId,
             'provider_key' => $stored->providerKey,
@@ -59,27 +58,19 @@ SQL);
         if (!in_array($status, ['ready', 'archived'], true) || $page < 1 || $pageSize < 1 || $pageSize > 100) {
             throw FileMediaException::uploadInvalid('The file list query is invalid.');
         }
-        $count = $this->pdo->prepare(
-            'SELECT COUNT(*) FROM pa_file_object WHERE tenant_id = :tenant_id AND status = :status',
+        $parameters = ['tenant_id' => $tenantId, 'status' => $status];
+        $count = $this->one(
+            'SELECT COUNT(*) AS aggregate FROM pa_file_object WHERE tenant_id = :tenant_id AND status = :status',
+            $parameters,
         );
-        $count->execute(['tenant_id' => $tenantId, 'status' => $status]);
-        $total = (int) $count->fetchColumn();
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $rows = $this->connection->query(sprintf(<<<'SQL'
 SELECT * FROM pa_file_object
 WHERE tenant_id = :tenant_id AND status = :status
-ORDER BY id DESC LIMIT :limit OFFSET :offset
-SQL);
-        $statement->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
-        $statement->bindValue(':status', $status);
-        $statement->bindValue(':limit', $pageSize, PDO::PARAM_INT);
-        $statement->bindValue(':offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
-        $statement->execute();
-        $items = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $items[] = $this->map($row);
-        }
+ORDER BY id DESC LIMIT %d OFFSET %d
+SQL, $pageSize, ($page - 1) * $pageSize), $parameters);
+        $items = array_values(array_map(fn(array $row): FileObject => $this->map($row), $rows));
 
-        return ['items' => $items, 'page' => $page, 'page_size' => $pageSize, 'total' => $total];
+        return ['items' => $items, 'page' => $page, 'page_size' => $pageSize, 'total' => (int) ($count['aggregate'] ?? 0)];
     }
 
     public function get(int $tenantId, string $fileKey, bool $includeArchived = true): FileObject
@@ -116,19 +107,18 @@ SQL);
             throw FileMediaException::revisionConflict();
         }
         $now = $this->databaseNow();
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $affected = $this->connection->execute(<<<'SQL'
 UPDATE pa_file_object
 SET status = 'archived', revision = revision + 1, archived_at = :archived_at, updated_at = :updated_at
 WHERE id = :id AND tenant_id = :tenant_id AND status = 'ready' AND revision = :revision
-SQL);
-        $statement->execute([
+SQL, [
             'archived_at' => $this->date($now),
             'updated_at' => $this->date($now),
             'id' => $current->id,
             'tenant_id' => $context->tenantId,
             'revision' => $expectedRevision,
         ]);
-        if ($statement->rowCount() !== 1) {
+        if ($affected !== 1) {
             throw FileMediaException::revisionConflict();
         }
 
@@ -160,25 +150,20 @@ SQL);
         if ($lock) {
             $sql .= $sharedLock ? ' FOR SHARE' : ' FOR UPDATE';
         }
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute(['tenant_id' => $tenantId, 'file_key' => $fileKey]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-
-        return is_array($row) ? $row : null;
+        return $this->one($sql, ['tenant_id' => $tenantId, 'file_key' => $fileKey]);
     }
 
     private function assertTenantActor(TenantContext $context): void
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $row = $this->one(<<<'SQL'
 SELECT account_id FROM pa_tenant_member
 WHERE tenant_id = :tenant_id AND id = :member_id AND account_id = :account_id AND status = 'active'
-SQL);
-        $statement->execute([
+SQL, [
             'tenant_id' => $context->tenantId,
             'member_id' => $context->memberId,
             'account_id' => $context->accountId,
         ]);
-        if ($statement->fetchColumn() === false) {
+        if ($row === null) {
             throw FileMediaException::notFound();
         }
     }
@@ -207,8 +192,7 @@ SQL);
 
     private function databaseNow(): DateTimeImmutable
     {
-        $statement = $this->pdo->query('SELECT UTC_TIMESTAMP(3)');
-        $value = $statement === false ? false : $statement->fetchColumn();
+        $value = $this->one('SELECT UTC_TIMESTAMP(3) AS current_time')['current_time'] ?? null;
         if (!is_string($value)) {
             throw FileMediaException::internal();
         }
@@ -236,5 +220,16 @@ SQL);
         }
 
         return $date->format('Y-m-d\TH:i:s.v\Z');
+    }
+
+    /**
+     * @param array<string, mixed> $parameters
+     * @return array<string, mixed>|null
+     */
+    private function one(string $sql, array $parameters = []): ?array
+    {
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
+
+        return is_array($row) ? $row : null;
     }
 }

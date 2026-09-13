@@ -6,15 +6,17 @@ namespace PeanutAdmin\FileMedia\Tests\Integration;
 
 use DateTimeImmutable;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\FileMedia\Application\FileMediaException;
 use PeanutAdmin\FileMedia\Application\FileService;
 use PeanutAdmin\FileMedia\Application\UploadPolicy;
 use PeanutAdmin\FileMedia\Database\Schema;
-use PeanutAdmin\FileMedia\Persistence\PdoFileRepository;
+use PeanutAdmin\FileMedia\Persistence\FileStore;
 use PeanutAdmin\FileMedia\Storage\StorageProvider;
 use PeanutAdmin\FileMedia\Storage\StoredObject;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -131,7 +133,13 @@ SQL);
 
     private function service(): FileService
     {
-        return new FileService(new PdoFileRepository($this->pdo), $this->storage, new UploadPolicy(['text/plain']));
+        $connection = ThinkPhpTestConnection::fromPdo($this->pdo);
+        return new FileService(
+            new FileStore($connection),
+            new ThinkPhpTransactionManager($connection),
+            $this->storage,
+            new UploadPolicy(['text/plain']),
+        );
     }
 
     private function tenant(int $accountId): TenantContext

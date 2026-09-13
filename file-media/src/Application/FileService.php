@@ -4,16 +4,18 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\FileMedia\Application;
 
-use PeanutAdmin\FileMedia\Persistence\PdoFileRepository;
+use PeanutAdmin\FileMedia\Persistence\FileStore;
 use PeanutAdmin\FileMedia\Storage\StorageProvider;
 use PeanutAdmin\FileMedia\Storage\StoredObject;
 use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use Throwable;
 
 final readonly class FileService
 {
     public function __construct(
-        private PdoFileRepository $repository,
+        private FileStore $repository,
+        private TransactionManager $transactions,
         private StorageProvider $storage,
         private UploadPolicy $policy,
     ) {}
@@ -37,7 +39,9 @@ final readonly class FileService
                 throw FileMediaException::storageUnavailable();
             }
 
-            return $this->repository->create($context, $fileKey, $upload, $stored);
+            return $this->transactions->run(
+                fn(): FileObject => $this->repository->create($context, $fileKey, $upload, $stored),
+            );
         } catch (FileMediaException $exception) {
             if ($stored instanceof StoredObject) {
                 $this->compensate($stored);
@@ -69,7 +73,9 @@ final readonly class FileService
     public function content(TenantContext $context, string $fileKey)
     {
         self::assertFileKey($fileKey);
-        $file = $this->repository->getForDownload($context->tenantId, $fileKey);
+        $file = $this->transactions->run(
+            fn(): FileObject => $this->repository->getForDownload($context->tenantId, $fileKey),
+        );
         if (!hash_equals($this->storage->key(), $file->storageProviderKey)) {
             throw FileMediaException::storageUnavailable();
         }
@@ -91,7 +97,9 @@ final readonly class FileService
             throw FileMediaException::preconditionRequired();
         }
 
-        return $this->repository->archive($context, $fileKey, $revision);
+        return $this->transactions->run(
+            fn(): FileObject => $this->repository->archive($context, $fileKey, $revision),
+        );
     }
 
     private static function assertFileKey(string $fileKey): void
