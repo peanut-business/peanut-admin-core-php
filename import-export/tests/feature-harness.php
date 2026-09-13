@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\ImportExport\Application\ImportExportException;
 use PeanutAdmin\ImportExport\Application\ImportExportService;
 use PeanutAdmin\ImportExport\Contract\ColumnDefinition;
@@ -13,15 +14,17 @@ use PeanutAdmin\ImportExport\Contract\SchemaDefinition;
 use PeanutAdmin\ImportExport\Database\Schema;
 use PeanutAdmin\ImportExport\Execution\CsvOperationRunner;
 use PeanutAdmin\ImportExport\File\FileMediaGateway;
-use PeanutAdmin\ImportExport\Persistence\PdoImportExportRepository;
+use PeanutAdmin\ImportExport\Persistence\ImportExportStore;
 use PeanutAdmin\Kernel\Audit\AuditRepository;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 
 $root = dirname(__DIR__, 4);
+require_once $root . '/vendor/autoload.php';
 spl_autoload_register(static function (string $class) use ($root): void {
     foreach ([
         'PeanutAdmin\\ImportExport\\' => $root . '/packages/php/import-export/src/',
@@ -185,8 +188,10 @@ SQL)->fetchColumn();
         }
     }
 
-    $repository = new PdoImportExportRepository(
-        $pdo,
+    $connection = ThinkPhpTestConnection::fromPdo($pdo);
+    $transactions = new ThinkPhpTransactionManager($connection);
+    $repository = new ImportExportStore(
+        $connection,
         $mode,
         $mode === TenantPersistenceMode::InstanceScoped ? 101 : null,
     );
@@ -194,7 +199,8 @@ SQL)->fetchColumn();
     $files = new HarnessFiles();
     $audit = new HarnessAudit();
     $registry = new DataProviderRegistry([$provider]);
-    $runner = new CsvOperationRunner($repository, $registry, $files, $audit);
+    $runner = new CsvOperationRunner($repository, $transactions, $registry, $files, $audit);
+    $atomic = static fn(callable $operation): mixed => $transactions->run($operation);
     $create101 = context(101, 501, 'create');
     $read101 = context(101, 501, 'read');
     ImportExportService::assertOperation($create101, 'create');
@@ -203,10 +209,10 @@ SQL)->fetchColumn();
     $fileKey = 'file_' . str_repeat('a', 32);
     $files->inputs[$fileKey] = "Name,Email\r\nAlice,alice@example.test\r\nBob,invalid\r\n,empty@example.test\r\n";
     $mapping = $provider->schema()->validateImportMapping(['Name' => 'name', 'Email' => 'email']);
-    $import = $repository->create(101, 501, 'iox_' . str_repeat('1', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'request-import'), 7);
-    $replay = $repository->create(101, 501, 'iox_' . str_repeat('2', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'request-import'), 7);
+    $import = $atomic(fn() => $repository->create(101, 501, 'iox_' . str_repeat('1', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'request-import'), 7));
+    $replay = $atomic(fn() => $repository->create(101, 501, 'iox_' . str_repeat('2', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'request-import'), 7));
     check($import->operationKey, $replay->operationKey, 'idempotency replay');
-    problem('IMPORT_EXPORT_IDEMPOTENCY_CONFLICT', fn() => $repository->create(101, 501, 'iox_' . str_repeat('3', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'changed'), 7), 'idempotency payload conflict');
+    problem('IMPORT_EXPORT_IDEMPOTENCY_CONFLICT', fn() => $atomic(fn() => $repository->create(101, 501, 'iox_' . str_repeat('3', 32), $provider->key(), 'import', $fileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-import'), hash('sha256', 'changed'), 7)), 'idempotency payload conflict');
     if ($mode === TenantPersistenceMode::TenantScoped) {
         problem('IMPORT_EXPORT_NOT_FOUND', fn() => $repository->get(202, $import->operationKey), 'cross tenant detail indistinguishable');
     } else {
@@ -216,7 +222,7 @@ SQL)->fetchColumn();
             'instance scope rejects another logical tenant',
         );
     }
-    $import = $repository->attachJob(101, $import->operationKey, 'job_' . str_repeat('a', 32));
+    $import = $atomic(fn() => $repository->attachJob(101, $import->operationKey, 'job_' . str_repeat('a', 32)));
     $import = $runner->run($create101, $import->operationKey, $import->taskJobKey ?? '', 1);
     check('succeeded', $import->status, 'import completion');
     check(3, $import->processedRows, 'import progress');
@@ -229,8 +235,8 @@ SQL)->fetchColumn();
     }
     problem('IMPORT_EXPORT_STATE_CONFLICT', fn() => $runner->run($create101, $import->operationKey, $import->taskJobKey ?? '', 2), 'terminal operation cannot be reclaimed');
 
-    $export = $repository->create(101, 501, 'iox_' . str_repeat('4', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-export'), hash('sha256', 'request-export'), 7);
-    $export = $repository->attachJob(101, $export->operationKey, 'job_' . str_repeat('b', 32));
+    $export = $atomic(fn() => $repository->create(101, 501, 'iox_' . str_repeat('4', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-export'), hash('sha256', 'request-export'), 7));
+    $export = $atomic(fn() => $repository->attachJob(101, $export->operationKey, 'job_' . str_repeat('b', 32)));
     $export = $runner->run($create101, $export->operationKey, $export->taskJobKey ?? '', 1);
     check('succeeded', $export->status, 'export completion');
     check(2, $export->processedRows, 'export rows');
@@ -250,28 +256,28 @@ SQL)->fetchColumn();
     problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->exportValues(['name' => "\xC3\x28", 'email' => null, 'formula_header' => 'safe']), 'invalid UTF-8 export text');
     problem('IMPORT_EXPORT_INVALID', fn() => new ColumnDefinition('invalid_heading', "\xC3\x28"), 'invalid UTF-8 schema heading');
 
-    $cancel = $repository->create(101, 501, 'iox_' . str_repeat('5', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-cancel'), hash('sha256', 'request-cancel'), 1);
-    $cancel = $repository->requestCancel(101, $cancel->operationKey, $cancel->revision);
+    $cancel = $atomic(fn() => $repository->create(101, 501, 'iox_' . str_repeat('5', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-cancel'), hash('sha256', 'request-cancel'), 1));
+    $cancel = $atomic(fn() => $repository->requestCancel(101, $cancel->operationKey, $cancel->revision));
     check('cancelled', $cancel->status, 'queued cancellation');
 
     $racingFileKey = 'file_' . str_repeat('b', 32);
     $files->inputs[$racingFileKey] = "Name,Email\r\nRace,race@example.test\r\n";
-    $racing = $repository->create(101, 501, 'iox_' . str_repeat('6', 32), $provider->key(), 'import', $racingFileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-racing'), hash('sha256', 'request-racing'), 1);
-    $racing = $repository->attachJob(101, $racing->operationKey, 'job_' . str_repeat('c', 32));
-    $provider->duringImport = static function () use ($repository, &$racing): void {
+    $racing = $atomic(fn() => $repository->create(101, 501, 'iox_' . str_repeat('6', 32), $provider->key(), 'import', $racingFileKey, 'contacts.v1', $mapping, hash('sha256', 'idem-racing'), hash('sha256', 'request-racing'), 1));
+    $racing = $atomic(fn() => $repository->attachJob(101, $racing->operationKey, 'job_' . str_repeat('c', 32)));
+    $provider->duringImport = static function () use ($atomic, $repository, &$racing): void {
         $current = $repository->get(101, $racing->operationKey);
-        $repository->requestCancel(101, $racing->operationKey, $current->revision);
+        $atomic(fn() => $repository->requestCancel(101, $racing->operationKey, $current->revision));
     };
     $racing = $runner->run($create101, $racing->operationKey, $racing->taskJobKey ?? '', 1);
     $provider->duringImport = null;
     check('cancelled', $racing->status, 'provider/progress cancellation race settles without runner failure');
     check(1, $racing->processedRows, 'cancel race progress checkpoint');
 
-    $finishRace = $repository->create(101, 501, 'iox_' . str_repeat('7', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-finish-race'), hash('sha256', 'request-finish-race'), 1);
-    $finishRace = $repository->attachJob(101, $finishRace->operationKey, 'job_' . str_repeat('e', 32));
-    $finishRace = $repository->beginAttempt(101, $finishRace->operationKey, $finishRace->taskJobKey ?? '', 1);
-    $finishRace = $repository->requestCancel(101, $finishRace->operationKey, $finishRace->revision);
-    $finishRace = $repository->finish(101, $finishRace->id, $finishRace->taskJobKey ?? '', 1, 'succeeded', 'file_' . str_repeat('f', 32), null, 0);
+    $finishRace = $atomic(fn() => $repository->create(101, 501, 'iox_' . str_repeat('7', 32), $provider->key(), 'export', null, 'contacts.v1', [], hash('sha256', 'idem-finish-race'), hash('sha256', 'request-finish-race'), 1));
+    $finishRace = $atomic(fn() => $repository->attachJob(101, $finishRace->operationKey, 'job_' . str_repeat('e', 32)));
+    $finishRace = $atomic(fn() => $repository->beginAttempt(101, $finishRace->operationKey, $finishRace->taskJobKey ?? '', 1));
+    $finishRace = $atomic(fn() => $repository->requestCancel(101, $finishRace->operationKey, $finishRace->revision));
+    $finishRace = $atomic(fn() => $repository->finish(101, $finishRace->id, $finishRace->taskJobKey ?? '', 1, 'succeeded', 'file_' . str_repeat('f', 32), null, 0));
     check('cancelled', $finishRace->status, 'finish/cancel race prefers cancellation');
     check(null, $finishRace->resultFileKey, 'cancelled finish publishes no result');
     $pdo->exec("UPDATE pa_import_export_operation SET retention_until = TIMESTAMPADD(SECOND,-1,UTC_TIMESTAMP(3)) WHERE operation_key = " . $pdo->quote($cancel->operationKey));
@@ -281,8 +287,8 @@ SQL)->fetchColumn();
         $expiredBeforeMismatch = (int) $pdo->query("SELECT COUNT(*) FROM pa_import_export_operation WHERE status = 'expired'")->fetchColumn();
         runtimeProblem(
             'TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH',
-            fn() => (new PdoImportExportRepository(
-                $pdo,
+            fn() => (new ImportExportStore(
+                ThinkPhpTestConnection::fromPdo($pdo),
                 TenantPersistenceMode::InstanceScoped,
                 101,
             ))->expireDue(),

@@ -6,10 +6,11 @@ namespace PeanutAdmin\ImportExport\Application;
 
 use JsonException;
 use PeanutAdmin\ImportExport\Contract\DataProviderRegistry;
-use PeanutAdmin\ImportExport\Persistence\PdoImportExportRepository;
+use PeanutAdmin\ImportExport\Persistence\ImportExportStore;
 use PeanutAdmin\Kernel\Audit\AuditRepository;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use PeanutAdmin\TaskJob\Application\TaskJobService;
 use PeanutAdmin\TaskJob\Submission\TrustedJobPublisher;
 
@@ -19,7 +20,8 @@ final readonly class ImportExportService
     public const TASK_TYPE = 'peanut.import-export.execute';
 
     public function __construct(
-        private PdoImportExportRepository $repository,
+        private ImportExportStore $repository,
+        private TransactionManager $transactions,
         private DataProviderRegistry $providers,
         private TrustedJobPublisher $publisher,
         private TaskJobService $jobs,
@@ -57,6 +59,13 @@ final readonly class ImportExportService
         return $this->repository->get($context->tenantContext->tenantId, $operationKey);
     }
 
+    public function resultFile(AuthorizedOperationContext $context, string $fileKey): OperationRecord
+    {
+        self::assertOperation($context, 'read');
+        self::assertFileKey($fileKey);
+        return $this->repository->resultFile($context->tenantContext->tenantId, $fileKey);
+    }
+
     public function cancel(AuthorizedOperationContext $context, string $operationKey, int $revision): OperationRecord
     {
         self::assertOperation($context, 'cancel');
@@ -65,7 +74,7 @@ final readonly class ImportExportService
             throw ImportExportException::invalid();
         }
 
-        return $this->repository->transaction(function () use ($context, $operationKey, $revision): OperationRecord {
+        return $this->transactions->run(function () use ($context, $operationKey, $revision): OperationRecord {
             $before = $this->repository->get($context->tenantContext->tenantId, $operationKey);
             $updated = $this->repository->requestCancel($context->tenantContext->tenantId, $operationKey, $revision);
             if ($before->status === 'queued' && $before->taskJobKey !== null) {
@@ -105,7 +114,7 @@ final readonly class ImportExportService
             'retention_days' => $retentionDays,
         ]));
 
-        return $this->repository->transaction(function () use ($context, $direction, $providerKey, $fileKey, $schema, $mapping, $idempotencyKey, $requestHash, $retentionDays): OperationRecord {
+        return $this->transactions->run(function () use ($context, $direction, $providerKey, $fileKey, $schema, $mapping, $idempotencyKey, $requestHash, $retentionDays): OperationRecord {
             $operation = $this->repository->create(
                 $context->tenantContext->tenantId,
                 $context->tenantContext->memberId,
@@ -169,6 +178,7 @@ final readonly class ImportExportService
         }
     }
 
+    /** @param array<string, mixed> $value */
     private function json(array $value): string
     {
         try {
