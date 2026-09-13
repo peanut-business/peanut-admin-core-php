@@ -492,8 +492,8 @@ SQL, [
 
     private function databaseNow(): DateTimeImmutable
     {
-        $row = $this->connection->query('SELECT UTC_TIMESTAMP(3) AS current_time')[0] ?? null;
-        $value = is_array($row) ? ($row['current_time'] ?? null) : null;
+        $row = $this->connection->query('SELECT UTC_TIMESTAMP(3) AS database_time')[0] ?? null;
+        $value = is_array($row) ? ($row['database_time'] ?? null) : null;
         if (!is_string($value)) {
             throw ReferenceCodeException::internal();
         }

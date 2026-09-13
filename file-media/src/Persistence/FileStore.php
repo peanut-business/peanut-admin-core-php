@@ -192,7 +192,7 @@ SQL, [
 
     private function databaseNow(): DateTimeImmutable
     {
-        $value = $this->one('SELECT UTC_TIMESTAMP(3) AS current_time')['current_time'] ?? null;
+        $value = $this->one('SELECT UTC_TIMESTAMP(3) AS database_time')['database_time'] ?? null;
         if (!is_string($value)) {
             throw FileMediaException::internal();
         }

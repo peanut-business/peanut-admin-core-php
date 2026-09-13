@@ -677,7 +677,7 @@ SQL, [
 
     private function databaseNow(): string
     {
-        $value = $this->one("SELECT DATE_FORMAT(UTC_TIMESTAMP(3), '%Y-%m-%d %H:%i:%s.%f') AS current_time", [])['current_time'] ?? null;
+        $value = $this->one("SELECT DATE_FORMAT(UTC_TIMESTAMP(3), '%Y-%m-%d %H:%i:%s.%f') AS database_time", [])['database_time'] ?? null;
         if (!is_string($value) || preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/D', $value) !== 1) {
             throw NotificationException::conflict();
         }

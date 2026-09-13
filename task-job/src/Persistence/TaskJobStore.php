@@ -632,7 +632,7 @@ SQL, $this->tenantScope->where('created_by_member_id = :member_id')), $this->ten
 
     private function now(): string
     {
-        $value = $this->one('SELECT UTC_TIMESTAMP(3) AS current_time')['current_time'] ?? null;
+        $value = $this->one('SELECT UTC_TIMESTAMP(3) AS database_time')['database_time'] ?? null;
         if (!is_string($value)) {
             throw TaskJobException::internal();
         }
