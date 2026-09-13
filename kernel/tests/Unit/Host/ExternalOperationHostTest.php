@@ -353,13 +353,18 @@ final class ExternalOperationHostTest extends TestCase
             },
         );
 
+        $pdo = new PDO('sqlite::memory:');
+
         return new ExternalOperationHost(
             $configuration,
             new TrustedContextAdapter($configuration),
             new ModuleAvailabilityAdapter($registry, new ModuleGuard($moduleRepository)),
             new PermissionAdapter($permissionMiddleware),
             new TypedTargetAdapter($dataPermission),
-            new AtomicOperationAdapter(new PDO('sqlite::memory:')),
+            new AtomicOperationAdapter(
+                $pdo,
+                new \PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager($pdo),
+            ),
             new ProblemDetailsAdapter(),
         );
     }

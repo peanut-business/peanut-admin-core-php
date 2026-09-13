@@ -570,7 +570,10 @@ final class ExternalOperationHostIntegrationTest extends TestCase
             ),
             new PermissionAdapter($permissions),
             new TypedTargetAdapter($dataPermission),
-            new AtomicOperationAdapter($this->database),
+            new AtomicOperationAdapter(
+                $this->database,
+                new \PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager($this->database),
+            ),
             new ProblemDetailsAdapter(),
         );
     }

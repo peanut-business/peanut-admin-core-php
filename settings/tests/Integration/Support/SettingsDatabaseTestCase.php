@@ -373,7 +373,10 @@ abstract class SettingsDatabaseTestCase extends TestCase
             new ModuleAvailabilityAdapter($registry, new ModuleGuard($moduleRepository)),
             new PermissionAdapter($permissions),
             new TypedTargetAdapter($dataPermission),
-            new AtomicOperationAdapter($this->database),
+            new AtomicOperationAdapter(
+                $this->database,
+                new \PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager($this->database),
+            ),
             new ProblemDetailsAdapter(),
         );
     }

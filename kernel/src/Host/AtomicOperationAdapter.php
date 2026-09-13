@@ -13,17 +13,18 @@ use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyRecord;
 use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
 use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 
 final readonly class AtomicOperationAdapter
 {
-    private PdoTransactionManager $transactions;
     private PdoIdempotencyRepository $idempotency;
     private PdoAuditRepository $audit;
 
-    public function __construct(private PDO $pdo)
+    public function __construct(
+        private PDO $pdo,
+        private TransactionManager $transactions,
+    )
     {
-        $this->transactions = new PdoTransactionManager($pdo);
         $this->idempotency = new PdoIdempotencyRepository($pdo);
         $this->audit = new PdoAuditRepository($pdo);
     }
