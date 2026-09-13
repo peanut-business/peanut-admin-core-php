@@ -7,14 +7,14 @@ namespace PeanutAdmin\Testing\Authorization;
 use DateTimeImmutable;
 use PDO;
 use PDOStatement;
-use PeanutAdmin\DataPermission\Catalog\PdoResourceOperationCatalog;
+use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
 use PeanutAdmin\DataPermission\Constraint\ColumnReference;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
-use PeanutAdmin\DataPermission\Policy\PdoPolicyRepository;
+use PeanutAdmin\DataPermission\Policy\PolicyStore;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Provider\ConditionProviderRegistry;
-use PeanutAdmin\DataPermission\Provider\PdoDepartmentHierarchyProvider;
-use PeanutAdmin\DataPermission\Provider\PdoTargetSetMembershipProvider;
+use PeanutAdmin\DataPermission\Provider\ThinkPhpDepartmentHierarchyProvider;
+use PeanutAdmin\DataPermission\Provider\ThinkPhpTargetSetMembershipProvider;
 use PeanutAdmin\DataPermission\Provider\ProviderColumnMap;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
@@ -33,6 +33,7 @@ use PeanutAdmin\Kernel\Authorization\Persistence\TargetTypeDefinition;
 use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use RuntimeException;
+use think\db\PDOConnection;
 
 final class AuthorizationAcceptanceFixture
 {
@@ -66,11 +67,14 @@ final class AuthorizationAcceptanceFixture
     /** @var array<string, int> */
     private array $recordIds = [];
 
-    private function __construct(private readonly PDO $pdo) {}
+    private function __construct(
+        private readonly PDO $pdo,
+        private readonly PDOConnection $connection,
+    ) {}
 
-    public static function install(PDO $pdo): AuthorizationAcceptanceEnvironment
+    public static function install(PDO $pdo, PDOConnection $connection): AuthorizationAcceptanceEnvironment
     {
-        $fixture = new self($pdo);
+        $fixture = new self($pdo, $connection);
 
         return $fixture->build();
     }
@@ -446,8 +450,8 @@ SQL, $row);
                 null,
                 ['fixture.project' => new ColumnReference('record.project_id')],
             ),
-            new PdoDepartmentHierarchyProvider($this->pdo),
-            new PdoTargetSetMembershipProvider($this->pdo),
+            new ThinkPhpDepartmentHierarchyProvider($this->connection),
+            new ThinkPhpTargetSetMembershipProvider($this->connection),
             new ConditionProviderRegistry(),
         );
         $referenceProvider = new StandardResourcePolicyProvider(
@@ -457,8 +461,8 @@ SQL, $row);
                 null,
                 ['fixture.project' => new ColumnReference('reference.owner_project_id')],
             ),
-            new PdoDepartmentHierarchyProvider($this->pdo),
-            new PdoTargetSetMembershipProvider($this->pdo),
+            new ThinkPhpDepartmentHierarchyProvider($this->connection),
+            new ThinkPhpTargetSetMembershipProvider($this->connection),
             new ConditionProviderRegistry(),
         );
         foreach (['fixture.record.standard' => $recordProvider, 'fixture.reference.standard' => $referenceProvider] as $key => $provider) {
@@ -475,8 +479,8 @@ SQL, $row);
         $shared->register('fixture.reference', new FixtureSharedMasterScopeProvider($this->pdo));
 
         return new DataPermissionEngine(
-            new PdoResourceOperationCatalog($this->pdo),
-            new PdoPolicyRepository($this->pdo),
+            new ResourceOperationStore($this->connection),
+            new PolicyStore($this->connection),
             new PolicyCache(),
             new TenantAuthorizationEvaluator(
                 new PdoTenantAuthorizationRepository($this->pdo),

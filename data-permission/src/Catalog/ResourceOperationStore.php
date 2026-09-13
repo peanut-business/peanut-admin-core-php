@@ -4,26 +4,24 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\DataPermission\Catalog;
 
-use PDO;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
+use think\db\PDOConnection;
 
-final readonly class PdoResourceOperationCatalog implements ResourceOperationCatalog
+final readonly class ResourceOperationStore implements ResourceOperationCatalog
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(private PDOConnection $connection) {}
 
     public function find(string $resourceKey, string $operation): ?ResourceOperation
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $row = $this->one(<<<'SQL'
 SELECT ro.id, ro.protected_resource_id, ro.operation, ro.access_mode,
        ro.target_cardinality, ro.permission_match,
        pr.`key` AS resource_key, pr.module_key, pr.provider_key, pr.ownership
 FROM pa_resource_operation ro
 JOIN pa_protected_resource pr ON pr.id = ro.protected_resource_id AND pr.status = 'active'
 WHERE pr.`key` = :resource_key AND ro.operation = :operation AND ro.status = 'active'
-SQL);
-        $statement->execute(['resource_key' => $resourceKey, 'operation' => $operation]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+SQL, ['resource_key' => $resourceKey, 'operation' => $operation]);
+        if ($row === null) {
             return null;
         }
         $operationId = (int) $row['id'];
@@ -61,20 +59,19 @@ OR EXISTS (
       AND (tenant_module.expires_at IS NULL OR tenant_module.expires_at > CURRENT_TIMESTAMP(3))
 )
 SQL;
-        $count = $this->pdo->prepare(<<<SQL
-SELECT COUNT(*)
+        $countRow = $this->one(<<<SQL
+SELECT COUNT(*) AS aggregate
 FROM pa_resource_operation ro
 JOIN pa_protected_resource pr
   ON pr.id = ro.protected_resource_id AND pr.status = 'active'
 WHERE ro.status = 'active' AND ({$availability})
-SQL);
-        $count->execute(['tenant_id' => $tenantId]);
-        $total = (int) $count->fetchColumn();
+SQL, ['tenant_id' => $tenantId]);
+        $total = (int) ($countRow['aggregate'] ?? 0);
         if ($total === 0 || $page->page > intdiv($total - 1, $page->pageSize) + 1) {
             return ['items' => [], 'total' => $total];
         }
 
-        $statement = $this->pdo->prepare(<<<SQL
+        $rows = $this->connection->query(sprintf(<<<SQL
 SELECT ro.id, ro.protected_resource_id, ro.operation, ro.access_mode,
        ro.target_cardinality, ro.permission_match,
        pr.`key` AS resource_key, pr.module_key, pr.provider_key, pr.ownership
@@ -82,15 +79,10 @@ FROM pa_resource_operation ro
 JOIN pa_protected_resource pr
   ON pr.id = ro.protected_resource_id AND pr.status = 'active'
 WHERE ro.status = 'active' AND ({$availability})
-ORDER BY pr.`key`, ro.operation, ro.id
-LIMIT :limit OFFSET :offset
-SQL);
-        $statement->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
-        $statement->bindValue(':limit', $page->pageSize, PDO::PARAM_INT);
-        $statement->bindValue(':offset', $page->offset(), PDO::PARAM_INT);
-        $statement->execute();
+ORDER BY pr.`key`, ro.operation, ro.id LIMIT %d OFFSET %d
+SQL, $page->pageSize, $page->offset()), ['tenant_id' => $tenantId]);
         $items = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+        foreach ($rows as $row) {
             $operationId = (int) $row['id'];
             $items[] = new ResourceOperation(
                 $operationId,
@@ -116,7 +108,7 @@ SQL);
         if ($moduleKey === 'core') {
             return true;
         }
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $row = $this->one(<<<'SQL'
 SELECT tenant_module.id
 FROM pa_tenant_module tenant_module
 JOIN pa_module_installation installation
@@ -128,15 +120,14 @@ WHERE tenant_module.tenant_id = :tenant_id
   AND (tenant_module.effective_at IS NULL OR tenant_module.effective_at <= CURRENT_TIMESTAMP(3))
   AND (tenant_module.expires_at IS NULL OR tenant_module.expires_at > CURRENT_TIMESTAMP(3))
 LIMIT 1
-SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'module_key' => $moduleKey]);
+SQL, ['tenant_id' => $tenantId, 'module_key' => $moduleKey]);
 
-        return $statement->fetchColumn() !== false;
+        return $row !== null;
     }
 
     public function registryRevision(): string
     {
-        $statement = $this->pdo->query(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT digest FROM (
     SELECT CONCAT('resource:', id, ':', status, ':', manifest_digest) AS digest FROM pa_protected_resource
     UNION ALL
@@ -151,28 +142,30 @@ SELECT digest FROM (
 ) registry ORDER BY digest
 SQL);
 
-        return hash('sha256', implode('|', $statement === false ? [] : $statement->fetchAll(PDO::FETCH_COLUMN)));
+        return hash('sha256', implode('|', array_map(
+            static fn(array $row): string => (string) $row['digest'],
+            $rows,
+        )));
     }
 
     /** @return list<string> */
     private function permissionKeys(int $operationId): array
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT p.`key`
 FROM pa_resource_operation_permission relation
 JOIN pa_permission p ON p.id = relation.permission_id AND p.status = 'active'
 WHERE relation.resource_operation_id = :operation_id
 ORDER BY relation.sort_order, p.`key`
-SQL);
-        $statement->execute(['operation_id' => $operationId]);
+SQL, ['operation_id' => $operationId]);
 
-        return array_values(array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN)));
+        return array_values(array_map(static fn(array $row): string => (string) $row['key'], $rows));
     }
 
     /** @return list<OperationTargetType> */
     private function targetTypes(int $operationId): array
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT relation.target_role, relation.input_mode,
        target.`key`, target.resolver_key, target.catalog_provider_key,
        selection_permission.`key` AS policy_selection_permission_key
@@ -183,10 +176,9 @@ LEFT JOIN pa_permission selection_permission
  AND selection_permission.status = 'active'
 WHERE relation.resource_operation_id = :operation_id AND relation.status = 'active'
 ORDER BY relation.target_role, target.`key`
-SQL);
-        $statement->execute(['operation_id' => $operationId]);
+SQL, ['operation_id' => $operationId]);
         $targetTypes = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+        foreach ($rows as $row) {
             $targetTypes[] = new OperationTargetType(
                 (string) $row['target_role'],
                 (string) $row['key'],
@@ -200,5 +192,15 @@ SQL);
         }
 
         return $targetTypes;
+    }
+
+    /** @param array<string, int|string> $parameters
+     * @return array<string, mixed>|null
+     */
+    private function one(string $sql, array $parameters = []): ?array
+    {
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
+
+        return is_array($row) ? $row : null;
     }
 }

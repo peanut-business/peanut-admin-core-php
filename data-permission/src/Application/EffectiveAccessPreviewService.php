@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PeanutAdmin\DataPermission\Application;
 
 use DateTimeZone;
-use PDO;
 use PeanutAdmin\DataPermission\Catalog\ResourceOperation;
 use PeanutAdmin\DataPermission\Catalog\ResourceOperationCatalog;
 use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
@@ -18,13 +17,13 @@ use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\EffectivePermissionSet;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationRepository;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use RuntimeException;
-use Throwable;
 
 final readonly class EffectiveAccessPreviewService
 {
     public function __construct(
-        private PDO $pdo,
+        private TransactionManager $transactions,
         private TenantAuthorizationRepository $authorization,
         private ResourceOperationCatalog $catalog,
         private PolicyRepository $policies,
@@ -40,12 +39,7 @@ final readonly class EffectiveAccessPreviewService
      */
     public function preview(TenantContext $actor, int $memberId, PageRequest $page): array
     {
-        $ownsTransaction = !$this->pdo->inTransaction();
-        if ($ownsTransaction) {
-            $this->pdo->beginTransaction();
-        }
-
-        try {
+        return $this->transactions->run(function () use ($actor, $memberId, $page): array {
             $result = $this->buildPreview($actor, $memberId, $page);
             $this->audit->appendTenantMember(
                 $actor,
@@ -66,16 +60,8 @@ final readonly class EffectiveAccessPreviewService
                     'page_size' => $page->pageSize,
                 ],
             );
-            if ($ownsTransaction) {
-                $this->pdo->commit();
-            }
-
             return $result;
-        } catch (Throwable $exception) {
-            $this->rollback($ownsTransaction);
-
-            throw $exception;
-        }
+        });
     }
 
     /**
@@ -251,10 +237,4 @@ final readonly class EffectiveAccessPreviewService
         };
     }
 
-    private function rollback(bool $ownsTransaction): void
-    {
-        if ($ownsTransaction && $this->pdo->inTransaction()) {
-            $this->pdo->rollBack();
-        }
-    }
 }

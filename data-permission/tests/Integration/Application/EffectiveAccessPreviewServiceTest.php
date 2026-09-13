@@ -6,17 +6,18 @@ namespace PeanutAdmin\DataPermission\Tests\Integration\Application;
 
 use DateTimeImmutable;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\DataPermission\Application\EffectiveAccessPreviewService;
-use PeanutAdmin\DataPermission\Catalog\PdoResourceOperationCatalog;
+use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
 use PeanutAdmin\DataPermission\Constraint\ColumnReference;
 use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
-use PeanutAdmin\DataPermission\Policy\PdoPolicyRepository;
+use PeanutAdmin\DataPermission\Policy\PolicyStore;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Provider\ConditionProviderRegistry;
-use PeanutAdmin\DataPermission\Provider\PdoDepartmentHierarchyProvider;
-use PeanutAdmin\DataPermission\Provider\PdoTargetSetMembershipProvider;
+use PeanutAdmin\DataPermission\Provider\ThinkPhpDepartmentHierarchyProvider;
+use PeanutAdmin\DataPermission\Provider\ThinkPhpTargetSetMembershipProvider;
 use PeanutAdmin\DataPermission\Provider\ProviderColumnMap;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
@@ -36,8 +37,10 @@ use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogReposito
 use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 use RuntimeException;
+use think\db\PDOConnection;
 
 require_once dirname(__DIR__, 4) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
 require_once dirname(__DIR__) . '/Schema/DataPermissionMigrationRunner.php';
@@ -54,8 +57,9 @@ final class EffectiveAccessPreviewServiceTest extends DatabaseTestCase
     private int $roleB;
     private TenantContext $actor;
     private PdoTenantAuthorizationRepository $authorization;
-    private PdoResourceOperationCatalog $catalog;
-    private PdoPolicyRepository $policies;
+    private ResourceOperationStore $catalog;
+    private PolicyStore $policies;
+    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -91,8 +95,9 @@ final class EffectiveAccessPreviewServiceTest extends DatabaseTestCase
         $this->seedOperations();
         $this->seedConditionalPolicies();
         $this->authorization = new PdoTenantAuthorizationRepository($this->database);
-        $this->catalog = new PdoResourceOperationCatalog($this->database);
-        $this->policies = new PdoPolicyRepository($this->database);
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->database);
+        $this->catalog = new ResourceOperationStore($this->connection);
+        $this->policies = new PolicyStore($this->connection);
         $this->actor = TenantContext::fromValidatedSession(new ValidatedTenantSession(
             1,
             '01J00000000000000000000000',
@@ -373,7 +378,7 @@ SQL)->fetchColumn();
     private function service(AuditRepository $audit): EffectiveAccessPreviewService
     {
         return new EffectiveAccessPreviewService(
-            $this->database,
+            new ThinkPhpTransactionManager($this->connection),
             $this->authorization,
             $this->catalog,
             $this->policies,
@@ -391,8 +396,8 @@ SQL)->fetchColumn();
                 new ColumnReference('preview_record.department_id'),
                 ['preview.project' => new ColumnReference('preview_record.project_id')],
             ),
-            new PdoDepartmentHierarchyProvider($this->database),
-            new PdoTargetSetMembershipProvider($this->database),
+            new ThinkPhpDepartmentHierarchyProvider($this->connection),
+            new ThinkPhpTargetSetMembershipProvider($this->connection),
             new ConditionProviderRegistry(),
         );
         $providers = new ResourceProviderRegistry();

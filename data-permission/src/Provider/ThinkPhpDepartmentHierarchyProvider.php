@@ -4,16 +4,15 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\DataPermission\Provider;
 
-use PDO;
-use RuntimeException;
+use think\db\PDOConnection;
 
-final readonly class PdoDepartmentHierarchyProvider implements DepartmentHierarchyProvider
+final readonly class ThinkPhpDepartmentHierarchyProvider implements DepartmentHierarchyProvider
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(private PDOConnection $connection) {}
 
     public function descendantsIncludingSelf(int $tenantId, int $departmentId): array
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 WITH RECURSIVE descendants AS (
     SELECT id, 1 AS depth
     FROM pa_department
@@ -27,16 +26,12 @@ WITH RECURSIVE descendants AS (
       AND descendants.depth < 10
 )
 SELECT id FROM descendants ORDER BY id
-SQL);
-        if ($statement === false) {
-            throw new RuntimeException('Could not prepare the department hierarchy query.');
-        }
-        $statement->execute([
+SQL, [
             'tenant_id' => $tenantId,
             'department_id' => $departmentId,
             'recursive_tenant_id' => $tenantId,
         ]);
 
-        return array_values(array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN)));
+        return array_values(array_map(static fn(array $row): int => (int) $row['id'], $rows));
     }
 }

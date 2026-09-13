@@ -8,10 +8,10 @@ use DateTimeImmutable;
 use PDO;
 use PDOException;
 use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
-use PeanutAdmin\DataPermission\Catalog\PdoResourceOperationCatalog;
+use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
-use PeanutAdmin\DataPermission\Policy\PdoPolicyRepository;
+use PeanutAdmin\DataPermission\Policy\PolicyStore;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
@@ -745,9 +745,10 @@ SQL);
             'host.workflow.subject.resolver',
             new CapabilitySubjectTargetResolver($this->database),
         );
+        $connection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->dataAuthorization = new DataPermissionEngine(
-            new PdoResourceOperationCatalog($this->database),
-            new PdoPolicyRepository($this->database),
+            new ResourceOperationStore($connection),
+            new PolicyStore($connection),
             new PolicyCache(),
             $this->functionalAuthorization,
             new ResourceProviderRegistry(),

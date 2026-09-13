@@ -7,6 +7,7 @@ namespace PeanutAdmin\DataPermission\Tests\Security;
 use DateTimeImmutable;
 use PDO;
 use PDOException;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
@@ -41,7 +42,10 @@ final class AuthorizationPathParityTest extends DatabaseTestCase
             'root',
             getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
         ))->migrate();
-        $this->fixture = AuthorizationAcceptanceFixture::install($this->database);
+        $this->fixture = AuthorizationAcceptanceFixture::install(
+            $this->database,
+            ThinkPhpTestConnection::fromPdo($this->database),
+        );
     }
 
     public function testListDetailSearchAndAggregateApplyAuthorizationInsideSql(): void

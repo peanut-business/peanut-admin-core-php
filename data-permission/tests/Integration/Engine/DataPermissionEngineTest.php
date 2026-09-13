@@ -6,16 +6,17 @@ namespace PeanutAdmin\DataPermission\Tests\Integration\Engine;
 
 use DateTimeImmutable;
 use PDO;
-use PeanutAdmin\DataPermission\Catalog\PdoResourceOperationCatalog;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
+use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
 use PeanutAdmin\DataPermission\Constraint\ColumnReference;
 use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
-use PeanutAdmin\DataPermission\Policy\PdoPolicyRepository;
+use PeanutAdmin\DataPermission\Policy\PolicyStore;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Provider\ConditionProviderRegistry;
-use PeanutAdmin\DataPermission\Provider\PdoDepartmentHierarchyProvider;
-use PeanutAdmin\DataPermission\Provider\PdoTargetSetMembershipProvider;
+use PeanutAdmin\DataPermission\Provider\ThinkPhpDepartmentHierarchyProvider;
+use PeanutAdmin\DataPermission\Provider\ThinkPhpTargetSetMembershipProvider;
 use PeanutAdmin\DataPermission\Provider\ProviderColumnMap;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
@@ -39,6 +40,7 @@ use PeanutAdmin\Kernel\Authorization\Persistence\TargetTypeDefinition;
 use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
+use think\db\PDOConnection;
 
 require_once dirname(__DIR__, 4) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
 require_once dirname(__DIR__) . '/Schema/DataPermissionMigrationRunner.php';
@@ -65,6 +67,7 @@ final class DataPermissionEngineTest extends DatabaseTestCase
     private PdoAuthorizationCatalogRepository $authorizationCatalog;
     private DataPermissionEngine $engine;
     private TenantContext $context;
+    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -80,6 +83,7 @@ final class DataPermissionEngineTest extends DatabaseTestCase
         $this->createFixtureTables();
         $this->seedKernel();
         $this->seedBusinessFixtures();
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->engine = $this->engine();
     }
 
@@ -271,7 +275,7 @@ SQL);
             } else {
                 self::assertStringContainsString('EXISTS (', $compiled->sql);
                 self::assertLessThan(10, count($compiled->parameters));
-                self::assertTrue((new PdoTargetSetMembershipProvider($this->database))->containsAll(
+                self::assertTrue((new ThinkPhpTargetSetMembershipProvider($this->connection))->containsAll(
                     $this->alphaTenant,
                     $targetSetId,
                     $targetIds,
@@ -418,8 +422,8 @@ SQL);
                 new ColumnReference('work_item.department_id'),
                 ['example.project' => new ColumnReference('work_item.project_id')],
             ),
-            new PdoDepartmentHierarchyProvider($this->database),
-            new PdoTargetSetMembershipProvider($this->database),
+            new ThinkPhpDepartmentHierarchyProvider($this->connection),
+            new ThinkPhpTargetSetMembershipProvider($this->connection),
             new ConditionProviderRegistry(),
         );
         $providers = new ResourceProviderRegistry();
@@ -430,8 +434,8 @@ SQL);
         $resolvers->register('example.project.resolver', new ProjectTargetResolver($this->database));
 
         return new DataPermissionEngine(
-            new PdoResourceOperationCatalog($this->database),
-            new PdoPolicyRepository($this->database),
+            new ResourceOperationStore($this->connection),
+            new PolicyStore($this->connection),
             new PolicyCache(),
             new TenantAuthorizationEvaluator(
                 new PdoTenantAuthorizationRepository($this->database),

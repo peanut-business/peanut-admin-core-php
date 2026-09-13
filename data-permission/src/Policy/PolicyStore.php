@@ -6,16 +6,15 @@ namespace PeanutAdmin\DataPermission\Policy;
 
 use DateTimeImmutable;
 use DateTimeZone;
-use PDO;
-use RuntimeException;
+use think\db\PDOConnection;
 
-final readonly class PdoPolicyRepository implements PolicyRepository
+final readonly class PolicyStore implements PolicyRepository
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(private PDOConnection $connection) {}
 
     public function revision(int $tenantId, int $memberId, int $operationId): PolicyRevision
     {
-        $statement = $this->prepare(<<<'SQL'
+        $row = $this->one(<<<'SQL'
 SELECT
     t.authorization_revision AS tenant_revision,
     tm.authorization_revision AS member_revision,
@@ -46,14 +45,12 @@ LEFT JOIN pa_data_permission_target_set target_set
   ON target_set.tenant_id = t.id AND target_set.id = policy_condition.target_set_id
 WHERE t.id = :tenant_id
 GROUP BY t.id, t.authorization_revision, tm.authorization_revision
-SQL);
-        $statement->execute([
+SQL, [
             'tenant_id' => $tenantId,
             'member_id' => $memberId,
             'operation_id' => $operationId,
         ]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+        if ($row === null) {
             return new PolicyRevision(hash('sha256', "missing:{$tenantId}:{$memberId}"), null);
         }
         $nextTransition = is_string($row['next_transition'])
@@ -65,17 +62,15 @@ SQL);
 
     public function load(int $tenantId, int $memberId, int $operationId): EffectivePolicySet
     {
-        $member = $this->prepare(<<<'SQL'
+        $memberRow = $this->one(<<<'SQL'
 SELECT primary_department_id FROM pa_tenant_member
 WHERE tenant_id = :tenant_id AND id = :member_id AND status = 'active'
-SQL);
-        $member->execute(['tenant_id' => $tenantId, 'member_id' => $memberId]);
-        $memberRow = $member->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($memberRow)) {
+SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]);
+        if ($memberRow === null) {
             return new EffectivePolicySet([], null);
         }
 
-        $statement = $this->prepare(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT policy.id AS policy_id, policy.role_id,
        policy_group.id AS group_id,
        policy_condition.id AS condition_id,
@@ -115,8 +110,7 @@ JOIN pa_resource_operation_condition allowed_condition
  )
 WHERE member_role.tenant_id = :tenant_id AND member_role.tenant_member_id = :member_id
 ORDER BY policy.id, policy_group.sort_order, policy_group.id, policy_condition.id
-SQL);
-        $statement->execute([
+SQL, [
             'tenant_id' => $tenantId,
             'member_id' => $memberId,
             'operation_id' => $operationId,
@@ -125,7 +119,7 @@ SQL);
 
         /** @var array<int, array{policy_id: int, role_id: int, conditions: list<EffectiveCondition>}> $groups */
         $groups = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+        foreach ($rows as $row) {
             $groupId = (int) $row['group_id'];
             $groups[$groupId] ??= [
                 'policy_id' => (int) $row['policy_id'],
@@ -167,33 +161,31 @@ SQL);
     /** @return array{list<string>, int} */
     private function targets(int $tenantId, int $targetSetId): array
     {
-        $countStatement = $this->prepare(<<<'SQL'
-SELECT COUNT(*) FROM pa_data_permission_target
+        $countRow = $this->one(<<<'SQL'
+SELECT COUNT(*) AS aggregate FROM pa_data_permission_target
 WHERE tenant_id = :tenant_id AND target_set_id = :target_set_id AND status = 'active'
-SQL);
-        $countStatement->execute(['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
-        $count = (int) $countStatement->fetchColumn();
+SQL, ['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
+        $count = (int) ($countRow['aggregate'] ?? 0);
         if ($count > 500) {
             return [[], $count];
         }
 
-        $statement = $this->prepare(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT target_id FROM pa_data_permission_target
 WHERE tenant_id = :tenant_id AND target_set_id = :target_set_id AND status = 'active'
 ORDER BY target_id
-SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
+SQL, ['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
 
-        return [array_values(array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN))), $count];
+        return [array_values(array_map(static fn(array $row): string => (string) $row['target_id'], $rows)), $count];
     }
 
-    private function prepare(string $sql): \PDOStatement
+    /** @param array<string, int|string> $parameters
+     * @return array<string, mixed>|null
+     */
+    private function one(string $sql, array $parameters = []): ?array
     {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new RuntimeException('Could not prepare the data-permission query.');
-        }
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
 
-        return $statement;
+        return is_array($row) ? $row : null;
     }
 }

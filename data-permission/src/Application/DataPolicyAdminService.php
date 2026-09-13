@@ -7,18 +7,19 @@ namespace PeanutAdmin\DataPermission\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
-use PDO;
-use PDOStatement;
 use PeanutAdmin\DataPermission\Target\TargetResolverRegistry;
 use PeanutAdmin\DataPermission\Target\TypedResourceTargetSet;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\db\PDOConnection;
 use Throwable;
 
 final readonly class DataPolicyAdminService
 {
     public function __construct(
-        private PDO $pdo,
+        private PDOConnection $connection,
+        private TransactionManager $transactions,
         private TargetResolverRegistry $targetResolvers,
     ) {}
 
@@ -119,7 +120,7 @@ SQL, [
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
-                $policyId = (int) $this->pdo->lastInsertId();
+                $policyId = $this->lastInsertId();
             } else {
                 $policyId = (int) $existing['id'];
                 $this->deletePolicyChildren($actor->tenantId, $policyId);
@@ -379,11 +380,11 @@ SQL, ['target_resource_key' => $targetResourceKey]);
     private function validateDepartments(int $tenantId, array $targetIds): void
     {
         $placeholders = implode(', ', array_fill(0, count($targetIds), '?'));
-        $statement = $this->statement(
-            "SELECT COUNT(*) FROM pa_department WHERE tenant_id = ? AND status = 'active' AND id IN ({$placeholders})",
-        );
-        $statement->execute([$tenantId, ...$targetIds]);
-        if ((int) $statement->fetchColumn() !== count($targetIds)) {
+        $row = $this->connection->query(
+            "SELECT COUNT(*) AS aggregate FROM pa_department WHERE tenant_id = ? AND status = 'active' AND id IN ({$placeholders})",
+            [$tenantId, ...$targetIds],
+        )[0] ?? null;
+        if (!is_array($row) || (int) $row['aggregate'] !== count($targetIds)) {
             throw AdminAccessException::invalid(
                 'AUTHZ_TARGET_NOT_FOUND',
                 'A selected department does not exist in the tenant.',
@@ -417,7 +418,7 @@ SQL, [
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            $groupId = (int) $this->pdo->lastInsertId();
+            $groupId = $this->lastInsertId();
             foreach ($group['conditions'] as $condition) {
                 $targetSetId = null;
                 if ($condition['target_set'] !== null) {
@@ -440,7 +441,7 @@ SQL, [
                         'created_at' => $now,
                         'updated_at' => $now,
                     ]);
-                    $targetSetId = (int) $this->pdo->lastInsertId();
+                    $targetSetId = $this->lastInsertId();
                     foreach ($targetSet['target_ids'] as $targetId) {
                         $this->execute(<<<'SQL'
 INSERT INTO pa_data_permission_target (
@@ -481,7 +482,7 @@ SQL, [
 
     private function deletePolicyChildren(int $tenantId, int $policyId): void
     {
-        $statement = $this->statement(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT DISTINCT condition_row.target_set_id
 FROM pa_data_permission_group group_row
 JOIN pa_data_permission_condition condition_row
@@ -490,27 +491,32 @@ JOIN pa_data_permission_condition condition_row
 WHERE group_row.tenant_id = :tenant_id
   AND group_row.data_permission_policy_id = :policy_id
   AND condition_row.target_set_id IS NOT NULL
-SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'policy_id' => $policyId]);
-        $targetSetIds = array_values(array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN)));
+SQL, ['tenant_id' => $tenantId, 'policy_id' => $policyId]);
+        $targetSetIds = array_values(array_map(
+            static fn(array $row): int => (int) $row['target_set_id'],
+            $rows,
+        ));
         if ($targetSetIds !== []) {
             $placeholders = implode(', ', array_fill(0, count($targetSetIds), '?'));
-            $this->statement(
+            $this->connection->execute(
                 "DELETE FROM pa_data_permission_target WHERE tenant_id = ? AND target_set_id IN ({$placeholders})",
-            )->execute([$tenantId, ...$targetSetIds]);
+                [$tenantId, ...$targetSetIds],
+            );
         }
         $groupIds = $this->groupIds($tenantId, $policyId);
         if ($groupIds !== []) {
             $placeholders = implode(', ', array_fill(0, count($groupIds), '?'));
-            $this->statement(
+            $this->connection->execute(
                 "DELETE FROM pa_data_permission_condition WHERE tenant_id = ? AND data_permission_group_id IN ({$placeholders})",
-            )->execute([$tenantId, ...$groupIds]);
+                [$tenantId, ...$groupIds],
+            );
         }
         if ($targetSetIds !== []) {
             $placeholders = implode(', ', array_fill(0, count($targetSetIds), '?'));
-            $this->statement(
+            $this->connection->execute(
                 "DELETE FROM pa_data_permission_target_set WHERE tenant_id = ? AND id IN ({$placeholders})",
-            )->execute([$tenantId, ...$targetSetIds]);
+                [$tenantId, ...$targetSetIds],
+            );
         }
         $this->execute(<<<'SQL'
 DELETE FROM pa_data_permission_group
@@ -521,20 +527,19 @@ SQL, ['tenant_id' => $tenantId, 'policy_id' => $policyId]);
     /** @return list<int> */
     private function groupIds(int $tenantId, int $policyId): array
     {
-        $statement = $this->statement(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT id FROM pa_data_permission_group
 WHERE tenant_id = :tenant_id AND data_permission_policy_id = :policy_id
 ORDER BY id
-SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'policy_id' => $policyId]);
+SQL, ['tenant_id' => $tenantId, 'policy_id' => $policyId]);
 
-        return array_values(array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN)));
+        return array_values(array_map(static fn(array $row): int => (int) $row['id'], $rows));
     }
 
     /** @return array<string, list<array<string, mixed>>> */
     private function allowedConditions(int $operationId): array
     {
-        $statement = $this->statement(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT definition.id AS definition_id, definition.`key` AS condition_key,
        definition.target_mode, definition.config_schema_json,
        allowed.selector_resource_key
@@ -543,10 +548,9 @@ JOIN pa_data_condition_definition definition
   ON definition.id = allowed.condition_definition_id AND definition.status = 'active'
 WHERE allowed.resource_operation_id = :operation_id AND allowed.status = 'active'
 ORDER BY definition.`key`, allowed.selector_resource_key
-SQL);
-        $statement->execute(['operation_id' => $operationId]);
+SQL, ['operation_id' => $operationId]);
         $conditions = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+        foreach ($rows as $row) {
             $conditions[(string) $row['condition_key']][] = $row;
         }
 
@@ -631,16 +635,15 @@ SQL, ['policy_id' => $policyId]);
         if ($policy === null) {
             throw AdminAccessException::notFound();
         }
-        $groupStatement = $this->statement(<<<'SQL'
+        $groupRows = $this->connection->query(<<<'SQL'
 SELECT id, name, match_mode, sort_order, status, revision
 FROM pa_data_permission_group
 WHERE tenant_id = :tenant_id AND data_permission_policy_id = :policy_id
 ORDER BY sort_order, id
-SQL);
-        $groupStatement->execute(['tenant_id' => (int) $policy['tenant_id'], 'policy_id' => $policyId]);
+SQL, ['tenant_id' => (int) $policy['tenant_id'], 'policy_id' => $policyId]);
         $groups = [];
-        while (($group = $groupStatement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $conditionStatement = $this->statement(<<<'SQL'
+        foreach ($groupRows as $group) {
+            $conditionRows = $this->connection->query(<<<'SQL'
 SELECT condition_row.id, definition.`key` AS condition_key,
        condition_row.target_set_id, condition_row.config_json,
        condition_row.status, condition_row.revision
@@ -648,13 +651,12 @@ FROM pa_data_permission_condition condition_row
 JOIN pa_data_condition_definition definition ON definition.id = condition_row.condition_definition_id
 WHERE condition_row.tenant_id = :tenant_id AND condition_row.data_permission_group_id = :group_id
 ORDER BY condition_row.id
-SQL);
-            $conditionStatement->execute([
+SQL, [
                 'tenant_id' => (int) $policy['tenant_id'],
                 'group_id' => (int) $group['id'],
             ]);
             $conditions = [];
-            while (($condition = $conditionStatement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            foreach ($conditionRows as $condition) {
                 $condition['target_set'] = $condition['target_set_id'] === null
                     ? null
                     : $this->targetSet((int) $policy['tenant_id'], (int) $condition['target_set_id']);
@@ -684,15 +686,14 @@ SQL, ['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
         if ($targetSet === null) {
             throw new AdminAccessException('DATABASE_DATA_INVALID', 500, 'Policy target set is missing.');
         }
-        $statement = $this->statement(<<<'SQL'
+        $rows = $this->connection->query(<<<'SQL'
 SELECT target_id FROM pa_data_permission_target
 WHERE tenant_id = :tenant_id AND target_set_id = :target_set_id AND status = 'active'
 ORDER BY target_id
-SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
+SQL, ['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
         $targetSet['targets'] = array_values(array_map(
-            static fn(string $targetId): array => ['target_id' => $targetId],
-            array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN)),
+            static fn(array $row): array => ['target_id' => (string) $row['target_id']],
+            $rows,
         ));
 
         return $this->normalize($targetSet);
@@ -819,10 +820,7 @@ SQL, [
     /** @param array<string, int|string|null> $parameters */
     private function execute(string $sql, array $parameters = []): int
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-
-        return $statement->rowCount();
+        return $this->connection->execute($sql, $parameters);
     }
 
     /** @param array<string, int|string|null> $parameters
@@ -830,21 +828,19 @@ SQL, [
      */
     private function fetchOne(string $sql, array $parameters = []): ?array
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
 
         return is_array($row) ? $row : null;
     }
 
-    private function statement(string $sql): PDOStatement
+    private function lastInsertId(): int
     {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new AdminAccessException('DATABASE_ERROR', 500, 'Could not prepare the database operation.');
+        $row = $this->fetchOne('SELECT LAST_INSERT_ID() AS id');
+        if ($row === null) {
+            throw new AdminAccessException('DATABASE_ERROR', 500, 'Could not read the inserted policy identifier.');
         }
 
-        return $statement;
+        return (int) $row['id'];
     }
 
     private function now(): string
@@ -858,18 +854,6 @@ SQL, [
      */
     private function transaction(callable $operation): mixed
     {
-        $this->pdo->beginTransaction();
-        try {
-            $result = $operation();
-            $this->pdo->commit();
-
-            return $result;
-        } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-
-            throw $exception;
-        }
+        return $this->transactions->run($operation);
     }
 }
