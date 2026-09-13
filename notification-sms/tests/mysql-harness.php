@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 $root = dirname(__DIR__, 4);
+require_once $root . '/vendor/autoload.php';
 spl_autoload_register(static function (string $class) use ($root): void {
     foreach ([
         'PeanutAdmin\\NotificationSms\\' => $root . '/packages/php/notification-sms/src/',
@@ -18,11 +19,13 @@ spl_autoload_register(static function (string $class) use ($root): void {
     }
 });
 
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
 use PeanutAdmin\NotificationSms\Application\AttachmentResolver;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
@@ -32,7 +35,7 @@ use PeanutAdmin\NotificationSms\Application\RecipientSnapshot;
 use PeanutAdmin\NotificationSms\Application\TemplateRenderer;
 use PeanutAdmin\NotificationSms\Database\Schema;
 use PeanutAdmin\NotificationSms\Package;
-use PeanutAdmin\NotificationSms\Persistence\PdoNotificationRepository;
+use PeanutAdmin\NotificationSms\Persistence\NotificationStore;
 use PeanutAdmin\NotificationSms\Sms\SmsRecipient;
 use PeanutAdmin\NotificationSms\Task\NotificationOutboxDispatcher;
 use PeanutAdmin\NotificationSms\Task\OutboxTaskSubmissionProvider;
@@ -80,6 +83,8 @@ $pdo = new PDO($dsn, $user, $password, [
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES => false,
 ]);
+$connection = ThinkPhpTestConnection::fromPdo($pdo);
+$transactions = new ThinkPhpTransactionManager($connection);
 
 $drop = array_reverse(Schema::tableNames());
 $taskDrop = array_reverse(TaskJobSchema::tableNames());
@@ -118,10 +123,11 @@ SQL);
         $pdo->exec(Schema::createSql($table));
     }
 
-    $repository = new PdoNotificationRepository($pdo);
+    $repository = new NotificationStore($connection);
     $digestKey = str_repeat('k', 32);
     $service = new NotificationService(
         $repository,
+        $transactions,
         new class ($digestKey) implements RecipientResolver {
             public function __construct(private readonly string $digestKey) {}
             public function snapshot(TenantContext $context, int $memberId, bool $requiresSms): RecipientSnapshot
@@ -192,22 +198,27 @@ SQL);
         ]),
         new TrustedEnvelopeCodec(str_repeat('e', 32)),
     );
-    $dispatcher = new NotificationOutboxDispatcher($repository, $publisher);
+    $dispatcher = new NotificationOutboxDispatcher($repository, $transactions, $publisher);
     $messageCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn();
     $outboxCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_outbox')->fetchColumn();
     $notificationEventCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_event')->fetchColumn();
-    $pdo->beginTransaction();
-    $transactional = $service->publish($manage101, 'security.alert', [[
-        'member_id' => 501,
-        'variables' => ['code' => 'ROLLBACK'],
-    ]], []);
-    foreach ($transactional['outbox'] as $outbox) {
-        $dispatcher->dispatch($manage101, $outbox->outboxKey);
+    try {
+        $transactions->run(function () use ($service, $manage101, $dispatcher, $pdo): never {
+            $transactional = $service->publish($manage101, 'security.alert', [[
+                'member_id' => 501,
+                'variables' => ['code' => 'ROLLBACK'],
+            ]], []);
+            foreach ($transactional['outbox'] as $outbox) {
+                $dispatcher->dispatch($manage101, $outbox->outboxKey);
+            }
+            same(2, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn(), 'outer transaction sees notification');
+            same(2, (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job')->fetchColumn(), 'outer transaction sees dispatch jobs');
+            same(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_notification_outbox WHERE status = 'queued'")->fetchColumn(), 'outer transaction binds dispatch jobs');
+            throw new RuntimeException('EXPECTED_OUTER_ROLLBACK');
+        });
+    } catch (RuntimeException $exception) {
+        same('EXPECTED_OUTER_ROLLBACK', $exception->getMessage(), 'outer transaction rollback sentinel');
     }
-    same(2, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn(), 'outer transaction sees notification');
-    same(2, (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job')->fetchColumn(), 'outer transaction sees dispatch jobs');
-    same(2, (int) $pdo->query("SELECT COUNT(*) FROM pa_notification_outbox WHERE status = 'queued'")->fetchColumn(), 'outer transaction binds dispatch jobs');
-    $pdo->rollBack();
     same($messageCount, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn(), 'outer rollback removes notification');
     same($outboxCount, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_outbox')->fetchColumn(), 'outer rollback removes outbox rows');
     same(0, (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job')->fetchColumn(), 'outer rollback removes dispatch jobs');

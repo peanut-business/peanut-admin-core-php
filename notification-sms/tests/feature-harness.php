@@ -22,6 +22,7 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
 use PeanutAdmin\NotificationSms\Application\AttachmentResolver;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
@@ -34,7 +35,7 @@ use PeanutAdmin\NotificationSms\Application\TemplateRenderer;
 use PeanutAdmin\NotificationSms\Database\Schema;
 use PeanutAdmin\NotificationSms\Package;
 use PeanutAdmin\NotificationSms\Persistence\NotificationRepository;
-use PeanutAdmin\NotificationSms\Persistence\PdoNotificationRepository;
+use PeanutAdmin\NotificationSms\Persistence\NotificationStore;
 use PeanutAdmin\NotificationSms\Persistence\SmsDispatch;
 use PeanutAdmin\NotificationSms\Sms\LocalDevSmsProvider;
 use PeanutAdmin\NotificationSms\Sms\SmsProvider;
@@ -104,10 +105,6 @@ final class MemoryRepository implements NotificationRepository
         $this->smsDigest = (new SmsRecipient('+8613800138000', str_repeat('k', 32)))->digest;
     }
 
-    public function transaction(callable $operation): mixed
-    {
-        return $operation();
-    }
     public function putTemplate(TenantContext $context, string $templateKey, string $name, string $subjectTemplate, string $bodyTemplate, array $channels, array $variables, ?int $expectedRevision): array
     {
         return ['template_key' => $templateKey, 'revision' => 1];
@@ -201,9 +198,16 @@ same('{}', json_encode($request, JSON_THROW_ON_ERROR), 'provider request is not 
 same($provider->send($request)->providerMessageKey, $provider->send($request)->providerMessageKey, 'provider idempotency');
 same(1, $provider->acceptedCount(), 'provider deduplicates job key');
 
+$transactions = new class implements TransactionManager {
+    public function run(callable $operation): mixed
+    {
+        return $operation();
+    }
+};
 $repository = new MemoryRepository();
 $service = new NotificationService(
     $repository,
+    $transactions,
     new class implements RecipientResolver {
         public function snapshot(TenantContext $context, int $memberId, bool $requiresSms): RecipientSnapshot
         {
@@ -249,7 +253,7 @@ $resolver = new class implements SmsRecipientResolver {
         return new SmsRecipient('+8613800138000', str_repeat('k', 32));
     }
 };
-$handler = new SmsTaskHandler($repository, $resolver, $provider);
+$handler = new SmsTaskHandler($repository, $transactions, $resolver, $provider);
 $execution = new JobExecution('job_' . str_repeat('b', 32), 101, 1, ['outbox_key' => 'outbox_' . str_repeat('2', 32)]);
 $handler->handle(context('manage'), $execution);
 same('DEV_ACCEPTED', $repository->receipt?->receiptCode, 'redacted dev receipt');
@@ -258,7 +262,7 @@ $handler->handle(context('manage'), $execution);
 $limited = new MemoryRepository();
 $limited->rateAllowed = false;
 try {
-    (new SmsTaskHandler($limited, $resolver, new LocalDevSmsProvider()))->handle(context('manage'), $execution);
+    (new SmsTaskHandler($limited, $transactions, $resolver, new LocalDevSmsProvider()))->handle(context('manage'), $execution);
     throw new RuntimeException('rate limit did not retry');
 } catch (RetryableTaskException $exception) {
     same('SMS_RATE_LIMITED', $exception->safeCode, 'rate error class');
@@ -268,7 +272,7 @@ try {
 $transientLookup = new MemoryRepository();
 $transientLookup->failureWriteFails = true;
 try {
-    (new SmsTaskHandler($transientLookup, new class implements SmsRecipientResolver {
+    (new SmsTaskHandler($transientLookup, $transactions, new class implements SmsRecipientResolver {
         public function resolve(int $tenantId, int $memberId): SmsRecipient
         {
             throw new RuntimeException('private lookup detail');
@@ -283,7 +287,7 @@ try {
 $beginFailure = new MemoryRepository();
 $beginFailure->beginFails = true;
 try {
-    (new SmsTaskHandler($beginFailure, $resolver, new LocalDevSmsProvider()))->handle(context('manage'), $execution);
+    (new SmsTaskHandler($beginFailure, $transactions, $resolver, new LocalDevSmsProvider()))->handle(context('manage'), $execution);
     throw new RuntimeException('begin persistence failure did not retry');
 } catch (RetryableTaskException $exception) {
     same('SMS_OUTBOX_PERSISTENCE_FAILED', $exception->safeCode, 'begin persistence classification');
@@ -292,7 +296,7 @@ try {
 $inboxFailure = new MemoryRepository();
 $inboxFailure->inboxDeliveryFails = true;
 try {
-    (new InboxTaskHandler($inboxFailure))->handle(context('manage'), new JobExecution(
+    (new InboxTaskHandler($inboxFailure, $transactions))->handle(context('manage'), new JobExecution(
         'job_' . str_repeat('c', 32),
         101,
         1,
@@ -305,7 +309,7 @@ try {
 
 $permanentProvider = new MemoryRepository();
 try {
-    (new SmsTaskHandler($permanentProvider, $resolver, new class implements SmsProvider {
+    (new SmsTaskHandler($permanentProvider, $transactions, $resolver, new class implements SmsProvider {
         public function key(): string
         {
             return 'test-provider';
@@ -322,7 +326,7 @@ try {
 }
 
 same(6, count(Schema::tableNames()), 'owned table count');
-if (!class_exists(PdoNotificationRepository::class)) {
+if (!class_exists(NotificationStore::class)) {
     throw new RuntimeException('PDO repository contract does not load');
 }
 $schema = implode("\n", array_map(Schema::createSql(...), Schema::tableNames()));

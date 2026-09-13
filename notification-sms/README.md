@@ -30,9 +30,9 @@ payload contains only `outbox_key`. `InboxTaskHandler` and `SmsTaskHandler`
 reload the Tenant-owned outbox and use `JobExecution::jobKey` as the stable
 delivery idempotency key.
 
-`NotificationOutboxDispatcher` enqueues and binds the returned job in one outer
-PDO transaction. The accepted B01 repository must join an existing transaction
-instead of committing independently. The outbox key is also the Task/Job
+`NotificationOutboxDispatcher` enqueues and binds the returned job through the
+Host-injected `TransactionManager`. `NotificationStore` uses the same injected
+ThinkPHP connection and never commits independently. The outbox key is also the Task/Job
 idempotency key. A failed publication rolls back both writes, while the original
 business outbox remains durable for a later dispatch attempt.
 
@@ -86,7 +86,8 @@ feature-local contracts:
   stable for the Tenant;
 - registration of both submission providers and both handlers in the trusted
   Task/Job registries; no generic handler/payload endpoint;
-- the accepted B01 transaction-joining enqueue implementation; integration
+- the accepted B01 transaction-joining enqueue implementation using the shared
+  ThinkPHP connection and `TransactionManager`; integration
   must prove task enqueue and outbox job binding commit or roll back together;
 - Problem Details, OpenAPI/generated artifacts, Runtime coverage, shared audit
   projection, `/app/notifications`, standard Admin registration, canonical

@@ -12,8 +12,6 @@ use PeanutAdmin\NotificationSms\Application\RecipientSnapshot;
 
 interface NotificationRepository
 {
-    public function transaction(callable $operation): mixed;
-
     /**
      * @param list<string> $channels
      * @param list<string> $variables
@@ -34,6 +32,7 @@ interface NotificationRepository
     public function activeTemplate(int $tenantId, string $templateKey): array;
 
     /**
+     * @param array{template_key: string, revision: int, channels: list<string>} $template
      * @param list<AttachmentReference> $attachments
      * @return array{message: NotificationMessage, outbox: list<OutboxRecord>}
      */

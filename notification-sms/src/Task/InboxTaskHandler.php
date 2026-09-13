@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\NotificationSms\Task;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
 use PeanutAdmin\NotificationSms\Package;
 use PeanutAdmin\NotificationSms\Persistence\NotificationRepository;
@@ -15,7 +16,10 @@ use Throwable;
 
 final readonly class InboxTaskHandler implements TaskHandler
 {
-    public function __construct(private NotificationRepository $repository) {}
+    public function __construct(
+        private NotificationRepository $repository,
+        private TransactionManager $transactions,
+    ) {}
 
     public function key(): string
     {
@@ -32,7 +36,9 @@ final readonly class InboxTaskHandler implements TaskHandler
             throw NotificationException::denied();
         }
         try {
-            $this->repository->deliverInbox($execution->tenantId, $outboxKey, $execution->jobKey);
+            $this->transactions->run(function () use ($execution, $outboxKey): void {
+                $this->repository->deliverInbox($execution->tenantId, $outboxKey, $execution->jobKey);
+            });
         } catch (NotificationException $exception) {
             throw $exception;
         } catch (Throwable) {

@@ -51,7 +51,7 @@ use PeanutAdmin\NotificationSms\Application\RecipientSnapshot;
 use PeanutAdmin\NotificationSms\Application\TemplateRenderer;
 use PeanutAdmin\NotificationSms\Database\Schema as NotificationSchema;
 use PeanutAdmin\NotificationSms\Package as NotificationPackage;
-use PeanutAdmin\NotificationSms\Persistence\PdoNotificationRepository;
+use PeanutAdmin\NotificationSms\Persistence\NotificationStore;
 use PeanutAdmin\TaskJob\Database\Schema as TaskJobSchema;
 use PeanutAdmin\TaskJob\Persistence\PdoTaskJobRepository;
 use PeanutAdmin\TaskJob\Submission\TaskSubmission;
@@ -127,8 +127,10 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
         }
         $this->createHostFixtureTables();
         $this->seedAuthorities();
+        $notificationConnection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->notifications = new NotificationService(
-            new PdoNotificationRepository($this->database),
+            new NotificationStore($notificationConnection),
+            new ThinkPhpTransactionManager($notificationConnection),
             new CapabilityRecipientResolver($this->database),
             new CapabilityNotificationAttachments(),
             new TemplateRenderer(),

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\NotificationSms\Task;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
 use PeanutAdmin\NotificationSms\Package;
 use PeanutAdmin\NotificationSms\Persistence\NotificationRepository;
@@ -22,6 +23,7 @@ final readonly class SmsTaskHandler implements TaskHandler
 {
     public function __construct(
         private NotificationRepository $repository,
+        private TransactionManager $transactions,
         private SmsRecipientResolver $recipients,
         private SmsProvider $provider,
     ) {}
@@ -41,7 +43,9 @@ final readonly class SmsTaskHandler implements TaskHandler
         }
         $outboxKey = $this->outboxKey($execution);
         try {
-            $dispatch = $this->repository->beginSms($execution->tenantId, $outboxKey, $execution->jobKey);
+            $dispatch = $this->transactions->run(
+                fn(): SmsDispatch => $this->repository->beginSms($execution->tenantId, $outboxKey, $execution->jobKey),
+            );
         } catch (NotificationException $exception) {
             throw $exception;
         } catch (Throwable) {
@@ -64,7 +68,9 @@ final readonly class SmsTaskHandler implements TaskHandler
             throw NotificationException::invalid('SMS_RECIPIENT_CHANGED');
         }
         try {
-            $rateAllowed = $this->repository->reserveSmsRate($dispatch->tenantId, $dispatch->recipientDigest());
+            $rateAllowed = $this->transactions->run(
+                fn(): bool => $this->repository->reserveSmsRate($dispatch->tenantId, $dispatch->recipientDigest()),
+            );
         } catch (Throwable) {
             $this->recordFailure($dispatch, 'SMS_RATE_CHECK_FAILED', true);
             throw new RetryableTaskException('SMS_RATE_CHECK_FAILED');
@@ -98,7 +104,9 @@ final readonly class SmsTaskHandler implements TaskHandler
             throw new RetryableTaskException('SMS_PROVIDER_UNAVAILABLE');
         }
         try {
-            $this->repository->completeSms($dispatch, $receipt);
+            $this->transactions->run(function () use ($dispatch, $receipt): void {
+                $this->repository->completeSms($dispatch, $receipt);
+            });
         } catch (Throwable) {
             $this->recordFailure($dispatch, 'SMS_DELIVERY_COMMIT_FAILED', true);
             throw new RetryableTaskException('SMS_DELIVERY_COMMIT_FAILED');
@@ -118,7 +126,9 @@ final readonly class SmsTaskHandler implements TaskHandler
     private function recordFailure(SmsDispatch $dispatch, string $safeCode, bool $retryable): void
     {
         try {
-            $this->repository->failSms($dispatch, $safeCode, $retryable);
+            $this->transactions->run(function () use ($dispatch, $safeCode, $retryable): void {
+                $this->repository->failSms($dispatch, $safeCode, $retryable);
+            });
         } catch (Throwable) {
             // The task classification is authoritative even when evidence
             // persistence is the dependency that failed.
