@@ -6,22 +6,27 @@ namespace PeanutAdmin\ArtifactRevision\Tests\Integration\Application;
 
 use DateTimeImmutable;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\ArtifactRevision\Application\ArtifactRevisionException;
 use PeanutAdmin\ArtifactRevision\Application\ArtifactRevisionReceipt;
 use PeanutAdmin\ArtifactRevision\Application\ArtifactRevisionService;
 use PeanutAdmin\ArtifactRevision\Database\Schema;
-use PeanutAdmin\ArtifactRevision\Persistence\PdoArtifactRevisionRepository;
+use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionStore;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
+use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
+use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
 use PeanutAdmin\Kernel\Persistence\Schema\KernelSchema;
+use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ReflectionMethod;
 use RuntimeException;
+use think\db\PDOConnection;
 
 final class ArtifactRevisionServiceTest extends TestCase
 {
@@ -29,6 +34,7 @@ final class ArtifactRevisionServiceTest extends TestCase
 
     private PDO $admin;
     private PDO $pdo;
+    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -57,6 +63,8 @@ final class ArtifactRevisionServiceTest extends TestCase
             $password,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
         );
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->pdo);
+        $this->pdo = $this->connection->connect();
         $this->createKernelFixtures();
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
@@ -104,7 +112,7 @@ final class ArtifactRevisionServiceTest extends TestCase
     public function testCreateFinalizeReplayReadAndCompareLineage(): void
     {
         [$tenantId, $context] = $this->seedContext('req_artifact_service');
-        $service = new ArtifactRevisionService(new PdoArtifactRevisionRepository($this->pdo));
+        $service = $this->service();
 
         $firstCreate = $service->createRevision(
             $this->artifactContext($context, 'document.article', 'article-1', 'write'),
@@ -223,7 +231,7 @@ final class ArtifactRevisionServiceTest extends TestCase
     {
         [, $context] = $this->seedContext('req_artifact_owner');
         [, $otherContext] = $this->seedContext('req_artifact_other', 21, 201);
-        $service = new ArtifactRevisionService(new PdoArtifactRevisionRepository($this->pdo));
+        $service = $this->service();
         $created = $service->createRevision(
             $this->artifactContext($context, 'document.article', 'article-1', 'write'),
             'document.article',
@@ -266,7 +274,7 @@ final class ArtifactRevisionServiceTest extends TestCase
     public function testAuditFailureRollsBackArtifactRevisionAndIdempotency(): void
     {
         [, $context] = $this->seedContext('req_artifact_rollback');
-        $service = new ArtifactRevisionService(new PdoArtifactRevisionRepository($this->pdo));
+        $service = $this->service();
         $this->pdo->exec(<<<'SQL'
 CREATE TRIGGER artifact_revision_fail_audit BEFORE INSERT ON pa_tenant_audit_event
 FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'artifact audit failure'
@@ -320,6 +328,16 @@ SQL);
             hash('sha256', $suffix),
             null,
             "artifact-finalize-{$suffix}-01",
+        );
+    }
+
+    private function service(): ArtifactRevisionService
+    {
+        return new ArtifactRevisionService(
+            new ArtifactRevisionStore($this->connection),
+            new ThinkPhpTransactionManager($this->connection),
+            new PdoIdempotencyRepository($this->pdo),
+            new PdoAuditRepository($this->pdo),
         );
     }
 

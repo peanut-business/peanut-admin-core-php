@@ -14,11 +14,14 @@ use UnexpectedValueException;
 
 final readonly class ArtifactWorkflowSubjectRevisionResolver implements WorkflowSubjectRevisionResolver
 {
-    public function __construct(private ArtifactRevisionRepository $repository) {}
+    public function __construct(
+        private PDO $pdo,
+        private ArtifactRevisionRepository $repository,
+    ) {}
 
     public function connection(): PDO
     {
-        return $this->repository->connection();
+        return $this->pdo;
     }
 
     public function resolve(

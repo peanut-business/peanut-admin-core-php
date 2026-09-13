@@ -4,22 +4,16 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\ArtifactRevision\Persistence;
 
-use PDO;
-use PDOException;
-use PDOStatement;
 use PeanutAdmin\ArtifactRevision\Model\Artifact;
 use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
 use RuntimeException;
+use think\db\exception\PDOException;
+use think\db\PDOConnection;
 use UnexpectedValueException;
 
-final readonly class PdoArtifactRevisionRepository implements ArtifactRevisionRepository
+final readonly class ArtifactRevisionStore implements ArtifactRevisionRepository
 {
-    public function __construct(private PDO $pdo) {}
-
-    public function connection(): PDO
-    {
-        return $this->pdo;
-    }
+    public function __construct(private PDOConnection $connection) {}
 
     public function artifact(
         int $tenantId,
@@ -387,12 +381,13 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
         return $row === null ? null : Artifact::fromRow($row);
     }
 
-    /** @param array<string, int|string|null> $parameters */
+    /**
+     * @param array<string, int|string|null> $parameters
+     * @return array<string, mixed>|null
+     */
     private function fetchOne(string $sql, array $parameters): ?array
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
 
         return is_array($row) ? $row : null;
     }
@@ -400,26 +395,15 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
     /** @param array<string, int|string|null> $parameters */
     private function execute(string $sql, array $parameters): int
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-
-        return $statement->rowCount();
-    }
-
-    private function statement(string $sql): PDOStatement
-    {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new RuntimeException('Could not prepare artifact revision statement.');
-        }
-
-        return $statement;
+        return $this->connection->execute($sql, $parameters);
     }
 
     private function isDuplicate(PDOException $exception): bool
     {
-        return (string) ($exception->errorInfo[0] ?? $exception->getCode()) === '23000'
-            && (int) ($exception->errorInfo[1] ?? 0) === 1062;
+        $error = $exception->getData()['PDO Error Info'] ?? [];
+
+        return (string) ($error['SQLSTATE'] ?? $exception->getCode()) === '23000'
+            && (int) ($error['Driver Error Code'] ?? 0) === 1062;
     }
 
     private function conflict(string $message): RuntimeException

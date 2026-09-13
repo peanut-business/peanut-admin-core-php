@@ -6,19 +6,22 @@ namespace PeanutAdmin\ArtifactRevision\Tests\Integration\Persistence;
 
 use PDO;
 use PDOException;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\ArtifactRevision\Database\Schema;
 use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
-use PeanutAdmin\ArtifactRevision\Persistence\PdoArtifactRevisionRepository;
+use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionStore;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use think\db\PDOConnection;
 use UnexpectedValueException;
 
-final class PdoArtifactRevisionRepositoryTest extends TestCase
+final class ArtifactRevisionStoreTest extends TestCase
 {
     private const DATABASE = 'peanut_admin_p1_artifact_repository_test';
 
     private PDO $admin;
     private PDO $pdo;
+    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -47,6 +50,8 @@ final class PdoArtifactRevisionRepositoryTest extends TestCase
             $password,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
         );
+        $this->connection = ThinkPhpTestConnection::fromPdo($this->pdo);
+        $this->pdo = $this->connection->connect();
         $this->createKernelFixtures();
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
@@ -63,7 +68,7 @@ final class PdoArtifactRevisionRepositoryTest extends TestCase
     public function testSchemaCanReenterWithoutChangingKernelOrArtifactRows(): void
     {
         [$tenantId] = $this->seedTenant(11, 101);
-        $repository = new PdoArtifactRevisionRepository($this->pdo);
+        $repository = new ArtifactRevisionStore($this->connection);
         $repository->lockOrCreateArtifact($tenantId, 'document.article', 'article-1', 11, null, $this->now());
 
         foreach (Schema::createSql() as $statement) {
@@ -79,7 +84,7 @@ final class PdoArtifactRevisionRepositoryTest extends TestCase
     {
         [$tenantId] = $this->seedTenant(11, 101);
         [$otherTenantId] = $this->seedTenant(21, 201);
-        $repository = new PdoArtifactRevisionRepository($this->pdo);
+        $repository = new ArtifactRevisionStore($this->connection);
         $artifact = $repository->lockOrCreateArtifact(
             $tenantId,
             'document.article',
@@ -199,7 +204,7 @@ SQL)->execute([$parentId, $parentNumber, $revisionId]);
     public function testOptimisticAndImmutableGuardsRejectStaleWrites(): void
     {
         [$tenantId] = $this->seedTenant(11, 101);
-        $repository = new PdoArtifactRevisionRepository($this->pdo);
+        $repository = new ArtifactRevisionStore($this->connection);
         $artifact = $repository->lockOrCreateArtifact(
             $tenantId,
             'document.article',
@@ -260,7 +265,7 @@ SQL)->execute([$parentId, $parentNumber, $revisionId]);
     public function testFinalizedEnvelopeTamperingFailsClosed(): void
     {
         [$tenantId] = $this->seedTenant(11, 101);
-        $repository = new PdoArtifactRevisionRepository($this->pdo);
+        $repository = new ArtifactRevisionStore($this->connection);
         $artifact = $repository->lockOrCreateArtifact(
             $tenantId,
             'document.article',

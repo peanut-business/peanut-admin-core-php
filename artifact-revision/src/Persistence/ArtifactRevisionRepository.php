@@ -4,14 +4,11 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\ArtifactRevision\Persistence;
 
-use PDO;
 use PeanutAdmin\ArtifactRevision\Model\Artifact;
 use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
 
 interface ArtifactRevisionRepository
 {
-    public function connection(): PDO;
-
     public function artifact(
         int $tenantId,
         string $artifactType,

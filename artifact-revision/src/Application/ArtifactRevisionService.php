@@ -11,28 +11,23 @@ use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
 use PeanutAdmin\ArtifactRevision\Package;
 use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionRepository;
 use PeanutAdmin\Kernel\Api\ApiException;
+use PeanutAdmin\Kernel\Audit\AuditRepository;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
 use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
+use PeanutAdmin\Kernel\Persistence\TransactionManager;
 use RuntimeException;
 use Throwable;
 use UnexpectedValueException;
 
 final readonly class ArtifactRevisionService
 {
-    private PdoTransactionManager $transactions;
-    private PdoIdempotencyRepository $idempotency;
-    private PdoAuditRepository $audit;
-
-    public function __construct(private ArtifactRevisionRepository $repository)
-    {
-        $pdo = $repository->connection();
-        $this->transactions = new PdoTransactionManager($pdo);
-        $this->idempotency = new PdoIdempotencyRepository($pdo);
-        $this->audit = new PdoAuditRepository($pdo);
-    }
+    public function __construct(
+        private ArtifactRevisionRepository $repository,
+        private TransactionManager $transactions,
+        private PdoIdempotencyRepository $idempotency,
+        private AuditRepository $audit,
+    ) {}
 
     public function createRevision(
         AuthorizedOperationContext $context,
