@@ -16,7 +16,7 @@ final class ReferenceCodeAdminServiceTest extends ReferenceCodesDatabaseTestCase
     public function testSynchronizesDefinitionsIdempotently(): void
     {
         $definition = $this->definition();
-        $repository = new \PeanutAdmin\ReferenceCodes\Persistence\PdoReferenceCodeRepository($this->database);
+        $repository = new \PeanutAdmin\ReferenceCodes\Persistence\ReferenceCodeStore($this->connection);
         self::assertSame(
             ['inserted' => 1, 'updated' => 0, 'retired' => 0, 'reactivated' => 0],
             $repository->synchronize($this->registry($definition), new DateTimeImmutable(self::NOW)),

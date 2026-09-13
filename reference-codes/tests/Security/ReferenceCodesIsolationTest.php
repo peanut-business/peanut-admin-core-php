@@ -168,7 +168,7 @@ final class ReferenceCodesIsolationTest extends ReferenceCodesDatabaseTestCase
         }
     }
 
-    /** @return array{\PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition, \PeanutAdmin\ReferenceCodes\Persistence\PdoReferenceCodeRepository, array{tenant_id:int, member_id:int, context:TenantContext}, array{tenant_id:int, member_id:int, context:TenantContext}} */
+    /** @return array{\PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition, \PeanutAdmin\ReferenceCodes\Persistence\ReferenceCodeStore, array{tenant_id:int, member_id:int, context:TenantContext}, array{tenant_id:int, member_id:int, context:TenantContext}} */
     private function twoTenants(string $prefix): array
     {
         $definition = $this->definition();

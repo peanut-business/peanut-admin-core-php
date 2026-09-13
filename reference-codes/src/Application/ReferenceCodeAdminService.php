@@ -7,11 +7,11 @@ namespace PeanutAdmin\ReferenceCodes\Application;
 use DateTimeImmutable;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition;
-use PeanutAdmin\ReferenceCodes\Persistence\PdoReferenceCodeRepository;
+use PeanutAdmin\ReferenceCodes\Persistence\ReferenceCodeStore;
 
 final readonly class ReferenceCodeAdminService
 {
-    public function __construct(private PdoReferenceCodeRepository $repository) {}
+    public function __construct(private ReferenceCodeStore $store) {}
 
     /** @param array<array-key, mixed> $metadata */
     public function create(
@@ -37,7 +37,7 @@ final readonly class ReferenceCodeAdminService
             $expiresAt,
         );
 
-        return $this->repository->atomically(function () use (
+        return $this->store->atomically(function () use (
             $definition,
             $context,
             $code,
@@ -48,7 +48,7 @@ final readonly class ReferenceCodeAdminService
             $effectiveAt,
             $expiresAt,
         ): EffectiveReferenceCode {
-            $comparisonTime = $this->repository->create(
+            $comparisonTime = $this->store->create(
                 $definition,
                 $context,
                 $code,
@@ -60,7 +60,7 @@ final readonly class ReferenceCodeAdminService
                 $expiresAt,
             );
 
-            return (new ReferenceCodeQuery($this->repository))->get(
+            return (new ReferenceCodeQuery($this->store))->get(
                 $definition,
                 $context,
                 $code,
@@ -93,7 +93,7 @@ final readonly class ReferenceCodeAdminService
             $expiresAt,
         );
 
-        return $this->repository->atomically(function () use (
+        return $this->store->atomically(function () use (
             $definition,
             $context,
             $code,
@@ -105,7 +105,7 @@ final readonly class ReferenceCodeAdminService
             $expiresAt,
             $expectedRevision,
         ): EffectiveReferenceCode {
-            $comparisonTime = $this->repository->replace(
+            $comparisonTime = $this->store->replace(
                 $definition,
                 $context,
                 $code,
@@ -118,7 +118,7 @@ final readonly class ReferenceCodeAdminService
                 $expectedRevision,
             );
 
-            return (new ReferenceCodeQuery($this->repository))->get(
+            return (new ReferenceCodeQuery($this->store))->get(
                 $definition,
                 $context,
                 $code,
@@ -136,20 +136,20 @@ final readonly class ReferenceCodeAdminService
         $expectedRevision = $this->strongRevision($ifMatch);
         $code = $this->code($code);
 
-        return $this->repository->atomically(function () use (
+        return $this->store->atomically(function () use (
             $definition,
             $context,
             $code,
             $expectedRevision,
         ): EffectiveReferenceCode {
-            $comparisonTime = $this->repository->retire(
+            $comparisonTime = $this->store->retire(
                 $definition,
                 $context,
                 $code,
                 $expectedRevision,
             );
 
-            return (new ReferenceCodeQuery($this->repository))->get(
+            return (new ReferenceCodeQuery($this->store))->get(
                 $definition,
                 $context,
                 $code,

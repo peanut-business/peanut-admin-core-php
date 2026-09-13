@@ -15,10 +15,12 @@ use PeanutAdmin\ReferenceCodes\Application\ReferenceCodeQuery;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetLoader;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetRegistry;
-use PeanutAdmin\ReferenceCodes\Persistence\PdoReferenceCodeRepository;
+use PeanutAdmin\ReferenceCodes\Persistence\ReferenceCodeStore;
 use PeanutAdmin\ReferenceCodes\Tests\Integration\Schema\ReferenceCodesMigrationRunner;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use think\db\PDOConnection;
+use think\DbManager;
 
 require_once dirname(__DIR__) . '/Schema/ReferenceCodesMigrationRunner.php';
 
@@ -41,6 +43,7 @@ abstract class ReferenceCodesDatabaseTestCase extends TestCase
 
     protected PDO $admin;
     protected PDO $database;
+    protected PDOConnection $connection;
     protected ReferenceCodesMigrationRunner $runner;
 
     /** @var list<string> */
@@ -67,6 +70,7 @@ abstract class ReferenceCodesDatabaseTestCase extends TestCase
             'CREATE DATABASE `' . self::DATABASE . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci',
         );
         $this->database = $this->connect(self::DATABASE);
+        $this->connection = $this->thinkPhpConnection(self::DATABASE);
         $this->createParentTables();
         $this->runner = new ReferenceCodesMigrationRunner($this->database);
         $this->runner->migrate();
@@ -117,22 +121,22 @@ abstract class ReferenceCodesDatabaseTestCase extends TestCase
         return $registry;
     }
 
-    protected function repository(ReferenceCodeSetDefinition $definition): PdoReferenceCodeRepository
+    protected function repository(ReferenceCodeSetDefinition $definition): ReferenceCodeStore
     {
-        $repository = new PdoReferenceCodeRepository($this->database);
-        $repository->synchronize($this->registry($definition), new DateTimeImmutable(self::NOW));
+        $store = new ReferenceCodeStore($this->connection);
+        $store->synchronize($this->registry($definition), new DateTimeImmutable(self::NOW));
 
-        return $repository;
+        return $store;
     }
 
-    protected function adminService(PdoReferenceCodeRepository $repository): ReferenceCodeAdminService
+    protected function adminService(ReferenceCodeStore $store): ReferenceCodeAdminService
     {
-        return new ReferenceCodeAdminService($repository);
+        return new ReferenceCodeAdminService($store);
     }
 
-    protected function query(PdoReferenceCodeRepository $repository): ReferenceCodeQuery
+    protected function query(ReferenceCodeStore $store): ReferenceCodeQuery
     {
-        return new ReferenceCodeQuery($repository);
+        return new ReferenceCodeQuery($store);
     }
 
     /** @return array{tenant_id: int, member_id: int, context: TenantContext} */
@@ -278,6 +282,34 @@ SQL);
                 PDO::ATTR_EMULATE_PREPARES => false,
             ],
         );
+    }
+
+    private function thinkPhpConnection(string $database): PDOConnection
+    {
+        $manager = new DbManager();
+        $manager->setConfig([
+            'default' => 'mysql',
+            'connections' => [
+                'mysql' => [
+                    'type' => 'mysql',
+                    'hostname' => '127.0.0.1',
+                    'database' => $database,
+                    'username' => 'root',
+                    'password' => getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
+                    'hostport' => $this->requiredPort('DB_PORT'),
+                    'charset' => 'utf8mb4',
+                    'prefix' => 'pa_',
+                    'fields_strict' => true,
+                    'break_reconnect' => false,
+                ],
+            ],
+        ]);
+        $connection = $manager->connect();
+        if (!$connection instanceof PDOConnection) {
+            throw new RuntimeException('Reference Codes requires a ThinkPHP PDO connection.');
+        }
+
+        return $connection;
     }
 
     private function requiredPort(string $name): int

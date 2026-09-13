@@ -6,17 +6,17 @@ namespace PeanutAdmin\ReferenceCodes\Persistence;
 
 use DateTimeImmutable;
 use DateTimeZone;
-use PDO;
-use PDOException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\ReferenceCodes\Application\ReferenceCodeException;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetRegistry;
-use Throwable;
+use think\db\exception\PDOException;
+use think\db\PDOConnection;
+use think\db\Query;
 
-final readonly class PdoReferenceCodeRepository
+final readonly class ReferenceCodeStore
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(private PDOConnection $connection) {}
 
     /** @template T
      * @param callable(): T $operation
@@ -24,7 +24,7 @@ final readonly class PdoReferenceCodeRepository
      */
     public function atomically(callable $operation): mixed
     {
-        return $this->transaction($operation);
+        return $this->connection->transaction($operation);
     }
 
     /** @return array{inserted: int, updated: int, retired: int, reactivated: int} */
@@ -32,14 +32,12 @@ final readonly class PdoReferenceCodeRepository
     {
         $this->assertExactMillisecond($now);
 
-        return $this->transaction(function () use ($registry, $now): array {
-            $statement = $this->pdo->query('SELECT * FROM pa_reference_code_set FOR UPDATE');
+        return $this->connection->transaction(function () use ($registry, $now): array {
+            $rows = $this->connection->query('SELECT * FROM pa_reference_code_set FOR UPDATE');
             $existing = [];
-            if ($statement !== false) {
-                while (($row = $statement->fetch()) !== false) {
-                    if (is_array($row)) {
-                        $existing[(string) $row['module_key'] . ':' . (string) $row['set_key']] = $row;
-                    }
+            foreach ($rows as $row) {
+                if (is_array($row)) {
+                    $existing[(string) $row['module_key'] . ':' . (string) $row['set_key']] = $row;
                 }
             }
             $declared = [];
@@ -57,13 +55,12 @@ final readonly class PdoReferenceCodeRepository
                 if (!$reactivating && hash_equals((string) $row['definition_digest'], $definition->digest)) {
                     continue;
                 }
-                $statement = $this->pdo->prepare(<<<'SQL'
+                $this->connection->execute(<<<'SQL'
 UPDATE pa_reference_code_set
 SET name = :name, description = :description, definition_digest = :definition_digest,
     lifecycle = 'active', revision = revision + 1, updated_at = :updated_at
 WHERE id = :id
-SQL);
-                $statement->execute([
+SQL, [
                     'name' => $definition->name,
                     'description' => $definition->description,
                     'definition_digest' => $definition->digest,
@@ -76,13 +73,12 @@ SQL);
                 if (isset($declared[$qualifiedKey]) || (string) $row['lifecycle'] === 'retired') {
                     continue;
                 }
-                $statement = $this->pdo->prepare(<<<'SQL'
+                $affected = $this->connection->execute(<<<'SQL'
 UPDATE pa_reference_code_set
 SET lifecycle = 'retired', revision = revision + 1, updated_at = :updated_at
 WHERE id = :id AND lifecycle = 'active'
-SQL);
-                $statement->execute(['updated_at' => $this->date($now), 'id' => (int) $row['id']]);
-                $counts['retired'] += $statement->rowCount();
+SQL, ['updated_at' => $this->date($now), 'id' => (int) $row['id']]);
+                $counts['retired'] += $affected;
             }
 
             return $counts;
@@ -105,7 +101,7 @@ SQL);
         DateTimeImmutable $effectiveAt,
         ?DateTimeImmutable $expiresAt,
     ): DateTimeImmutable {
-        return $this->transaction(function () use (
+        return $this->connection->transaction(function () use (
             $definition,
             $context,
             $code,
@@ -126,25 +122,20 @@ SQL);
             }
             $now = $this->databaseNow();
             try {
-                $statement = $this->pdo->prepare(<<<'SQL'
-INSERT INTO pa_reference_code_entry (
-  tenant_id, set_id, code, lifecycle, revision, created_by_member_id,
-  updated_by_member_id, retired_at, created_at, updated_at
-) VALUES (
-  :tenant_id, :set_id, :code, 'active', 1, :created_by_member_id,
-  :updated_by_member_id, NULL, :created_at, :updated_at
-)
-SQL);
-                $statement->execute([
+                $entryId = (int) (new Query($this->connection))
+                    ->table('pa_reference_code_entry')
+                    ->insertGetId([
                     'tenant_id' => $context->tenantId,
                     'set_id' => (int) $set['id'],
                     'code' => $code,
+                    'lifecycle' => 'active',
+                    'revision' => 1,
                     'created_by_member_id' => $context->memberId,
                     'updated_by_member_id' => $context->memberId,
+                    'retired_at' => null,
                     'created_at' => $this->date($now),
                     'updated_at' => $this->date($now),
                 ]);
-                $entryId = (int) $this->pdo->lastInsertId();
                 $this->insertVersion(
                     $entryId,
                     1,
@@ -180,7 +171,7 @@ SQL);
         ?DateTimeImmutable $expiresAt,
         int $expectedRevision,
     ): DateTimeImmutable {
-        return $this->transaction(function () use (
+        return $this->connection->transaction(function () use (
             $definition,
             $context,
             $code,
@@ -206,19 +197,18 @@ SQL);
             }
             $revision = $expectedRevision + 1;
             $now = $this->databaseNow();
-            $statement = $this->pdo->prepare(<<<'SQL'
+            $affected = $this->connection->execute(<<<'SQL'
 UPDATE pa_reference_code_entry
 SET revision = :revision, updated_by_member_id = :member_id, updated_at = :updated_at
 WHERE id = :id AND lifecycle = 'active' AND revision = :expected_revision
-SQL);
-            $statement->execute([
+SQL, [
                 'revision' => $revision,
                 'member_id' => $context->memberId,
                 'updated_at' => $this->date($now),
                 'id' => (int) $entry['id'],
                 'expected_revision' => $expectedRevision,
             ]);
-            if ($statement->rowCount() !== 1) {
+            if ($affected !== 1) {
                 throw ReferenceCodeException::revisionMismatch();
             }
             $this->insertVersion(
@@ -244,7 +234,7 @@ SQL);
         string $code,
         int $expectedRevision,
     ): DateTimeImmutable {
-        return $this->transaction(function () use ($definition, $context, $code, $expectedRevision): DateTimeImmutable {
+        return $this->connection->transaction(function () use ($definition, $context, $code, $expectedRevision): DateTimeImmutable {
             $this->assertTenantActor($context);
             $set = $this->definitionRow($definition, true);
             $entry = $this->entry((int) $set['id'], $context->tenantId, $code, true);
@@ -267,13 +257,12 @@ SQL, ['entry_id' => (int) $entry['id'], 'revision' => $expectedRevision]);
             }
             $revision = $expectedRevision + 1;
             $now = $this->databaseNow();
-            $statement = $this->pdo->prepare(<<<'SQL'
+            $affected = $this->connection->execute(<<<'SQL'
 UPDATE pa_reference_code_entry
 SET lifecycle = 'retired', revision = :revision, updated_by_member_id = :member_id,
     retired_at = :retired_at, updated_at = :updated_at
 WHERE id = :id AND lifecycle = 'active' AND revision = :expected_revision
-SQL);
-            $statement->execute([
+SQL, [
                 'revision' => $revision,
                 'member_id' => $context->memberId,
                 'retired_at' => $this->date($now),
@@ -281,7 +270,7 @@ SQL);
                 'id' => (int) $entry['id'],
                 'expected_revision' => $expectedRevision,
             ]);
-            if ($statement->rowCount() !== 1) {
+            if ($affected !== 1) {
                 throw ReferenceCodeException::revisionMismatch();
             }
             $this->insertVersion(
@@ -313,7 +302,7 @@ SQL);
         ?string $code,
         ?DateTimeImmutable $asOf,
     ): array {
-        return $this->transaction(function () use ($definition, $context, $code, $asOf): array {
+        return $this->connection->transaction(function () use ($definition, $context, $code, $asOf): array {
             $this->assertTenantActor($context);
             $set = $this->definitionRow($definition);
             $comparisonTime = $asOf ?? $this->databaseNow();
@@ -328,10 +317,9 @@ SQL;
                 $parameters['code'] = $code;
             }
             $sql .= ' ORDER BY BINARY e.code ASC';
-            $statement = $this->pdo->prepare($sql);
-            $statement->execute($parameters);
+            $rows = $this->connection->query($sql, $parameters);
             $entries = [];
-            while (($entry = $statement->fetch()) !== false) {
+            foreach ($rows as $entry) {
                 if (!is_array($entry)) {
                     throw ReferenceCodeException::internal();
                 }
@@ -339,20 +327,18 @@ SQL;
                     || !$this->memberBelongsToTenant($context->tenantId, $entry['updated_by_member_id'] ?? null)) {
                     throw ReferenceCodeException::internal();
                 }
-                $versions = $this->pdo->prepare(<<<'SQL'
+                $versions = $this->connection->query(<<<'SQL'
 SELECT * FROM pa_reference_code_entry_version
 WHERE entry_id = :entry_id
 ORDER BY revision ASC
-SQL);
-                $versions->execute(['entry_id' => (int) $entry['id']]);
-                $rows = $versions->fetchAll();
-                foreach ($rows as $version) {
+SQL, ['entry_id' => (int) $entry['id']]);
+                foreach ($versions as $version) {
                     if (!is_array($version)
                         || !$this->memberBelongsToTenant($context->tenantId, $version['changed_by_member_id'] ?? null)) {
                         throw ReferenceCodeException::internal();
                     }
                 }
-                $entries[] = ['entry' => $entry, 'versions' => array_values($rows)];
+                $entries[] = ['entry' => $entry, 'versions' => array_values($versions)];
             }
 
             return ['as_of' => $comparisonTime, 'entries' => $entries];
@@ -362,7 +348,7 @@ SQL);
     /** @return list<array{module_key: string, set_key: string, name: string, description: string, definition_revision: int}> */
     public function definitionSummaries(ReferenceCodeSetRegistry $registry): array
     {
-        return $this->transaction(function () use ($registry): array {
+        return $this->connection->transaction(function () use ($registry): array {
             $summaries = [];
             foreach ($registry->all() as $definition) {
                 $row = $this->definitionRow($definition);
@@ -381,7 +367,7 @@ SQL);
 
     private function insertDefinition(ReferenceCodeSetDefinition $definition, DateTimeImmutable $now): void
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $this->connection->execute(<<<'SQL'
 INSERT INTO pa_reference_code_set (
   module_key, set_key, name, description, definition_digest,
   lifecycle, revision, created_at, updated_at
@@ -389,8 +375,7 @@ INSERT INTO pa_reference_code_set (
   :module_key, :set_key, :name, :description, :definition_digest,
   'active', 1, :created_at, :updated_at
 )
-SQL);
-        $statement->execute([
+SQL, [
             'module_key' => $definition->moduleKey,
             'set_key' => $definition->key,
             'name' => $definition->name,
@@ -473,7 +458,7 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
         int $memberId,
         DateTimeImmutable $createdAt,
     ): void {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $this->connection->execute(<<<'SQL'
 INSERT INTO pa_reference_code_entry_version (
   entry_id, revision, label, metadata_json, status, sort_order,
   effective_at, expires_at, changed_by_member_id, created_at
@@ -481,8 +466,7 @@ INSERT INTO pa_reference_code_entry_version (
   :entry_id, :revision, :label, :metadata_json, :status, :sort_order,
   :effective_at, :expires_at, :changed_by_member_id, :created_at
 )
-SQL);
-        $statement->execute([
+SQL, [
             'entry_id' => $entryId,
             'revision' => $revision,
             'label' => $label,
@@ -501,17 +485,15 @@ SQL);
      */
     private function fetchOne(string $sql, array $parameters): ?array
     {
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch();
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
 
         return is_array($row) ? $row : null;
     }
 
     private function databaseNow(): DateTimeImmutable
     {
-        $statement = $this->pdo->query('SELECT UTC_TIMESTAMP(3)');
-        $value = $statement === false ? false : $statement->fetchColumn();
+        $row = $this->connection->query('SELECT UTC_TIMESTAMP(3) AS current_time')[0] ?? null;
+        $value = is_array($row) ? ($row['current_time'] ?? null) : null;
         if (!is_string($value)) {
             throw ReferenceCodeException::internal();
         }
@@ -536,39 +518,12 @@ SQL);
 
     private function isCreateCompetition(PDOException $exception): bool
     {
-        $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
-        $driverCode = (int) ($exception->errorInfo[1] ?? 0);
+        $error = $exception->getData()['PDO Error Info'] ?? [];
+        $sqlState = (string) ($error['SQLSTATE'] ?? $exception->getCode());
+        $driverCode = (int) ($error['Driver Error Code'] ?? 0);
 
         return ($sqlState === '23000' && $driverCode === 1062)
             || ($sqlState === '40001' && $driverCode === 1213)
             || ($sqlState === 'HY000' && $driverCode === 1205);
-    }
-
-    /** @template T
-     * @param callable(): T $operation
-     * @return T
-     */
-    private function transaction(callable $operation): mixed
-    {
-        if ($this->pdo->inTransaction()) {
-            return $operation();
-        }
-        $this->pdo->beginTransaction();
-        try {
-            $result = $operation();
-            $this->pdo->commit();
-
-            return $result;
-        } catch (Throwable $exception) {
-            $this->rollBackTransaction();
-            throw $exception;
-        }
-    }
-
-    private function rollBackTransaction(): void
-    {
-        if ($this->pdo->inTransaction()) {
-            $this->pdo->rollBack();
-        }
     }
 }

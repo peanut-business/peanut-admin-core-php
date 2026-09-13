@@ -111,7 +111,7 @@ SQL);
             'lifecycle' => 'active', 'revision' => 1, 'retired_at' => self::NOW,
             'created_by_member_id' => $tenant['member_id'], 'updated_by_member_id' => $tenant['member_id'],
         ]));
-        self::assertInstanceOf(\PeanutAdmin\ReferenceCodes\Persistence\PdoReferenceCodeRepository::class, $repository);
+        self::assertInstanceOf(\PeanutAdmin\ReferenceCodes\Persistence\ReferenceCodeStore::class, $repository);
     }
 
     public function testChecksRejectInvalidStatusSortIntervalAndForeignKeys(): void

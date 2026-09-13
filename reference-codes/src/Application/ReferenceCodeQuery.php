@@ -10,16 +10,16 @@ use JsonException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetRegistry;
-use PeanutAdmin\ReferenceCodes\Persistence\PdoReferenceCodeRepository;
+use PeanutAdmin\ReferenceCodes\Persistence\ReferenceCodeStore;
 
 final readonly class ReferenceCodeQuery
 {
-    public function __construct(private PdoReferenceCodeRepository $repository) {}
+    public function __construct(private ReferenceCodeStore $store) {}
 
     /** @return list<array{module_key: string, set_key: string, name: string, description: string, definition_revision: int}> */
     public function sets(ReferenceCodeSetRegistry $registry): array
     {
-        return $this->repository->definitionSummaries($registry);
+        return $this->store->definitionSummaries($registry);
     }
 
     public function get(
@@ -29,7 +29,7 @@ final readonly class ReferenceCodeQuery
         ?DateTimeImmutable $asOf = null,
     ): EffectiveReferenceCode {
         $this->assertCode($code);
-        $snapshot = $this->repository->snapshot($definition, $context, $code, $asOf);
+        $snapshot = $this->store->snapshot($definition, $context, $code, $asOf);
         if (count($snapshot['entries']) !== 1) {
             throw ReferenceCodeException::codeNotFound();
         }
@@ -69,7 +69,7 @@ final readonly class ReferenceCodeQuery
                 'The reference-code query is invalid.',
             );
         }
-        $snapshot = $this->repository->snapshot($definition, $context, null, $asOf);
+        $snapshot = $this->store->snapshot($definition, $context, null, $asOf);
         $items = [];
         foreach ($snapshot['entries'] as $raw) {
             $entry = $this->hydrate($definition, $raw, $snapshot['as_of']);
