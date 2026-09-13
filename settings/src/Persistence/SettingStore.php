@@ -7,21 +7,21 @@ namespace PeanutAdmin\Settings\Persistence;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
-use PDO;
-use PDOException;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Settings\Application\SettingException;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
 use PeanutAdmin\Settings\Definition\SettingDefinitionRegistry;
-use Throwable;
+use think\db\exception\PDOException;
+use think\db\PDOConnection;
+use think\db\Query;
 
-final readonly class PdoSettingRepository
+final readonly class SettingStore
 {
     private TenantColumnScope $tenantScope;
 
     public function __construct(
-        private PDO $pdo,
+        private PDOConnection $connection,
         TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
         ?int $instanceTenantId = null,
     ) {
@@ -71,16 +71,14 @@ final readonly class PdoSettingRepository
                 if (isset($declared[$qualifiedKey]) || (string) $row['status'] === 'retired') {
                     continue;
                 }
-                $statement = $this->pdo->prepare(<<<'SQL'
+                $counts['retired'] += $this->connection->execute(<<<'SQL'
 UPDATE pa_setting_definition
 SET status = 'retired', revision = revision + 1, updated_at = :updated_at
 WHERE id = :id AND status = 'active'
-SQL);
-                $statement->execute([
+SQL, [
                     'updated_at' => $this->date($now),
                     'id' => (int) $row['id'],
                 ]);
-                $counts['retired'] += $statement->rowCount();
             }
 
             return $counts;
@@ -369,8 +367,7 @@ SQL, ['tenant_id' => $tenantId, 'member_id' => $actorId])) {
                 }
 
                 if ($existing === null) {
-                    $this->insertValue($scope, $row);
-                    $row['id'] = (int) $this->pdo->lastInsertId();
+                    $row['id'] = $this->insertValue($scope, $row);
                 } else {
                     $this->updateValue($scope, (int) $existing['id'], $revision - 1, $row);
                     $row['id'] = (int) $existing['id'];
@@ -394,12 +391,11 @@ SQL, ['tenant_id' => $tenantId, 'member_id' => $actorId])) {
     private function definitionsForModules(array $moduleKeys): array
     {
         $placeholders = implode(', ', array_fill(0, count($moduleKeys), '?'));
-        $statement = $this->pdo->prepare(
-            "SELECT * FROM pa_setting_definition WHERE module_key IN ({$placeholders}) FOR UPDATE",
-        );
-        $statement->execute($moduleKeys);
         $result = [];
-        while (($row = $statement->fetch()) !== false) {
+        foreach ($this->connection->query(
+            "SELECT * FROM pa_setting_definition WHERE module_key IN ({$placeholders}) FOR UPDATE",
+            $moduleKeys,
+        ) as $row) {
             if (is_array($row)) {
                 $result[(string) $row['module_key'] . ':' . (string) $row['setting_key']] = $row;
             }
@@ -410,7 +406,7 @@ SQL, ['tenant_id' => $tenantId, 'member_id' => $actorId])) {
 
     private function insertDefinition(SettingDefinition $definition, DateTimeImmutable $now): void
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $this->connection->execute(<<<'SQL'
 INSERT INTO pa_setting_definition (
   module_key, setting_key, name, description, schema_json, required_flag, secret_flag,
   deployment_scope_flag, tenant_scope_flag, target_scope_flag,
@@ -422,8 +418,7 @@ INSERT INTO pa_setting_definition (
   :target_resource_key, :target_operation, :default_json, :definition_digest,
   'active', 1, :created_at, :updated_at
 )
-SQL);
-        $statement->execute($this->definitionValues($definition, $now, true));
+SQL, $this->definitionValues($definition, $now, true));
     }
 
     private function updateDefinition(
@@ -431,7 +426,9 @@ SQL);
         SettingDefinition $definition,
         DateTimeImmutable $now,
     ): void {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $values = $this->definitionValues($definition, $now, false);
+        $values['id'] = $id;
+        $this->connection->execute(<<<'SQL'
 UPDATE pa_setting_definition SET
   name = :name, description = :description, schema_json = :schema_json,
   required_flag = :required_flag, secret_flag = :secret_flag,
@@ -441,10 +438,7 @@ UPDATE pa_setting_definition SET
   definition_digest = :definition_digest, status = 'active',
   revision = revision + 1, updated_at = :updated_at
 WHERE id = :id
-SQL);
-        $values = $this->definitionValues($definition, $now, false);
-        $values['id'] = $id;
-        $statement->execute($values);
+SQL, $values);
     }
 
     /** @return array<string, bool|int|string|null> */
@@ -531,18 +525,12 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
     }
 
     /** @param array<string, mixed> $row */
-    private function insertValue(string $scope, array $row): void
+    private function insertValue(string $scope, array $row): int
     {
         [$table, $columns] = $this->valueTable($scope);
-        $placeholders = array_map(static fn(string $column): string => ':' . $column, $columns);
-        $statement = $this->pdo->prepare(sprintf(
-            'INSERT INTO %s (%s) VALUES (%s)',
-            $table,
-            implode(', ', $columns),
-            implode(', ', $placeholders),
-        ));
         $values = array_intersect_key($row, array_flip($columns));
-        $statement->execute($values);
+
+        return (int) (new Query($this->connection))->table($table)->insertGetId($values);
     }
 
     /** @param array<string, mixed> $row */
@@ -553,16 +541,15 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
             'definition_id', 'tenant_id', 'target_resource_key', 'target_id', 'created_at',
         ]));
         $assignments = array_map(static fn(string $column): string => $column . ' = :' . $column, $mutable);
-        $statement = $this->pdo->prepare(sprintf(
+        $sql = sprintf(
             'UPDATE %s SET %s WHERE id = :id AND revision = :expected_revision',
             $table,
             implode(', ', $assignments),
-        ));
+        );
         $values = array_intersect_key($row, array_flip($mutable));
         $values['id'] = $id;
         $values['expected_revision'] = $expectedRevision;
-        $statement->execute($values);
-        if ($statement->rowCount() !== 1) {
+        if ($this->connection->execute($sql, $values) !== 1) {
             throw SettingException::revisionMismatch();
         }
     }
@@ -626,9 +613,7 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
      */
     private function fetchOne(string $sql, array $parameters): ?array
     {
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch();
+        $row = $this->connection->query($sql, $parameters)[0] ?? null;
 
         return is_array($row) ? $row : null;
     }
@@ -669,8 +654,9 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
 
     private function competitionConflict(PDOException $exception): ?SettingException
     {
-        $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
-        $driverCode = (int) ($exception->errorInfo[1] ?? 0);
+        $error = $exception->getData()['PDO Error Info'] ?? [];
+        $sqlState = (string) ($error['SQLSTATE'] ?? $exception->getCode());
+        $driverCode = (int) ($error['Driver Error Code'] ?? 0);
         $duplicate = $sqlState === '23000' && $driverCode === 1062;
         $deadlock = $sqlState === '40001' && $driverCode === 1213;
         $lockTimeout = $sqlState === 'HY000' && $driverCode === 1205;
@@ -687,26 +673,11 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
     private function transaction(callable $operation): mixed
     {
         $this->assertStorageMode();
-        if ($this->pdo->inTransaction()) {
+        if ($this->connection->connect()->inTransaction()) {
             return $operation();
         }
-        $this->pdo->beginTransaction();
-        try {
-            $result = $operation();
-            $this->pdo->commit();
 
-            return $result;
-        } catch (Throwable $exception) {
-            $this->rollBackTransaction();
-            throw $exception;
-        }
-    }
-
-    private function rollBackTransaction(): void
-    {
-        if ($this->pdo->inTransaction()) {
-            $this->pdo->rollBack();
-        }
+        return $this->connection->transaction($operation);
     }
 
     private function assertTenantContext(?int $tenantId): void
@@ -723,7 +694,7 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
 
     private function assertStorageMode(): void
     {
-        $this->tenantScope->assertStorageMode($this->pdo, [
+        $this->tenantScope->assertStorageMode($this->connection->connect(), [
             'pa_setting_tenant_value',
             'pa_setting_target_value',
         ]);

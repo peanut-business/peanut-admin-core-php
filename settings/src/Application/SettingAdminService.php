@@ -9,14 +9,14 @@ use DateTimeZone;
 use JsonException;
 use PeanutAdmin\Settings\Cache\ArrayRevisionedSettingCache;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
-use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
+use PeanutAdmin\Settings\Persistence\SettingStore;
 use PeanutAdmin\Settings\Secret\SecretProtector;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
 
 final readonly class SettingAdminService
 {
     public function __construct(
-        private PdoSettingRepository $repository,
+        private SettingStore $repository,
         private SecretProtector $protector,
     ) {}
 

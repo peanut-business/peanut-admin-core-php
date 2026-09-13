@@ -14,7 +14,7 @@ use PeanutAdmin\Settings\Application\SettingException;
 use PeanutAdmin\Settings\Application\SettingResolver;
 use PeanutAdmin\Settings\Application\TargetSettingWriter;
 use PeanutAdmin\Settings\Cache\ArrayRevisionedSettingCache;
-use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
+use PeanutAdmin\Settings\Persistence\SettingStore;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
 use PeanutAdmin\Settings\Tests\Integration\Support\SettingsDatabaseTestCase;
 
@@ -30,8 +30,8 @@ final class SettingsIsolationTest extends SettingsDatabaseTestCase
             'target_resource_key' => null,
             'target_operation' => null,
         ])]);
-        $repository = new PdoSettingRepository(
-            $this->database,
+        $repository = new SettingStore(
+            $this->settingsConnection,
             TenantPersistenceMode::InstanceScoped,
             $tenant['tenant_id'],
         );
@@ -498,7 +498,7 @@ SQL,
         );
     }
 
-    /** @return array{\PeanutAdmin\Settings\Definition\SettingDefinition, \PeanutAdmin\Settings\Persistence\PdoSettingRepository, SodiumSecretProtector} */
+    /** @return array{\PeanutAdmin\Settings\Definition\SettingDefinition, \PeanutAdmin\Settings\Persistence\SettingStore, SodiumSecretProtector} */
     private function runtime(): array
     {
         $registry = $this->registry([$this->definition()], targets: [[

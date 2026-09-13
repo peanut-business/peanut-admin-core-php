@@ -36,14 +36,16 @@ use PeanutAdmin\Kernel\Module\ModuleRuntimeRepository;
 use PeanutAdmin\Kernel\Module\TenantModuleRecord;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationRepository;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
 use PeanutAdmin\Settings\Definition\SettingDefinitionLoader;
 use PeanutAdmin\Settings\Definition\SettingDefinitionRegistry;
-use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
+use PeanutAdmin\Settings\Persistence\SettingStore;
 use PeanutAdmin\Settings\Tests\Integration\Schema\SettingsMigrationRunner;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use RuntimeException;
+use think\db\PDOConnection;
 
 require_once dirname(__DIR__) . '/Schema/SettingsMigrationRunner.php';
 
@@ -54,6 +56,7 @@ abstract class SettingsDatabaseTestCase extends TestCase
 
     protected PDO $admin;
     protected PDO $database;
+    protected PDOConnection $settingsConnection;
     protected SettingsMigrationRunner $runner;
 
     /** @var list<string> */
@@ -77,6 +80,8 @@ abstract class SettingsDatabaseTestCase extends TestCase
         $this->createParentTables();
         $this->runner = new SettingsMigrationRunner($this->database);
         $this->runner->migrate();
+        $this->settingsConnection = ThinkPhpTestConnection::fromPdo($this->database);
+        $this->database = $this->settingsConnection->connect();
     }
 
     protected function tearDown(): void
@@ -136,9 +141,9 @@ abstract class SettingsDatabaseTestCase extends TestCase
         ], $override);
     }
 
-    protected function synchronize(SettingDefinitionRegistry $registry): PdoSettingRepository
+    protected function synchronize(SettingDefinitionRegistry $registry): SettingStore
     {
-        $repository = new PdoSettingRepository($this->database);
+        $repository = new SettingStore($this->settingsConnection);
         $repository->synchronize($registry, new \DateTimeImmutable(self::NOW . ' UTC'));
 
         return $repository;
@@ -170,6 +175,11 @@ abstract class SettingsDatabaseTestCase extends TestCase
     protected function additionalDatabaseConnection(): PDO
     {
         return $this->connect(self::DATABASE);
+    }
+
+    protected function additionalSettingsConnection(): PDOConnection
+    {
+        return ThinkPhpTestConnection::fromPdo($this->additionalDatabaseConnection());
     }
 
     /** @param array{tenant_id: int, member_id: int} $tenant
@@ -441,4 +451,5 @@ SQL);
 
         return $port;
     }
+
 }

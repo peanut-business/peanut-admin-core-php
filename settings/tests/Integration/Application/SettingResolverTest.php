@@ -16,7 +16,7 @@ use PeanutAdmin\Settings\Application\SettingResolver;
 use PeanutAdmin\Settings\Application\TargetSettingWriter;
 use PeanutAdmin\Settings\Cache\ArrayRevisionedSettingCache;
 use PeanutAdmin\Settings\Cache\RevisionedSettingCache;
-use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
+use PeanutAdmin\Settings\Persistence\SettingStore;
 use PeanutAdmin\Settings\Secret\SecretProtector;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
@@ -43,8 +43,8 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
             'operation' => 'updateProjectSetting',
             'target_cardinality' => 'one_required',
         ]]);
-        $repository = new PdoSettingRepository(
-            $this->database,
+        $repository = new SettingStore(
+            $this->settingsConnection,
             TenantPersistenceMode::InstanceScoped,
             $alpha['tenant_id'],
         );
@@ -587,7 +587,7 @@ SQL);
         self::assertSame(2, $protector->revealCalls);
     }
 
-    /** @return array{\PeanutAdmin\Settings\Definition\SettingDefinitionRegistry, \PeanutAdmin\Settings\Persistence\PdoSettingRepository, SodiumSecretProtector} */
+    /** @return array{\PeanutAdmin\Settings\Definition\SettingDefinitionRegistry, \PeanutAdmin\Settings\Persistence\SettingStore, SodiumSecretProtector} */
     private function runtime(): array
     {
         $targets = [[

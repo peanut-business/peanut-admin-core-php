@@ -8,7 +8,7 @@ use DateTimeImmutable;
 use PeanutAdmin\Settings\Application\EffectiveSetting;
 use PeanutAdmin\Settings\Application\SettingAdminService;
 use PeanutAdmin\Settings\Application\SettingException;
-use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
+use PeanutAdmin\Settings\Persistence\SettingStore;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
 use PeanutAdmin\Settings\Tests\Integration\Support\SettingsDatabaseTestCase;
 
@@ -93,9 +93,10 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
             '*',
         );
 
-        $writerConnection = $this->additionalDatabaseConnection();
+        $writer = $this->additionalSettingsConnection();
+        $writerConnection = $writer->connect();
         $writerConnection->beginTransaction();
-        (new PdoSettingRepository($writerConnection))->writeDeployment(
+        (new SettingStore($writer))->writeDeployment(
             $definition,
             'set',
             ['value_json' => '"comfortable"', 'ciphertext' => null, 'nonce' => null, 'key_id' => null],
@@ -108,16 +109,17 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
         $changed = $this->registry([
             $this->plainDefinition('display-mode', ['description' => 'Changed during a value write.']),
         ]);
-        $mutatorConnection = $this->additionalDatabaseConnection();
-        $mutatorConnection->exec('SET SESSION innodb_lock_wait_timeout = 1');
-        $mutator = new PdoSettingRepository($mutatorConnection);
+        $mutatorConnection = $this->additionalSettingsConnection();
+        $mutatorPdo = $mutatorConnection->connect();
+        $mutatorPdo->exec('SET SESSION innodb_lock_wait_timeout = 1');
+        $mutator = new SettingStore($mutatorConnection);
 
         try {
             try {
                 $mutator->synchronize($changed, new DateTimeImmutable('2026-07-19T08:01:00Z'));
                 self::fail('Definition synchronization crossed an uncommitted settings value update.');
-            } catch (\PDOException $exception) {
-                self::assertSame(1205, (int) ($exception->errorInfo[1] ?? 0));
+            } catch (\think\db\exception\PDOException $exception) {
+                self::assertSame(1205, (int) ($exception->getData()['PDO Error Info']['Driver Error Code'] ?? 0));
             }
             self::assertSame(1, (int) $this->scalar('SELECT revision FROM pa_setting_deployment_value'));
             $writerConnection->commit();
@@ -221,7 +223,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
         $first = new SettingAdminService($repository, $this->protector());
         $second = new SettingAdminService(
-            new PdoSettingRepository($this->additionalDatabaseConnection()),
+            new SettingStore($this->additionalSettingsConnection()),
             $this->protector(),
         );
 
@@ -717,20 +719,35 @@ declare(strict_types=1);
 
 use PeanutAdmin\Settings\Application\SettingException;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
-use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
+use PeanutAdmin\Settings\Persistence\SettingStore;
 
 require $argv[1] . '/vendor/autoload.php';
 
-$pdo = new \PDO(
-    sprintf('mysql:host=127.0.0.1;port=%d;dbname=%s;charset=utf8mb4', (int) $argv[2], $argv[4]),
-    'root',
-    $argv[3],
-    [
-        \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
-        \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
-        \PDO::ATTR_EMULATE_PREPARES => false,
+$manager = new \think\DbManager();
+$manager->setConfig([
+    'default' => 'mysql',
+    'connections' => [
+        'mysql' => [
+            'type' => 'mysql',
+            'hostname' => '127.0.0.1',
+            'database' => $argv[4],
+            'username' => 'root',
+            'password' => $argv[3],
+            'hostport' => (int) $argv[2],
+            'charset' => 'utf8mb4',
+            'prefix' => 'pa_',
+            'fields_strict' => true,
+            'break_reconnect' => false,
+        ],
     ],
-);
+]);
+$connection = $manager->connect();
+if (!$connection instanceof \think\db\PDOConnection) {
+    throw new \RuntimeException('The settings race worker requires a PDO connection.');
+}
+$pdo = $connection->connect();
+$pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+$pdo->setAttribute(\PDO::ATTR_DEFAULT_FETCH_MODE, \PDO::FETCH_ASSOC);
 $definition = unserialize(
     base64_decode($argv[6], true),
     ['allowed_classes' => [SettingDefinition::class]],
@@ -775,7 +792,7 @@ if (fgets(STDIN) !== "go\n") {
 }
 
 try {
-    (new PdoSettingRepository($pdo))->writeDeployment(
+    (new SettingStore($connection))->writeDeployment(
         $definition,
         'set',
         ['value_json' => '"comfortable"', 'ciphertext' => null, 'nonce' => null, 'key_id' => null],

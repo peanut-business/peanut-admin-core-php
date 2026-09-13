@@ -11,7 +11,7 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Settings\Cache\RevisionedSettingCache;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
-use PeanutAdmin\Settings\Persistence\PdoSettingRepository;
+use PeanutAdmin\Settings\Persistence\SettingStore;
 use PeanutAdmin\Settings\Secret\SecretProtector;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
 use Throwable;
@@ -21,7 +21,7 @@ final readonly class SettingResolver
     private SettingAdminService $admin;
 
     public function __construct(
-        private PdoSettingRepository $repository,
+        private SettingStore $repository,
         private SecretProtector $protector,
         private RevisionedSettingCache $cache,
     ) {
