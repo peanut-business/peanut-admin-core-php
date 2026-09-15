@@ -12,18 +12,20 @@ use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
 use PeanutAdmin\Kernel\Module\Model\TenantModule;
+use PeanutAdmin\Kernel\Persistence\Model\Permission;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use RuntimeException;
 use think\db\Query;
-use think\facade\Db;
+use think\db\Raw;
 
 final readonly class TenantWorkspaceQueryService
 {
     /** @return array<string, mixed> */
     public function tenant(int $tenantId): array
     {
-        $row = Db::name('tenant')->where('id', $tenantId)->field(
+        $row = Tenant::where('id', $tenantId)->field(
             'id,code,name,display_name,status,locale,timezone,security_revision,authorization_revision,revision,created_at,updated_at',
-        )->find();
+        )->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -43,15 +45,14 @@ final readonly class TenantWorkspaceQueryService
             ->where('tenant_module.status', 'enabled')
             ->where(function ($query): void {
                 $query->whereNull('tenant_module.effective_at')
-                    ->whereOr('tenant_module.effective_at', '<=', Db::raw('UTC_TIMESTAMP(3)'));
+                    ->whereOr('tenant_module.effective_at', '<=', new Raw('UTC_TIMESTAMP(3)'));
             })
             ->where(function ($query): void {
                 $query->whereNull('tenant_module.expires_at')
-                    ->whereOr('tenant_module.expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+                    ->whereOr('tenant_module.expires_at', '>', new Raw('UTC_TIMESTAMP(3)'));
             })
             ->column('tenant_module.module_key');
-        $rows = Db::name('permission')
-            ->where('status', 'active')
+        $rows = Permission::where('status', 'active')
             ->whereNotLike('key', 'platform.%')
             ->whereIn('module_key', array_values(array_unique(['core', ...$modules])))
             ->field('id,key,module_key,type,name,description,risk_level')
@@ -74,7 +75,7 @@ final readonly class TenantWorkspaceQueryService
             ->field([
                 'installation.module_key', 'installation.module_key' => 'name',
                 'installation.installed_version' => 'version', 'installation.status' => 'deployment_status',
-                'status' => Db::raw("COALESCE(tenant_module.status, 'disabled')"),
+                'status' => new Raw("COALESCE(tenant_module.status, 'disabled')"),
                 'tenant_module.source', 'tenant_module.config_json', 'tenant_module.config_revision' => 'revision',
                 'tenant_module.effective_at', 'tenant_module.expires_at',
                 'tenant_module.enabled_at', 'tenant_module.disabled_at',
@@ -101,7 +102,7 @@ final readonly class TenantWorkspaceQueryService
         $rows = $query->field([
             'id', 'event_type', 'action', 'outcome', 'reason_code', 'actor_type',
             'actor_tenant_member_id', 'actor_platform_operator_id',
-            'actor_id' => Db::raw('COALESCE(actor_tenant_member_id, actor_platform_operator_id)'),
+            'actor_id' => new Raw('COALESCE(actor_tenant_member_id, actor_platform_operator_id)'),
             'actor_type' => 'actor_label', 'target_resource_type', 'target_resource_id',
             'boundary_target_type', 'boundary_target_id', 'target_count', 'target_set_digest',
             'request_id', 'operation_id', 'occurred_at' => 'created_at',
@@ -122,11 +123,11 @@ final readonly class TenantWorkspaceQueryService
             ->field([
                 'id', 'event_type', 'action', 'outcome', 'reason_code', 'actor_type',
                 'actor_tenant_member_id', 'actor_platform_operator_id',
-                'actor_id' => Db::raw('COALESCE(actor_tenant_member_id, actor_platform_operator_id)'),
+                'actor_id' => new Raw('COALESCE(actor_tenant_member_id, actor_platform_operator_id)'),
                 'actor_type' => 'actor_label', 'target_resource_type', 'target_resource_id',
                 'boundary_target_type', 'boundary_target_id', 'target_count', 'target_set_digest',
                 'request_id', 'operation_id', 'metadata_json', 'occurred_at' => 'created_at',
-            ])->find();
+            ])->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }

@@ -10,18 +10,22 @@ use PeanutAdmin\Kernel\Audit\GovernanceAuditMetadata;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Audit\Model\PlatformAuditEventRecord;
+use PeanutAdmin\Kernel\Persistence\Model\Credential;
+use PeanutAdmin\Kernel\Persistence\Model\Permission;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperatorRole;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformRole;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformRolePermission;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use think\db\Query;
-use think\facade\Db;
+use think\db\Raw;
 
 final readonly class PlatformWorkspaceQueryService
 {
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function tenants(PageRequest $page): array
     {
-        $query = Db::name('tenant');
+        $query = Tenant::where([]);
         $total = (int) (clone $query)->count();
         $rows = $query->field(
             'id,code,name,display_name,status,locale,timezone,security_revision,authorization_revision,revision,activated_at,suspended_at,closed_at,created_at,updated_at',
@@ -33,9 +37,9 @@ final readonly class PlatformWorkspaceQueryService
     /** @return array<string, mixed> */
     public function tenant(int $tenantId): array
     {
-        $row = Db::name('tenant')->where('id', $tenantId)->field(
+        $row = Tenant::where('id', $tenantId)->field(
             'id,code,name,display_name,status,locale,timezone,security_revision,authorization_revision,revision,activated_at,suspended_at,closed_at,created_at,updated_at',
-        )->find();
+        )->find()?->toArray();
 
         return $this->requireRow($row);
     }
@@ -48,7 +52,7 @@ final readonly class PlatformWorkspaceQueryService
         $total = (int) (clone $query)->count();
         $rows = $query->field([
             'operator.id', 'operator.account_id',
-            'display_name' => Db::raw('COALESCE(operator.display_name, account.display_name)'),
+            'display_name' => new Raw('COALESCE(operator.display_name, account.display_name)'),
             'operator.status', 'operator.security_revision', 'operator.suspended_at', 'operator.closed_at',
             'operator.created_at', 'operator.updated_at',
         ])->order('operator.id')->limit($page->offset(), $page->pageSize)->select()->toArray();
@@ -64,10 +68,10 @@ final readonly class PlatformWorkspaceQueryService
             ->where('operator.id', $operatorId)
             ->field([
                 'operator.id', 'operator.account_id',
-                'display_name' => Db::raw('COALESCE(operator.display_name, account.display_name)'),
+                'display_name' => new Raw('COALESCE(operator.display_name, account.display_name)'),
                 'operator.status', 'operator.security_revision', 'operator.suspended_at', 'operator.closed_at',
                 'operator.created_at', 'operator.updated_at',
-            ])->find();
+            ])->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -78,7 +82,7 @@ final readonly class PlatformWorkspaceQueryService
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function roles(PageRequest $page): array
     {
-        $query = Db::name('platform_role');
+        $query = PlatformRole::where([]);
         $total = (int) (clone $query)->count();
         $rows = $query->field(
             'id,key,name,description,is_builtin,status,revision,archived_at,created_at,updated_at',
@@ -90,9 +94,9 @@ final readonly class PlatformWorkspaceQueryService
     /** @return array<string, mixed> */
     public function role(int $roleId): array
     {
-        $row = Db::name('platform_role')->where('id', $roleId)->field(
+        $row = PlatformRole::where('id', $roleId)->field(
             'id,key,name,description,is_builtin,status,revision,archived_at,created_at,updated_at',
-        )->find();
+        )->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -103,8 +107,7 @@ final readonly class PlatformWorkspaceQueryService
     /** @return list<array<string, mixed>> */
     public function permissions(): array
     {
-        $rows = Db::name('permission')
-            ->where('status', 'active')
+        $rows = Permission::where('status', 'active')
             ->whereLike('key', 'platform.%')
             ->field('id,key,module_key,type,name,description,risk_level')
             ->order('key')->select()->toArray();
@@ -137,7 +140,7 @@ final readonly class PlatformWorkspaceQueryService
             ->leftJoin('platform_operator operator', 'operator.id = audit.operator_id')
             ->leftJoin('account account', 'account.id = audit.account_id')
             ->where('audit.id', $eventId)
-            ->field($this->auditFields(true))->find();
+            ->field($this->auditFields(true))->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -158,7 +161,7 @@ final readonly class PlatformWorkspaceQueryService
         $accountIds = array_map('intval', array_column($rows, 'account_id'));
         $operatorIds = array_map('intval', array_column($rows, 'id'));
         $emails = [];
-        foreach (Db::name('credential')->whereIn('account_id', $accountIds)
+        foreach (Credential::whereIn('account_id', $accountIds)
             ->where('identifier_type', 'email')->where('status', 'active')
             ->field('account_id,identifier_normalized')->order('id')->select()->toArray() as $credential) {
             $emails[(int) $credential['account_id']] ??= (string) $credential['identifier_normalized'];
@@ -237,9 +240,9 @@ final readonly class PlatformWorkspaceQueryService
         $fields = [
             'audit.id', 'audit.event_type', 'audit.action', 'audit.outcome', 'audit.reason_code',
             'audit.operator_id', 'audit.account_id',
-            'operator_label' => Db::raw("COALESCE(operator.display_name, account.display_name, 'platform_system')"),
+            'operator_label' => new Raw("COALESCE(operator.display_name, account.display_name, 'platform_system')"),
             'audit.target_type', 'audit.target_id',
-            'target_tenant_id' => Db::raw("CASE WHEN audit.target_type = 'tenant' THEN audit.target_id ELSE NULL END"),
+            'target_tenant_id' => new Raw("CASE WHEN audit.target_type = 'tenant' THEN audit.target_id ELSE NULL END"),
             'audit.request_id', 'audit.operation_id', 'audit.occurred_at' => 'created_at',
         ];
         if ($withMetadata) {
