@@ -625,7 +625,7 @@ SQL);
             "SELECT id FROM pa_credential WHERE account_id = {$this->accountId} AND status = 'active' ORDER BY id LIMIT 1",
         )->fetchColumn();
         self::assertGreaterThan(0, $credentialId);
-        $this->database->exec("UPDATE pa_credential SET status = 'revoked', revision = revision + 1 WHERE id = {$credentialId}");
+        $this->database->exec("UPDATE pa_credential SET status = 'revoked', revoked_at = '2026-07-16 02:00:00.000', revision = revision + 1 WHERE id = {$credentialId}");
         $this->database->exec("UPDATE pa_account SET security_revision = security_revision + 1 WHERE id = {$this->accountId}");
         self::assertSame(
             'AUTH_ACCOUNT_UNAVAILABLE',

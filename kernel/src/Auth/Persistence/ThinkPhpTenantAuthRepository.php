@@ -60,7 +60,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
         }
         $row = $query->find();
 
-        return $row === null ? null : $this->credentialRecord($row);
+        return $row === null ? null : $this->credentialRecord($row->toArray());
     }
 
     public function registerFailedLogin(
@@ -144,7 +144,8 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
             ->field([
                 'tenant.id' => 'tenant_id', 'tenant.code' => 'tenant_code',
                 'tenant.display_name' => 'tenant_name', 'member.id' => 'member_id',
-                'member_display_name' => new Raw('COALESCE(member.display_name, account.display_name)'),
+                'member.display_name' => 'member_display_name',
+                'account.display_name' => 'account_display_name',
             ])->order('tenant.id');
         if ($tenantCode !== null) {
             $query->where('tenant.code', $tenantCode);
@@ -155,7 +156,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
             (string) $row['tenant_code'],
             (string) $row['tenant_name'],
             (int) $row['member_id'],
-            (string) $row['member_display_name'],
+            (string) ($row['member_display_name'] ?? $row['account_display_name']),
         ), $query->select()->toArray()));
     }
 
@@ -303,7 +304,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
         }
         $row = $query->find();
 
-        return $row === null ? null : $this->sessionRecord($row);
+        return $row === null ? null : $this->sessionRecord($row->toArray());
     }
 
     public function rotateTokens(
