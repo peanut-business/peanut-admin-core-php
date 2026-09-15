@@ -23,6 +23,10 @@ final class ModuleHostLayoutTest extends TestCase
 
         self::assertSame('backend/app/Modules/dcs/store/', $layout->backendRelativePath($key));
         self::assertSame('Dcs\\App\\Modules\\dcs\\store\\', $layout->backendNamespace($key));
+        self::assertSame(
+            'Dcs\\App\\Modules\\Dcs\\Store\\',
+            $layout->historicalBackendNamespace($key),
+        );
         self::assertSame('frontend/src/modules/dcs-store/', $layout->frontendRelativePath($key));
     }
 

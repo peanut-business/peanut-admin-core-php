@@ -37,7 +37,13 @@ final readonly class ModuleBoundaryChecker
             if (!is_string($moduleKey)) {
                 throw new ModuleException('MODULE_MANIFEST_INVALID', 'Module key is required for boundary checks.');
             }
-            $namespaceOwners[$this->layout->backendNamespace(ModuleKey::fromString($moduleKey))] = $moduleKey;
+            $key = ModuleKey::fromString($moduleKey);
+            $this->registerNamespaceOwner($namespaceOwners, $this->layout->backendNamespace($key), $moduleKey);
+            $this->registerNamespaceOwner(
+                $namespaceOwners,
+                $this->layout->historicalBackendNamespace($key),
+                $moduleKey,
+            );
             $contracts = is_array($manifest->data['contracts'] ?? null) ? $manifest->data['contracts'] : [];
             foreach ($contracts['exports'] ?? [] as $contract) {
                 if (is_string($contract)) {
@@ -45,6 +51,11 @@ final readonly class ModuleBoundaryChecker
                 }
             }
         }
+        uksort($namespaceOwners, static function (string $left, string $right): int {
+            $lengthOrder = strlen($right) <=> strlen($left);
+
+            return $lengthOrder !== 0 ? $lengthOrder : strcmp($left, $right);
+        });
 
         foreach ($this->registry->modules as $manifest) {
             $this->checkModule($manifest, $namespaceOwners, $exportOwners);
@@ -61,7 +72,6 @@ final readonly class ModuleBoundaryChecker
         if (!is_string($moduleKey)) {
             throw new ModuleException('MODULE_MANIFEST_INVALID', 'Module key is required for boundary checks.');
         }
-        $namespace = $this->layout->backendNamespace(ModuleKey::fromString($moduleKey));
         $dependencies = [];
         $declaredDependencies = $manifest->data['dependencies'] ?? [];
         if (is_array($declaredDependencies)) {
@@ -82,7 +92,6 @@ final readonly class ModuleBoundaryChecker
             $this->checkPhpFile(
                 $file->getPathname(),
                 $moduleKey,
-                $namespace,
                 $dependencies,
                 $namespaceOwners,
                 $exportOwners,
@@ -98,7 +107,6 @@ final readonly class ModuleBoundaryChecker
     private function checkPhpFile(
         string $path,
         string $moduleKey,
-        string $moduleNamespace,
         array $dependencies,
         array $namespaceOwners,
         array $exportOwners,
@@ -111,14 +119,15 @@ final readonly class ModuleBoundaryChecker
             [$type, $text] = $token;
             if (in_array($type, [T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
                 $reference = ltrim($text, '\\');
+                $referenceOwner = $this->namespaceOwner($reference, $namespaceOwners);
                 if ($this->isWithinNamespace($reference, $this->layout->backendNamespaceRoot())
-                    && !$this->isWithinNamespace($reference, $moduleNamespace)) {
+                    && $referenceOwner !== $moduleKey) {
                     $this->assertCrossModuleContract(
                         $path,
                         $reference,
                         $moduleKey,
+                        $referenceOwner,
                         $dependencies,
-                        $namespaceOwners,
                         $exportOwners,
                     );
                 }
@@ -140,24 +149,16 @@ final readonly class ModuleBoundaryChecker
 
     /**
      * @param array<string, true> $dependencies
-     * @param array<string, string> $namespaceOwners
      * @param array<string, string> $exportOwners
      */
     private function assertCrossModuleContract(
         string $path,
         string $reference,
         string $moduleKey,
+        ?string $owner,
         array $dependencies,
-        array $namespaceOwners,
         array $exportOwners,
     ): void {
-        $owner = null;
-        foreach ($namespaceOwners as $namespace => $candidateOwner) {
-            if ($this->isWithinNamespace($reference, $namespace)) {
-                $owner = $candidateOwner;
-                break;
-            }
-        }
         if ($owner === null || $owner === $moduleKey || !str_contains($reference, '\\contracts\\')) {
             throw new ModuleException(
                 'MODULE_REGISTRY_CONFLICT',
@@ -176,6 +177,33 @@ final readonly class ModuleBoundaryChecker
                 "{$path} imports {$reference}, which {$owner} does not export.",
             );
         }
+    }
+
+    /** @param array<string, string> $namespaceOwners */
+    private function registerNamespaceOwner(array &$namespaceOwners, string $namespace, string $moduleKey): void
+    {
+        $normalized = strtolower($namespace);
+        $existingOwner = $namespaceOwners[$normalized] ?? null;
+        if ($existingOwner !== null && $existingOwner !== $moduleKey) {
+            throw new ModuleException(
+                'MODULE_REGISTRY_CONFLICT',
+                "Module namespace {$namespace} is shared by {$existingOwner} and {$moduleKey}.",
+            );
+        }
+        $namespaceOwners[$normalized] = $moduleKey;
+    }
+
+    /** @param array<string, string> $namespaceOwners */
+    private function namespaceOwner(string $reference, array $namespaceOwners): ?string
+    {
+        $normalized = strtolower($reference) . '\\';
+        foreach ($namespaceOwners as $namespace => $owner) {
+            if (str_starts_with($normalized, $namespace)) {
+                return $owner;
+            }
+        }
+
+        return null;
     }
 
     private function isWithinNamespace(string $reference, string $namespace): bool

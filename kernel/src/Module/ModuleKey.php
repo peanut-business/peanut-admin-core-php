@@ -35,6 +35,18 @@ final readonly class ModuleKey
         );
     }
 
+    /** @return non-empty-list<string> */
+    public function pascalSegments(): array
+    {
+        return array_map(
+            static fn(string $segment): string => implode('', array_map(
+                static fn(string $word): string => ucfirst($word),
+                explode('-', $segment),
+            )),
+            explode('.', $this->value),
+        );
+    }
+
     public function slug(): string
     {
         return str_replace('.', '-', $this->value);

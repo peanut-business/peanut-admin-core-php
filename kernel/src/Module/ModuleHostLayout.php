@@ -32,6 +32,11 @@ final readonly class ModuleHostLayout
         return $this->backendNamespaceRoot . '\\' . implode('\\', $key->snakeSegments()) . '\\';
     }
 
+    public function historicalBackendNamespace(ModuleKey $key): string
+    {
+        return $this->backendNamespaceRoot . '\\' . implode('\\', $key->pascalSegments()) . '\\';
+    }
+
     public function backendNamespaceRoot(): string
     {
         return $this->backendNamespaceRoot . '\\';
