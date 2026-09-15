@@ -20,6 +20,7 @@ use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use think\db\Raw;
 use think\facade\Db;
 use think\Model;
+use think\model\type\DateTime as ThinkPhpDateTime;
 use Throwable;
 
 final readonly class FileService
@@ -108,8 +109,11 @@ final readonly class FileService
         }
         $query = FileObjectRecord::scope('tenant', self::scope($context))->where('status', $status);
         $total = (clone $query)->count();
-        $records = $query->order('id', 'desc')->page($page, $pageSize)->select()->toArray();
-        $items = array_values(array_map($this->map(...), $records));
+        $records = $query->order('id', 'desc')->page($page, $pageSize)->select();
+        $items = [];
+        foreach ($records as $record) {
+            $items[] = $this->map($record);
+        }
 
         return ['items' => $items, 'page' => $page, 'page_size' => $pageSize, 'total' => $total];
     }
@@ -224,8 +228,7 @@ final readonly class FileService
             ->field('file.*,metadata.width,metadata.height')
             ->order('file.id', 'desc')
             ->page($page, $pageSize)
-            ->select()
-            ->toArray();
+            ->select();
         $items = [];
         foreach ($records as $record) {
             $file = $this->map($record);
@@ -352,6 +355,9 @@ final readonly class FileService
     {
         if ($value instanceof DateTimeImmutable) {
             return $value->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.v\Z');
+        }
+        if ($value instanceof ThinkPhpDateTime) {
+            $value = $value->format('Y-m-d H:i:s.v');
         }
         if (!is_string($value)) {
             throw FileMediaException::internal();
