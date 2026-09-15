@@ -9,9 +9,12 @@ use DateTimeZone;
 use PeanutAdmin\Kernel\Module\ModuleException;
 use PeanutAdmin\Kernel\Module\ModuleInstallationRecord;
 use PeanutAdmin\Kernel\Module\ModuleRuntimeRepository;
+use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
+use PeanutAdmin\Kernel\Module\Model\TenantModule;
 use PeanutAdmin\Kernel\Module\TenantModuleMutationRepository;
 use PeanutAdmin\Kernel\Module\TenantModuleRecord;
-use think\facade\Db;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
+use think\db\Raw;
 
 final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRepository, TenantModuleMutationRepository
 {
@@ -19,16 +22,16 @@ final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRep
 
     public function tenantIsActive(int $tenantId): bool
     {
-        return Db::name('tenant')->where('id', $tenantId)->value('status') === 'active';
+        return Tenant::where('id', $tenantId)->value('status') === 'active';
     }
 
     public function installation(string $moduleKey): ?ModuleInstallationRecord
     {
-        $query = Db::name('module_installation')->where('module_key', $moduleKey);
+        $query = ModuleInstallation::where('module_key', $moduleKey);
         if ($this->lockAvailabilityReads) {
             $query->lock(true);
         }
-        $row = $query->field('module_key,installed_version,status,revision,manifest_digest')->find();
+        $row = $query->field('module_key,installed_version,status,revision,manifest_digest')->find()?->toArray();
 
         return $row === null ? null : new ModuleInstallationRecord(
             (string) $row['module_key'],
@@ -41,13 +44,13 @@ final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRep
 
     public function tenantModule(int $tenantId, string $moduleKey): ?TenantModuleRecord
     {
-        $query = Db::name('tenant_module')->where('tenant_id', $tenantId)->where('module_key', $moduleKey);
+        $query = TenantModule::where('tenant_id', $tenantId)->where('module_key', $moduleKey);
         if ($this->lockAvailabilityReads) {
             $query->lock(true);
         }
         $row = $query->field(
             'tenant_id,module_key,status,effective_at,expires_at,authorization_revision',
-        )->find();
+        )->find()?->toArray();
 
         return $row === null ? null : new TenantModuleRecord(
             (int) $row['tenant_id'],
@@ -61,8 +64,7 @@ final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRep
 
     public function enabledDependents(int $tenantId, string $moduleKey): array
     {
-        return array_values(array_map('strval', Db::name('tenant_module')
-            ->where('tenant_id', $tenantId)
+        return array_values(array_map('strval', TenantModule::where('tenant_id', $tenantId)
             ->where('status', 'enabled')
             ->where('module_key', '<>', $moduleKey)
             ->order('module_key')
@@ -90,14 +92,13 @@ final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRep
             'disabled_reason' => null,
             'updated_at' => $timestamp,
         ];
-        $existing = Db::name('tenant_module')
-            ->where('tenant_id', $tenantId)
+        $existing = TenantModule::where('tenant_id', $tenantId)
             ->where('module_key', $moduleKey)
             ->lock(true)
             ->field('config_revision,authorization_revision')
             ->find();
         if ($existing === null) {
-            Db::name('tenant_module')->insert([
+            TenantModule::insert([
                 'tenant_id' => $tenantId,
                 'module_key' => $moduleKey,
                 ...$data,
@@ -106,10 +107,10 @@ final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRep
                 'created_at' => $timestamp,
             ]);
         } else {
-            Db::name('tenant_module')->where('tenant_id', $tenantId)->where('module_key', $moduleKey)->update([
+            TenantModule::where('tenant_id', $tenantId)->where('module_key', $moduleKey)->update([
                 ...$data,
-                'config_revision' => Db::raw('config_revision + 1'),
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'config_revision' => new Raw('config_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
             ]);
         }
         $this->bumpTenant($tenantId, $timestamp);
@@ -121,10 +122,10 @@ final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRep
     public function disable(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord
     {
         $timestamp = $this->format($now);
-        Db::name('tenant_module')->where('tenant_id', $tenantId)->where('module_key', $moduleKey)->update([
+        TenantModule::where('tenant_id', $tenantId)->where('module_key', $moduleKey)->update([
             'status' => 'disabled',
             'disabled_at' => $timestamp,
-            'authorization_revision' => Db::raw('authorization_revision + 1'),
+            'authorization_revision' => new Raw('authorization_revision + 1'),
             'updated_at' => $timestamp,
         ]);
         $this->bumpTenant($tenantId, $timestamp);
@@ -135,9 +136,9 @@ final readonly class ThinkPhpModuleRuntimeRepository implements ModuleRuntimeRep
 
     private function bumpTenant(int $tenantId, string $timestamp): void
     {
-        Db::name('tenant')->where('id', $tenantId)->update([
-            'authorization_revision' => Db::raw('authorization_revision + 1'),
-            'revision' => Db::raw('revision + 1'),
+        Tenant::where('id', $tenantId)->update([
+            'authorization_revision' => new Raw('authorization_revision + 1'),
+            'revision' => new Raw('revision + 1'),
             'updated_at' => $timestamp,
         ]);
     }
