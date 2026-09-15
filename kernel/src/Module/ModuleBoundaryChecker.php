@@ -111,8 +111,8 @@ final readonly class ModuleBoundaryChecker
             [$type, $text] = $token;
             if (in_array($type, [T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
                 $reference = ltrim($text, '\\');
-                if (str_starts_with($reference . '\\', $this->layout->backendNamespaceRoot())
-                    && !str_starts_with($reference . '\\', $moduleNamespace)) {
+                if ($this->isWithinNamespace($reference, $this->layout->backendNamespaceRoot())
+                    && !$this->isWithinNamespace($reference, $moduleNamespace)) {
                     $this->assertCrossModuleContract(
                         $path,
                         $reference,
@@ -153,7 +153,7 @@ final readonly class ModuleBoundaryChecker
     ): void {
         $owner = null;
         foreach ($namespaceOwners as $namespace => $candidateOwner) {
-            if (str_starts_with($reference . '\\', $namespace)) {
+            if ($this->isWithinNamespace($reference, $namespace)) {
                 $owner = $candidateOwner;
                 break;
             }
@@ -176,6 +176,11 @@ final readonly class ModuleBoundaryChecker
                 "{$path} imports {$reference}, which {$owner} does not export.",
             );
         }
+    }
+
+    private function isWithinNamespace(string $reference, string $namespace): bool
+    {
+        return str_starts_with(strtolower($reference) . '\\', strtolower($namespace));
     }
 
     private function isDeclaredForeignKeyReference(string $path, string $literal, string $table): bool
