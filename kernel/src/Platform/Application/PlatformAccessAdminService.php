@@ -14,11 +14,17 @@ use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use PeanutAdmin\Kernel\Platform\PlatformOperatorStatus;
+use PeanutAdmin\Kernel\Persistence\Model\Account;
 use PeanutAdmin\Kernel\Persistence\Model\Credential;
+use PeanutAdmin\Kernel\Persistence\Model\Permission;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperatorRole;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformRole;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformRolePermission;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformSession;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformSessionToken;
 use Throwable;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class PlatformAccessAdminService
@@ -59,7 +65,7 @@ final readonly class PlatformAccessAdminService
                 ->field([
                     'credential.account_id', 'credential.status' => 'credential_status',
                     'account.status' => 'account_status',
-                ])->lock(true)->find();
+                ])->lock(true)->find()?->toArray();
             if ($credential === null) {
                 if ($initialPassword === null || $initialPassword === '') {
                     throw AdminAccessException::invalid('INITIAL_PASSWORD_REQUIRED', 'An initial password is required for a new account.');
@@ -76,11 +82,11 @@ final readonly class PlatformAccessAdminService
                 }
                 $accountId = (int) $credential['account_id'];
             }
-            if (Db::name('platform_operator')->where('account_id', $accountId)->lock(true)->value('id') !== null) {
+            if (PlatformOperator::where('account_id', $accountId)->lock(true)->value('id') !== null) {
                 throw AdminAccessException::conflict('PLATFORM_OPERATOR_EXISTS', 'The account is already a platform operator.');
             }
             $now = $this->now();
-            $operatorId = (int) Db::name('platform_operator')->insertGetId([
+            $operatorId = (int) PlatformOperator::insertGetId([
                 'account_id' => $accountId, 'display_name' => $displayName, 'status' => 'active',
                 'created_at' => $now, 'updated_at' => $now,
             ]);
@@ -112,9 +118,9 @@ final readonly class PlatformAccessAdminService
             if ($before['status'] === PlatformOperatorStatus::Closed->value) {
                 throw AdminAccessException::conflict('PLATFORM_OPERATOR_CLOSED', 'A closed operator cannot be updated.');
             }
-            if (Db::name('platform_operator')->where('id', $operatorId)->where('security_revision', $expectedRevision)->update([
+            if (PlatformOperator::where('id', $operatorId)->where('security_revision', $expectedRevision)->update([
                 'display_name' => $displayName,
-                'security_revision' => Db::raw('security_revision + 1'),
+                'security_revision' => new Raw('security_revision + 1'),
                 'updated_at' => $this->now(),
             ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -158,10 +164,10 @@ final readonly class PlatformAccessAdminService
             if (count($roles) !== count($roleIds)) {
                 throw AdminAccessException::notFound();
             }
-            Db::name('platform_operator_role')->where('platform_operator_id', $operatorId)->delete();
+            PlatformOperatorRole::where('platform_operator_id', $operatorId)->delete();
             $now = $this->now();
             if ($roles !== []) {
-                Db::name('platform_operator_role')->insertAll(array_map(
+                PlatformOperatorRole::insertAll(array_map(
                     static fn(array $role): array => [
                         'platform_operator_id' => $operatorId,
                         'platform_role_id' => (int) $role['id'],
@@ -171,8 +177,8 @@ final readonly class PlatformAccessAdminService
                     $roles,
                 ));
             }
-            if (Db::name('platform_operator')->where('id', $operatorId)->where('security_revision', $expectedRevision)->update([
-                'security_revision' => Db::raw('security_revision + 1'), 'updated_at' => $now,
+            if (PlatformOperator::where('id', $operatorId)->where('security_revision', $expectedRevision)->update([
+                'security_revision' => new Raw('security_revision + 1'), 'updated_at' => $now,
             ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
@@ -214,14 +220,14 @@ final readonly class PlatformAccessAdminService
             }
             $now = $this->now();
             $changes = [
-                'status' => $next->value, 'security_revision' => Db::raw('security_revision + 1'), 'updated_at' => $now,
+                'status' => $next->value, 'security_revision' => new Raw('security_revision + 1'), 'updated_at' => $now,
             ];
             if ($next === PlatformOperatorStatus::Suspended) {
                 $changes['suspended_at'] = $now;
             } elseif ($next === PlatformOperatorStatus::Closed) {
                 $changes['closed_at'] = $now;
             }
-            if (Db::name('platform_operator')->where('id', $operatorId)->where('security_revision', $expectedRevision)
+            if (PlatformOperator::where('id', $operatorId)->where('security_revision', $expectedRevision)
                 ->update($changes) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
@@ -261,7 +267,7 @@ final readonly class PlatformAccessAdminService
         return $this->transaction(function () use ($actor, $key, $name, $description): array {
             $this->requireActor($actor);
             $now = $this->now();
-            $roleId = (int) Db::name('platform_role')->insertGetId([
+            $roleId = (int) PlatformRole::insertGetId([
                 'key' => $key, 'name' => $name, 'description' => $description, 'is_builtin' => 0,
                 'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
             ]);
@@ -294,9 +300,9 @@ final readonly class PlatformAccessAdminService
             if ($before['status'] === 'archived') {
                 throw AdminAccessException::conflict('PLATFORM_ROLE_ARCHIVED', 'An archived role cannot be updated.');
             }
-            if (Db::name('platform_role')->where('id', $roleId)->where('revision', $expectedRevision)->update([
+            if (PlatformRole::where('id', $roleId)->where('revision', $expectedRevision)->update([
                 'name' => $name, 'description' => $description,
-                'revision' => Db::raw('revision + 1'), 'updated_at' => $this->now(),
+                'revision' => new Raw('revision + 1'), 'updated_at' => $this->now(),
             ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
@@ -331,8 +337,8 @@ final readonly class PlatformAccessAdminService
                 throw AdminAccessException::conflict('PLATFORM_ROLE_ARCHIVED', 'The platform role is already archived.');
             }
             $now = $this->now();
-            if (Db::name('platform_role')->where('id', $roleId)->where('revision', $expectedRevision)->update([
-                'status' => 'archived', 'revision' => Db::raw('revision + 1'),
+            if (PlatformRole::where('id', $roleId)->where('revision', $expectedRevision)->update([
+                'status' => 'archived', 'revision' => new Raw('revision + 1'),
                 'archived_at' => $now, 'updated_at' => $now,
             ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -379,10 +385,10 @@ final readonly class PlatformAccessAdminService
                     'PERMISSION_NOT_ASSIGNABLE', 'Only active platform control-plane permissions may be assigned.',
                 );
             }
-            Db::name('platform_role_permission')->where('platform_role_id', $roleId)->delete();
+            PlatformRolePermission::where('platform_role_id', $roleId)->delete();
             $now = $this->now();
             if ($permissions !== []) {
-                Db::name('platform_role_permission')->insertAll(array_map(
+                PlatformRolePermission::insertAll(array_map(
                     static fn(array $permission): array => [
                         'platform_role_id' => $roleId,
                         'permission_id' => (int) $permission['id'],
@@ -391,8 +397,8 @@ final readonly class PlatformAccessAdminService
                     $permissions,
                 ));
             }
-            if (Db::name('platform_role')->where('id', $roleId)->where('revision', $expectedRevision)->update([
-                'revision' => Db::raw('revision + 1'), 'updated_at' => $now,
+            if (PlatformRole::where('id', $roleId)->where('revision', $expectedRevision)->update([
+                'revision' => new Raw('revision + 1'), 'updated_at' => $now,
             ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
@@ -411,10 +417,10 @@ final readonly class PlatformAccessAdminService
     private function createAccountAndCredential(string $email, string $displayName, string $password): int
     {
         $now = $this->now();
-        $accountId = (int) Db::name('account')->insertGetId([
+        $accountId = (int) Account::insertGetId([
             'display_name' => $displayName, 'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
         ]);
-        Db::name('credential')->insert([
+        Credential::insert([
             'account_id' => $accountId, 'kind' => 'email_password', 'identifier_type' => 'email',
             'identifier_normalized' => $email, 'secret_hash' => $this->passwords->hash($password),
             'verified_at' => $now, 'secret_changed_at' => $now, 'created_at' => $now, 'updated_at' => $now,
@@ -425,7 +431,7 @@ final readonly class PlatformAccessAdminService
 
     private function requireActor(PlatformContext $actor): void
     {
-        if (Db::name('platform_operator')->where('id', $actor->operatorId)->where('account_id', $actor->accountId)
+        if (PlatformOperator::where('id', $actor->operatorId)->where('account_id', $actor->accountId)
             ->where('status', 'active')->lock(true)->value('id') === null) {
             throw new AdminAccessException('PLATFORM_OPERATOR_INACTIVE', 403, 'An active platform operator is required.');
         }
@@ -433,7 +439,7 @@ final readonly class PlatformAccessAdminService
 
     private function lockControlPlane(): void
     {
-        Db::name('platform_operator')->where('status', 'active')->order('id')->lock(true)->column('id');
+        PlatformOperator::where('status', 'active')->order('id')->lock(true)->column('id');
     }
 
     private function assertControlAdminExists(): void
@@ -469,23 +475,23 @@ final readonly class PlatformAccessAdminService
 
     private function revokeSessions(int $operatorId, string $reason, string $now): void
     {
-        $sessionIds = Db::name('platform_session')->where('platform_operator_id', $operatorId)->column('id');
+        $sessionIds = PlatformSession::where('platform_operator_id', $operatorId)->column('id');
         if ($sessionIds !== []) {
-            Db::name('platform_session_token')->whereIn('session_id', $sessionIds)->where('status', 'active')->update([
+            PlatformSessionToken::whereIn('session_id', $sessionIds)->where('status', 'active')->update([
                 'status' => 'revoked', 'revoked_at' => $now,
             ]);
         }
-        Db::name('platform_session')->where('platform_operator_id', $operatorId)->where('status', 'active')->update([
+        PlatformSession::where('platform_operator_id', $operatorId)->where('status', 'active')->update([
             'status' => 'revoked', 'revoked_at' => $now, 'revoke_reason' => 'operator_' . $reason, 'updated_at' => $now,
         ]);
     }
 
     private function bumpRoleOperators(int $roleId, string $now): void
     {
-        $operatorIds = Db::name('platform_operator_role')->where('platform_role_id', $roleId)->column('platform_operator_id');
+        $operatorIds = PlatformOperatorRole::where('platform_role_id', $roleId)->column('platform_operator_id');
         if ($operatorIds !== []) {
-            Db::name('platform_operator')->whereIn('id', $operatorIds)->update([
-                'security_revision' => Db::raw('security_revision + 1'), 'updated_at' => $now,
+            PlatformOperator::whereIn('id', $operatorIds)->update([
+                'security_revision' => new Raw('security_revision + 1'), 'updated_at' => $now,
             ]);
         }
     }
@@ -495,7 +501,7 @@ final readonly class PlatformAccessAdminService
      */
     private function activeRoles(array $roleIds): array
     {
-        return $roleIds === [] ? [] : array_values(Db::name('platform_role')->where('status', 'active')->whereIn('id', $roleIds)
+        return $roleIds === [] ? [] : array_values(PlatformRole::where('status', 'active')->whereIn('id', $roleIds)
             ->order('id')->lock(true)->field('id,key')->select()->toArray());
     }
 
@@ -504,7 +510,7 @@ final readonly class PlatformAccessAdminService
      */
     private function platformPermissions(array $permissionKeys): array
     {
-        return $permissionKeys === [] ? [] : array_values(Db::name('permission')->where('status', 'active')
+        return $permissionKeys === [] ? [] : array_values(Permission::where('status', 'active')
             ->whereLike('key', 'platform.%')->whereIn('key', $permissionKeys)->order('key')
             ->field('id,key')->select()->toArray());
     }
@@ -512,17 +518,17 @@ final readonly class PlatformAccessAdminService
     /** @return array<string, mixed> */
     private function operator(int $operatorId, bool $forUpdate = false): array
     {
-        $query = Db::name('platform_operator')->where('id', $operatorId);
+        $query = PlatformOperator::where('id', $operatorId);
         if ($forUpdate) {
             $query->lock(true);
         }
         $row = $query->field(
             'id,account_id,display_name,status,security_revision,suspended_at,closed_at,created_at,updated_at',
-        )->find();
+        )->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
-        $row['email'] = Db::name('credential')->where('account_id', (int) $row['account_id'])
+        $row['email'] = Credential::where('account_id', (int) $row['account_id'])
             ->where('identifier_type', 'email')->where('status', 'active')->value('identifier_normalized');
         $row['role_keys'] = array_map('strval', PlatformOperatorRole::alias('operator_role')
             ->join('platform_role role', 'role.id = operator_role.platform_role_id')
@@ -535,11 +541,12 @@ final readonly class PlatformAccessAdminService
     /** @return array<string, mixed> */
     private function role(int $roleId, bool $forUpdate = false): array
     {
-        $query = Db::name('platform_role')->where('id', $roleId);
+        $query = PlatformRole::where('id', $roleId);
         if ($forUpdate) {
             $query->lock(true);
         }
-        $row = $query->field('id,key,name,description,is_builtin,status,revision,archived_at,created_at,updated_at')->find();
+        $row = $query->field('id,key,name,description,is_builtin,status,revision,archived_at,created_at,updated_at')
+            ->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
