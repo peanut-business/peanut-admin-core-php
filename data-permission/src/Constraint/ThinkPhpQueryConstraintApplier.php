@@ -7,6 +7,8 @@ namespace PeanutAdmin\DataPermission\Constraint;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 use PeanutAdmin\DataPermission\Model\DataPermissionTargetRecord;
 use think\db\BaseQuery;
+use think\db\Query;
+use think\db\Raw;
 
 /** Applies the authorization AST to a ThinkPHP query without exposing SQL fragments to callers. */
 final readonly class ThinkPhpQueryConstraintApplier
@@ -60,7 +62,9 @@ final readonly class ThinkPhpQueryConstraintApplier
             );
         }
         $outerColumn = $constraint->outerColumn->value;
-        $subquery = DataPermissionTargetRecord::where([])
+        $targetTable = (new DataPermissionTargetRecord())->getTable();
+        $subquery = (new Query($query->getConnection()))
+            ->table($targetTable)
             ->fieldRaw('1')
             ->where('tenant_id', $constraint->tenantId)
             ->where('target_set_id', $constraint->targetSetId)
@@ -68,7 +72,9 @@ final readonly class ThinkPhpQueryConstraintApplier
             ->whereRaw(
                 "target_id COLLATE utf8mb4_0900_ai_ci = (CAST({$outerColumn} AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci)",
             );
-        $query->whereExists($subquery);
+        $subquery->parseOptions();
+        $subquerySql = $query->getConnection()->getBuilder()->select($subquery);
+        $query->whereExists(new Raw($subquerySql, $subquery->getBind(false)));
     }
 
     /** MySQL JSON_TABLE keeps very large caller-authorized target sets to one bound value. */

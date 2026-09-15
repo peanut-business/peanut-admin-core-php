@@ -38,11 +38,10 @@ final class QueryConstraintTest extends TestCase
             new ColumnIn(new ColumnReference('item.project_id'), ['A', 'B']),
         ]);
         $query = $this->applied($constraint);
-        $binds = $query->getBind(false);
-        $sql = (string) (clone $query)->fetchSql()->select();
+        [$sql, $binds] = $this->compile($query);
 
-        self::assertStringContainsString('item.tenant_id', $sql);
-        self::assertStringContainsString('item.project_id', $sql);
+        self::assertStringContainsString('`item`.`tenant_id`', $sql);
+        self::assertStringContainsString('`item`.`project_id`', $sql);
         self::assertCount(4, $binds);
     }
 
@@ -55,11 +54,14 @@ final class QueryConstraintTest extends TestCase
             99,
         ));
 
-        $binds = $query->getBind(false);
-        $sql = (string) (clone $query)->fetchSql()->select();
+        [$sql, $binds] = $this->compile($query);
         self::assertStringContainsString('EXISTS (', $sql);
         self::assertStringContainsString('pa_data_permission_target', $sql);
-        self::assertCount(2, $binds);
+        self::assertCount(3, $binds);
+        $values = array_map(static fn(array $bind): mixed => $bind[0], array_values($binds));
+        self::assertContains(42, $values);
+        self::assertContains(99, $values);
+        self::assertContains('active', $values);
     }
 
     public function testLargeRequestedTargetSetUsesOneJsonParameter(): void
@@ -69,8 +71,8 @@ final class QueryConstraintTest extends TestCase
             array_map('strval', range(1, 5000)),
         ));
 
-        $binds = array_values($query->getBind(false));
-        $sql = (string) (clone $query)->fetchSql()->select();
+        [$sql, $binds] = $this->compile($query);
+        $binds = array_values($binds);
         self::assertStringContainsString('JSON_TABLE(', $sql);
         self::assertStringContainsString('CAST(item.project_id AS CHAR', $sql);
         self::assertCount(1, $binds);
@@ -107,5 +109,14 @@ final class QueryConstraintTest extends TestCase
         (new ThinkPhpQueryConstraintApplier())->apply($query, $constraint);
 
         return $query;
+    }
+
+    /** @return array{string, array<string, array{mixed, int}>} */
+    private function compile(Query $query): array
+    {
+        $query->parseOptions();
+        $sql = $query->getConnection()->getBuilder()->select($query);
+
+        return [$sql, $query->getBind(false)];
     }
 }
