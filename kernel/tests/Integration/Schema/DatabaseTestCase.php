@@ -10,6 +10,7 @@ use PDOStatement;
 use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use think\App;
 
 require_once __DIR__ . '/KernelMigrationRunner.php';
 
@@ -28,6 +29,15 @@ abstract class DatabaseTestCase extends TestCase
         if (getenv('PEANUT_INTEGRATION') !== '1') {
             self::markTestSkipped('Run through scripts/test-integration.');
         }
+
+        $root = dirname(__DIR__, 6);
+        $app = new App($root . '/backend');
+        $cache = require $root . '/backend/config/cache.php';
+        if (!is_array($cache)) {
+            throw new RuntimeException('The backend cache configuration is invalid.');
+        }
+        $app->config->set($cache, 'cache');
+        $app->cache->clear();
 
         $this->admin = $this->connect();
         $this->admin->exec('DROP DATABASE IF EXISTS `' . self::DATABASE . '`');

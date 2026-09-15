@@ -71,6 +71,16 @@ final class EffectiveAccessPreviewServiceTest extends DatabaseTestCase
             'root',
             getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
         ))->migrate();
+        $this->database->exec(<<<'SQL'
+CREATE TABLE pa_preview_record (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_id BIGINT UNSIGNED NOT NULL,
+    created_by_member_id BIGINT UNSIGNED NULL,
+    department_id BIGINT UNSIGNED NULL,
+    project_id BIGINT UNSIGNED NULL,
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+SQL);
         (new CorePermissionCatalogSynchronizer(
             new ThinkPhpAuthorizationCatalogRepository(),
         ))->synchronize();
@@ -266,18 +276,20 @@ SQL)->fetchColumn();
         }
 
         self::assertSame('global_reference_read', $summaries['preview.e-global']['data_access']['mode']);
-        self::assertSame('1 = 1', $this->compiledSql($engine, $subject, 'preview.e-global'));
+        self::assertStringNotContainsString(
+            ' WHERE ',
+            $this->compiledSql($engine, $subject, 'preview.e-global'),
+        );
 
         self::assertSame('tenant_wide', $summaries['preview.f-tenant-wide']['data_access']['mode']);
         $tenantWideSql = $this->compiledSql($engine, $subject, 'preview.f-tenant-wide');
-        self::assertStringContainsString('preview_record.tenant_id', $tenantWideSql);
-        self::assertStringContainsString('1 = 1', $tenantWideSql);
+        self::assertStringContainsString('`preview_record`.`tenant_id`', $tenantWideSql);
 
         self::assertSame('conditional', $summaries['preview.g-conditional']['data_access']['mode']);
         $conditionalSql = $this->compiledSql($engine, $subject, 'preview.g-conditional');
-        self::assertStringContainsString('preview_record.tenant_id', $conditionalSql);
+        self::assertStringContainsString('`preview_record`.`tenant_id`', $conditionalSql);
         self::assertStringContainsString(' OR ', $conditionalSql);
-        self::assertStringContainsString('preview_record.created_by_member_id', $conditionalSql);
+        self::assertStringContainsString('`preview_record`.`created_by_member_id`', $conditionalSql);
         self::assertStringContainsString('EXISTS (', $conditionalSql);
 
         foreach (['preview.h-no-policy', 'preview.i-global-targeted'] as $resourceKey) {

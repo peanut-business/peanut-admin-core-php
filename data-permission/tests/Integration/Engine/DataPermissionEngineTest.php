@@ -259,14 +259,19 @@ SQL);
             ]]]);
             $query = $this->authorizedQuery($operation);
             self::assertSame($size, (int) (clone $query)->count());
-            $bindCount = count($query->getBind(false));
+            $compiledQuery = (clone $query)->field('id');
+            $compiledQuery->parseOptions();
+            $compiledSql = $compiledQuery->getConnection()->getBuilder()->select($compiledQuery);
+            $bindCount = count($compiledQuery->getBind(false));
             $sql = (string) (clone $query)->field('id')->fetchSql()->select();
             self::assertNotFalse($this->query('EXPLAIN ' . $sql)->fetch(PDO::FETCH_ASSOC));
             if ($size <= 500) {
-                self::assertStringContainsString(' IN (', $sql);
+                self::assertStringContainsString(' IN (', $compiledSql);
                 self::assertSame($size + 1, $bindCount);
             } else {
-                self::assertStringContainsString('JSON_TABLE(', $sql);
+                self::assertStringContainsString('EXISTS (', $compiledSql);
+                self::assertStringContainsString('pa_data_permission_target', $compiledSql);
+                self::assertStringNotContainsString('JSON_TABLE(', $compiledSql);
                 self::assertLessThan(10, $bindCount);
                 self::assertTrue((new ThinkPhpTargetSetMembershipProvider())->containsAll(
                     $this->alphaTenant,
