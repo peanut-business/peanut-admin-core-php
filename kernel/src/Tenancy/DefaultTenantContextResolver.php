@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Tenancy;
 
 use PeanutAdmin\Kernel\Context\TenantSystemContext;
-use think\facade\Db;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 
 final class DefaultTenantContextResolver
 {
@@ -17,7 +17,7 @@ final class DefaultTenantContextResolver
         if ($actor === '' || $operation === '' || $operationId === '') {
             throw new \DomainException('DEFAULT_TENANT_CONTEXT_UNAVAILABLE');
         }
-        $ids = Db::name('tenant')->where('code', 'default')->where('status', 'active')
+        $ids = Tenant::where('code', 'default')->where('status', 'active')
             ->limit(2)->column('id');
         if (count($ids) !== 1 || (int) $ids[0] < 1) {
             throw new \DomainException('DEFAULT_TENANT_CONTEXT_UNAVAILABLE');

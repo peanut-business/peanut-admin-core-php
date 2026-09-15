@@ -6,7 +6,6 @@ namespace PeanutAdmin\Kernel\Tenancy;
 
 use PeanutAdmin\Kernel\Context\TenantSystemContext;
 use PeanutAdmin\Kernel\Persistence\Model\TenantEntryBinding;
-use think\facade\Db;
 
 final readonly class TenantEntryBindingResolver
 {
