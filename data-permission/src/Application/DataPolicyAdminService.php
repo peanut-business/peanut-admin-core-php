@@ -12,18 +12,19 @@ use PeanutAdmin\DataPermission\Model\DataPermissionGroupRecord;
 use PeanutAdmin\DataPermission\Model\DataPermissionPolicyRecord;
 use PeanutAdmin\DataPermission\Model\DataPermissionTargetRecord;
 use PeanutAdmin\DataPermission\Model\DataPermissionTargetSetRecord;
-use PeanutAdmin\DataPermission\Model\ProtectedResourceRecord;
-use PeanutAdmin\DataPermission\Model\ResourceOperationConditionRecord;
-use PeanutAdmin\DataPermission\Model\TargetTypeRecord;
 use PeanutAdmin\DataPermission\Target\TargetResolverRegistry;
 use PeanutAdmin\DataPermission\Target\TypedResourceTargetSet;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
+use PeanutAdmin\Kernel\Authorization\Model\ProtectedResourceRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationConditionRecord;
+use PeanutAdmin\Kernel\Authorization\Model\TargetTypeRecord;
 use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
 use PeanutAdmin\Kernel\Persistence\Model\Department;
 use PeanutAdmin\Kernel\Persistence\Model\Role;
 use PeanutAdmin\Kernel\Persistence\Model\Tenant;
+use think\db\Raw;
 use think\facade\Db;
 use Throwable;
 
@@ -83,7 +84,7 @@ final readonly class DataPolicyAdminService
                 ->where('role_id', $roleId)
                 ->where('resource_operation_id', (int) $catalog['operation_id'])
                 ->lock(true)
-                ->find();
+                ->find()?->toArray();
             if ($existing !== null) {
                 if ($expectedRevision === null) {
                     throw AdminAccessException::preconditionRequired();
@@ -125,7 +126,7 @@ final readonly class DataPolicyAdminService
                     'valid_from' => $input['valid_from'],
                     'valid_until' => $input['valid_until'],
                     'reason' => $input['reason'],
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_by_member_id' => $actor->memberId,
                     'updated_at' => $now,
                 ]) !== 1) {
@@ -143,11 +144,11 @@ final readonly class DataPolicyAdminService
                 ->where('id', $roleId)
                 ->where('authorization_revision', (int) $role['authorization_revision'])
                 ->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]);
             Tenant::where('id', $actor->tenantId)->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]);
             $this->audit(
@@ -343,7 +344,7 @@ final readonly class DataPolicyAdminService
             $targetType = TargetTypeRecord::where('key', $targetResourceKey)
                 ->where('status', 'active')
                 ->field('resolver_key,module_key')
-                ->find();
+                ->find()?->toArray();
             if (!is_array($targetType) || !$this->moduleAvailable($actor->tenantId, (string) $targetType['module_key'])) {
                 throw AdminAccessException::invalid(
                     'DATA_POLICY_TARGET_TYPE_MISMATCH',
@@ -523,7 +524,7 @@ final readonly class DataPolicyAdminService
                 'operation_row.id' => 'operation_id',
                 'operation_row.target_cardinality',
             ])
-            ->find();
+            ->find()?->toArray();
         if ($row === null || !$this->moduleAvailable($tenantId, (string) $row['module_key'])) {
             throw AdminAccessException::notFound();
         }
@@ -545,11 +546,11 @@ final readonly class DataPolicyAdminService
             ->where('tenant_module.status', 'enabled')
             ->where(function ($query): void {
                 $query->whereNull('tenant_module.effective_at')
-                    ->whereOr('tenant_module.effective_at', '<=', Db::raw('UTC_TIMESTAMP(3)'));
+                    ->whereOr('tenant_module.effective_at', '<=', new Raw('UTC_TIMESTAMP(3)'));
             })
             ->where(function ($query): void {
                 $query->whereNull('tenant_module.expires_at')
-                    ->whereOr('tenant_module.expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+                    ->whereOr('tenant_module.expires_at', '>', new Raw('UTC_TIMESTAMP(3)'));
             })
             ->value('tenant_module.id') !== null;
     }
@@ -563,7 +564,7 @@ final readonly class DataPolicyAdminService
         if ($forUpdate) {
             $query->lock(true);
         }
-        $role = $query->find();
+        $role = $query->find()?->toArray();
         if ($role === null) {
             throw AdminAccessException::notFound();
         }
@@ -594,7 +595,7 @@ final readonly class DataPolicyAdminService
                 'operation_row.operation', 'policy.status', 'policy.valid_from', 'policy.valid_until',
                 'policy.revision', 'policy.reason', 'policy.created_at', 'policy.updated_at',
             ])
-            ->find();
+            ->find()?->toArray();
         if ($policy === null) {
             throw AdminAccessException::notFound();
         }
@@ -648,7 +649,7 @@ final readonly class DataPolicyAdminService
         $targetSet = DataPermissionTargetSetRecord::where('tenant_id', $tenantId)
             ->where('id', $targetSetId)
             ->field('id,name,target_mode,target_resource_key,status,revision')
-            ->find();
+            ->find()?->toArray();
         if ($targetSet === null) {
             throw new AdminAccessException('DATABASE_DATA_INVALID', 500, 'Policy target set is missing.');
         }

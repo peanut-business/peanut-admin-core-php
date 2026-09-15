@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PeanutAdmin\DataPermission\Model;
+namespace PeanutAdmin\Kernel\Authorization\Model;
 
 use think\Model;
 

@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace PeanutAdmin\DataPermission\Model;
+namespace PeanutAdmin\Kernel\Authorization\Model;
 
 use think\Model;
 
-final class ProtectedResourceRecord extends Model
+final class ResourceOperationTargetTypeRecord extends Model
 {
-    /** @var string */ protected $name = 'protected_resource';
+    /** @var string */ protected $name = 'resource_operation_target_type';
     /** @var bool */ protected $autoWriteTimestamp = false;
     /** @var array<string, string> */ protected $type = ['id' => 'integer'];
 }

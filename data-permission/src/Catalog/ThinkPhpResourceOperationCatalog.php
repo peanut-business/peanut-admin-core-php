@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\DataPermission\Catalog;
 
-use PeanutAdmin\DataPermission\Model\ResourceOperationPermissionRecord;
-use PeanutAdmin\DataPermission\Model\ResourceOperationRecord;
-use PeanutAdmin\DataPermission\Model\ResourceOperationTargetTypeRecord;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
+use PeanutAdmin\Kernel\Authorization\Model\DataConditionDefinitionRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ProtectedResourceRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationPermissionRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationTargetTypeRecord;
+use PeanutAdmin\Kernel\Authorization\Model\TargetTypeRecord;
+use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
 use PeanutAdmin\Kernel\Module\Model\TenantModule;
-use think\facade\Db;
+use think\db\Raw;
 
 final readonly class ThinkPhpResourceOperationCatalog implements ResourceOperationCatalog
 {
@@ -25,9 +29,9 @@ final readonly class ThinkPhpResourceOperationCatalog implements ResourceOperati
                 'ro.target_cardinality', 'ro.permission_match', 'pr.key' => 'resource_key',
                 'pr.module_key', 'pr.provider_key', 'pr.ownership',
             ])
-            ->find();
+            ->find()?->toArray();
 
-        return is_array($row) ? $this->operation($row) : null;
+        return $row === null ? null : $this->operation($row);
     }
 
     public function availableOperations(int $tenantId, PageRequest $page): array
@@ -37,10 +41,10 @@ final readonly class ThinkPhpResourceOperationCatalog implements ResourceOperati
             ->where('tm.tenant_id', $tenantId)
             ->where('tm.status', 'enabled')
             ->where(function ($query): void {
-                $query->whereNull('tm.effective_at')->whereOr('tm.effective_at', '<=', Db::raw('CURRENT_TIMESTAMP(3)'));
+                $query->whereNull('tm.effective_at')->whereOr('tm.effective_at', '<=', new Raw('CURRENT_TIMESTAMP(3)'));
             })
             ->where(function ($query): void {
-                $query->whereNull('tm.expires_at')->whereOr('tm.expires_at', '>', Db::raw('CURRENT_TIMESTAMP(3)'));
+                $query->whereNull('tm.expires_at')->whereOr('tm.expires_at', '>', new Raw('CURRENT_TIMESTAMP(3)'));
             })
             ->column('tm.module_key')];
         $query = ResourceOperationRecord::alias('ro')
@@ -78,10 +82,10 @@ final readonly class ThinkPhpResourceOperationCatalog implements ResourceOperati
             ->where('tm.module_key', $moduleKey)
             ->where('tm.status', 'enabled')
             ->where(function ($query): void {
-                $query->whereNull('tm.effective_at')->whereOr('tm.effective_at', '<=', Db::raw('CURRENT_TIMESTAMP(3)'));
+                $query->whereNull('tm.effective_at')->whereOr('tm.effective_at', '<=', new Raw('CURRENT_TIMESTAMP(3)'));
             })
             ->where(function ($query): void {
-                $query->whereNull('tm.expires_at')->whereOr('tm.expires_at', '>', Db::raw('CURRENT_TIMESTAMP(3)'));
+                $query->whereNull('tm.expires_at')->whereOr('tm.expires_at', '>', new Raw('CURRENT_TIMESTAMP(3)'));
             })
             ->count() > 0;
     }
@@ -89,19 +93,19 @@ final readonly class ThinkPhpResourceOperationCatalog implements ResourceOperati
     public function registryRevision(): string
     {
         $digests = [];
-        foreach (Db::name('protected_resource')->field('id,status,manifest_digest')->select()->toArray() as $row) {
+        foreach (ProtectedResourceRecord::field('id,status,manifest_digest')->select()->toArray() as $row) {
             $digests[] = "resource:{$row['id']}:{$row['status']}:{$row['manifest_digest']}";
         }
-        foreach (Db::name('resource_operation')->field('id,status,manifest_digest')->select()->toArray() as $row) {
+        foreach (ResourceOperationRecord::field('id,status,manifest_digest')->select()->toArray() as $row) {
             $digests[] = "operation:{$row['id']}:{$row['status']}:{$row['manifest_digest']}";
         }
-        foreach (Db::name('module_installation')->field('module_key,status,revision,manifest_digest')->select()->toArray() as $row) {
+        foreach (ModuleInstallation::field('module_key,status,revision,manifest_digest')->select()->toArray() as $row) {
             $digests[] = "module-installation:{$row['module_key']}:{$row['status']}:{$row['revision']}:{$row['manifest_digest']}";
         }
-        foreach (Db::name('target_type')->field('id,status,manifest_digest')->select()->toArray() as $row) {
+        foreach (TargetTypeRecord::field('id,status,manifest_digest')->select()->toArray() as $row) {
             $digests[] = "target:{$row['id']}:{$row['status']}:{$row['manifest_digest']}";
         }
-        foreach (Db::name('data_condition_definition')->field('id,status,manifest_digest')->select()->toArray() as $row) {
+        foreach (DataConditionDefinitionRecord::field('id,status,manifest_digest')->select()->toArray() as $row) {
             $digests[] = "condition:{$row['id']}:{$row['status']}:{$row['manifest_digest']}";
         }
         sort($digests, SORT_STRING);

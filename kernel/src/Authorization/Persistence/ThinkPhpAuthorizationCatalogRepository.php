@@ -6,13 +6,21 @@ namespace PeanutAdmin\Kernel\Authorization\Persistence;
 
 use DomainException;
 use JsonException;
-use think\facade\Db;
+use PeanutAdmin\Kernel\Authorization\Model\DataConditionDefinitionRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ProtectedResourceRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationConditionRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationPermissionRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationRecord;
+use PeanutAdmin\Kernel\Authorization\Model\ResourceOperationTargetTypeRecord;
+use PeanutAdmin\Kernel\Authorization\Model\TargetTypeRecord;
+use PeanutAdmin\Kernel\Persistence\Model\Permission;
+use think\Model;
 
 final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatalogRepository
 {
     public function syncPermission(PermissionDefinition $definition): int
     {
-        return $this->syncByKey('permission', $definition->key, $definition->moduleKey, [
+        return $this->syncByKey(Permission::class, $definition->key, $definition->moduleKey, [
             'type' => $definition->type,
             'name' => $definition->name,
             'risk_level' => $definition->riskLevel,
@@ -24,7 +32,7 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
 
     public function syncProtectedResource(ProtectedResourceDefinition $definition): int
     {
-        return $this->syncByKey('protected_resource', $definition->key, $definition->moduleKey, [
+        return $this->syncByKey(ProtectedResourceRecord::class, $definition->key, $definition->moduleKey, [
             'name' => $definition->name,
             'ownership' => $definition->ownership,
             'provider_key' => $definition->providerKey,
@@ -37,7 +45,7 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
 
     public function syncTargetType(TargetTypeDefinition $definition): int
     {
-        return $this->syncByKey('target_type', $definition->key, $definition->moduleKey, [
+        return $this->syncByKey(TargetTypeRecord::class, $definition->key, $definition->moduleKey, [
             'name' => $definition->name,
             'resolver_key' => $definition->resolverKey,
             'catalog_provider_key' => $definition->catalogProviderKey,
@@ -58,7 +66,7 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
             throw new DomainException('Data condition config schema is not valid JSON.');
         }
 
-        return $this->syncByKey('data_condition_definition', $definition->key, $definition->moduleKey, [
+        return $this->syncByKey(DataConditionDefinitionRecord::class, $definition->key, $definition->moduleKey, [
             'category' => $definition->category,
             'target_mode' => $definition->targetMode,
             'config_schema_json' => $configSchema,
@@ -70,7 +78,7 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
 
     public function syncResourceOperation(ResourceOperationDefinition $definition): int
     {
-        $resourceId = $this->idByKey('protected_resource', $definition->resourceKey);
+        $resourceId = $this->idByKey(ProtectedResourceRecord::class, $definition->resourceKey);
         $data = [
             'access_mode' => $definition->accessMode,
             'target_cardinality' => $definition->targetCardinality,
@@ -80,27 +88,27 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
             'manifest_digest' => $definition->manifestDigest,
             'updated_at' => $this->now(),
         ];
-        $id = Db::name('resource_operation')->where('protected_resource_id', $resourceId)
+        $id = ResourceOperationRecord::where('protected_resource_id', $resourceId)
             ->where('operation', $definition->operation)->value('id');
         if ($id === null) {
-            return (int) Db::name('resource_operation')->insertGetId([
+            return (int) ResourceOperationRecord::insertGetId([
                 'protected_resource_id' => $resourceId,
                 'operation' => $definition->operation,
                 ...$data,
                 'created_at' => $this->now(),
             ]);
         }
-        Db::name('resource_operation')->where('id', (int) $id)->update($data);
+        ResourceOperationRecord::where('id', (int) $id)->update($data);
 
         return (int) $id;
     }
 
     public function bindOperationPermission(int $operationId, int $permissionId, int $sortOrder = 0): void
     {
-        $query = Db::name('resource_operation_permission')->where('resource_operation_id', $operationId)
+        $query = ResourceOperationPermissionRecord::where('resource_operation_id', $operationId)
             ->where('permission_id', $permissionId);
         if ($query->value('resource_operation_id') === null) {
-            Db::name('resource_operation_permission')->insert([
+            ResourceOperationPermissionRecord::insert([
                 'resource_operation_id' => $operationId,
                 'permission_id' => $permissionId,
                 'sort_order' => $sortOrder,
@@ -117,7 +125,7 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
         string $inputMode,
         ?int $policySelectionPermissionId,
     ): void {
-        $query = Db::name('resource_operation_target_type')->where('resource_operation_id', $operationId)
+        $query = ResourceOperationTargetTypeRecord::where('resource_operation_id', $operationId)
             ->where('target_type_id', $targetTypeId)->where('target_role', $targetRole);
         $data = [
             'input_mode' => $inputMode,
@@ -125,7 +133,7 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
             'status' => 'active',
         ];
         if ($query->value('resource_operation_id') === null) {
-            Db::name('resource_operation_target_type')->insert([
+            ResourceOperationTargetTypeRecord::insert([
                 'resource_operation_id' => $operationId,
                 'target_type_id' => $targetTypeId,
                 'target_role' => $targetRole,
@@ -141,11 +149,11 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
         int $conditionDefinitionId,
         ?string $selectorResourceKey,
     ): void {
-        $query = Db::name('resource_operation_condition')->where('resource_operation_id', $operationId)
+        $query = ResourceOperationConditionRecord::where('resource_operation_id', $operationId)
             ->where('condition_definition_id', $conditionDefinitionId)
             ->where('selector_resource_key', $selectorResourceKey);
         if ($query->value('resource_operation_id') === null) {
-            Db::name('resource_operation_condition')->insert([
+            ResourceOperationConditionRecord::insert([
                 'resource_operation_id' => $operationId,
                 'condition_definition_id' => $conditionDefinitionId,
                 'selector_resource_key' => $selectorResourceKey,
@@ -158,49 +166,51 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
 
     public function resetOperationRelations(int $operationId): void
     {
-        Db::name('resource_operation_permission')->where('resource_operation_id', $operationId)->delete();
-        Db::name('resource_operation_target_type')->where('resource_operation_id', $operationId)
+        ResourceOperationPermissionRecord::where('resource_operation_id', $operationId)->delete();
+        ResourceOperationTargetTypeRecord::where('resource_operation_id', $operationId)
             ->update(['status' => 'retired']);
-        Db::name('resource_operation_condition')->where('resource_operation_id', $operationId)
+        ResourceOperationConditionRecord::where('resource_operation_id', $operationId)
             ->update(['status' => 'retired']);
     }
 
     public function permissionId(string $key): int
     {
-        return $this->idByKey('permission', $key);
+        return $this->idByKey(Permission::class, $key);
     }
 
     public function targetTypeId(string $key): int
     {
-        return $this->idByKey('target_type', $key);
+        return $this->idByKey(TargetTypeRecord::class, $key);
     }
 
     public function dataConditionId(string $key): int
     {
-        return $this->idByKey('data_condition_definition', $key);
+        return $this->idByKey(DataConditionDefinitionRecord::class, $key);
     }
 
     public function registryRevision(): string
     {
         $digests = [];
-        foreach (['protected_resource', 'target_type', 'resource_operation'] as $table) {
-            $digests = [...$digests, ...array_map('strval', Db::name($table)->column('manifest_digest'))];
+        foreach ([ProtectedResourceRecord::class, TargetTypeRecord::class, ResourceOperationRecord::class] as $model) {
+            $digests = [...$digests, ...array_map('strval', $model::column('manifest_digest'))];
         }
         sort($digests, SORT_STRING);
 
         return hash('sha256', implode('|', $digests));
     }
 
-    /** @param array<string, mixed> $data */
-    private function syncByKey(string $table, string $key, string $moduleKey, array $data): int
+    /** @param class-string<Model> $model
+     * @param array<string, mixed> $data
+     */
+    private function syncByKey(string $model, string $key, string $moduleKey, array $data): int
     {
-        $row = Db::name($table)->where('key', $key)->field('id,module_key')->find();
+        $row = $model::where('key', $key)->field('id,module_key')->find()?->toArray();
         if ($row !== null && (string) $row['module_key'] !== $moduleKey) {
             throw new DomainException('Catalog key is already owned by another module.');
         }
         $now = $this->now();
         if ($row === null) {
-            return (int) Db::name($table)->insertGetId([
+            return (int) $model::insertGetId([
                 'key' => $key,
                 'module_key' => $moduleKey,
                 ...$data,
@@ -208,14 +218,15 @@ final class ThinkPhpAuthorizationCatalogRepository implements AuthorizationCatal
                 'updated_at' => $now,
             ]);
         }
-        Db::name($table)->where('id', (int) $row['id'])->update([...$data, 'updated_at' => $now]);
+        $model::where('id', (int) $row['id'])->update([...$data, 'updated_at' => $now]);
 
         return (int) $row['id'];
     }
 
-    private function idByKey(string $table, string $key): int
+    /** @param class-string<Model> $model */
+    private function idByKey(string $model, string $key): int
     {
-        $id = Db::name($table)->where('key', $key)->value('id');
+        $id = $model::where('key', $key)->value('id');
 
         return $id === null ? throw new DomainException('Catalog entry was not found.') : (int) $id;
     }
