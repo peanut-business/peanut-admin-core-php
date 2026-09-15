@@ -44,6 +44,7 @@ use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\KernelMigrationRunner;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use think\App;
 use think\facade\Db;
 
 require_once dirname(__DIR__) . '/Schema/KernelMigrationRunner.php';
@@ -55,6 +56,7 @@ final class ExternalOperationHostIntegrationTest extends TestCase
     private PDO $admin;
     private PDO $database;
     private ExternalOperationHost $host;
+    private App $app;
 
     /** @var array<int, int> */
     private array $memberIds = [];
@@ -73,6 +75,15 @@ final class ExternalOperationHostIntegrationTest extends TestCase
         }
         $this->requiredPort('MYSQL_PORT');
         $port = $this->requiredPort('DB_PORT');
+
+        $root = dirname(__DIR__, 6);
+        $this->app = new App($root . '/backend');
+        $cache = require $root . '/backend/config/cache.php';
+        if (!is_array($cache)) {
+            throw new RuntimeException('The backend cache configuration is invalid.');
+        }
+        $this->app->config->set($cache, 'cache');
+        $this->app->cache->clear();
 
         $this->admin = $this->connect();
         $this->admin->exec('DROP DATABASE IF EXISTS `' . self::DATABASE . '`');
@@ -95,6 +106,9 @@ final class ExternalOperationHostIntegrationTest extends TestCase
 
     protected function tearDown(): void
     {
+        if (isset($this->app)) {
+            $this->app->cache->clear();
+        }
         if (isset($this->admin)) {
             $this->admin->exec('DROP DATABASE IF EXISTS `' . self::DATABASE . '`');
         }
