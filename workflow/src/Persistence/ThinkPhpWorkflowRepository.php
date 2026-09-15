@@ -17,8 +17,8 @@ use PeanutAdmin\Workflow\Persistence\Model\WorkflowDefinitionVersionRecord;
 use PeanutAdmin\Workflow\Persistence\Model\WorkflowEventRecord;
 use PeanutAdmin\Workflow\Persistence\Model\WorkflowInstanceRecord;
 use PeanutAdmin\Workflow\Persistence\Model\WorkflowWorkItemRecord;
+use think\db\Raw;
 use think\db\exception\PDOException;
-use think\facade\Db;
 use think\Model;
 
 /** ThinkORM persistence for workflow definition, transition and event-stream semantics. */
@@ -89,7 +89,7 @@ final readonly class ThinkPhpWorkflowRepository
                 ->update([
                     'draft_graph_json' => $graph->canonicalJson,
                     'draft_graph_sha256' => $graph->sha256,
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_by_member_id' => $memberId,
                     'updated_at' => $now,
                 ]);
@@ -143,7 +143,7 @@ final readonly class ThinkPhpWorkflowRepository
             ->update([
                 'status' => 'active',
                 'latest_version' => $version,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'updated_by_member_id' => $memberId,
                 'updated_at' => $now,
             ]);
@@ -184,7 +184,7 @@ final readonly class ThinkPhpWorkflowRepository
             ->where('status', 'active')
             ->update([
                 'status' => 'retired',
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'updated_by_member_id' => $memberId,
                 'updated_at' => $now,
                 'retired_at' => $now,
@@ -335,7 +335,7 @@ final readonly class ThinkPhpWorkflowRepository
                 'status' => 'completed',
                 'decision' => $decision,
                 'completed_by_member_id' => $memberId,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'updated_at' => $now,
                 'completed_at' => $now,
             ]);
@@ -355,7 +355,7 @@ final readonly class ThinkPhpWorkflowRepository
         }
         $query->update([
             'status' => 'cancelled',
-            'revision' => Db::raw('revision + 1'),
+            'revision' => new Raw('revision + 1'),
             'updated_at' => $now,
             'cancelled_at' => $now,
         ]);
@@ -388,7 +388,7 @@ final readonly class ThinkPhpWorkflowRepository
                 'current_node_key' => $toNodeKey,
                 'status' => $status,
                 'last_actor_member_id' => $lastActorMemberId,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'updated_at' => $now,
                 'completed_at' => $status === 'completed' ? $now : null,
                 'cancelled_at' => $status === 'cancelled' ? $now : null,

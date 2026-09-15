@@ -11,6 +11,10 @@ use PeanutAdmin\ReferenceCodes\Application\ReferenceCodeException;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetRegistry;
 use PeanutAdmin\ReferenceCodes\Persistence\Model\ReferenceCodeEntryRecord;
+use PeanutAdmin\ReferenceCodes\Persistence\Model\ReferenceCodeEntryVersionRecord;
+use PeanutAdmin\ReferenceCodes\Persistence\Model\ReferenceCodeSetRecord;
+use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
+use think\db\Raw;
 use think\db\exception\PDOException;
 use think\facade\Db;
 
@@ -31,7 +35,7 @@ final class ReferenceCodeStore
         $this->assertExactMillisecond($now);
 
         return Db::transaction(function () use ($registry, $now): array {
-            $rows = Db::name('reference_code_set')->lock(true)->select()->toArray();
+            $rows = ReferenceCodeSetRecord::lock(true)->select()->toArray();
             $existing = [];
             foreach ($rows as $row) {
                 if (is_array($row)) {
@@ -53,12 +57,12 @@ final class ReferenceCodeStore
                 if (!$reactivating && hash_equals((string) $row['definition_digest'], $definition->digest)) {
                     continue;
                 }
-                Db::name('reference_code_set')->where('id', (int) $row['id'])->update([
+                ReferenceCodeSetRecord::where('id', (int) $row['id'])->update([
                     'name' => $definition->name,
                     'description' => $definition->description,
                     'definition_digest' => $definition->digest,
                     'lifecycle' => 'active',
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => $this->date($now),
                 ]);
                 ++$counts[$reactivating ? 'reactivated' : 'updated'];
@@ -67,10 +71,10 @@ final class ReferenceCodeStore
                 if (isset($declared[$qualifiedKey]) || (string) $row['lifecycle'] === 'retired') {
                     continue;
                 }
-                $affected = Db::name('reference_code_set')->where('id', (int) $row['id'])
+                $affected = ReferenceCodeSetRecord::where('id', (int) $row['id'])
                     ->where('lifecycle', 'active')->update([
                         'lifecycle' => 'retired',
-                        'revision' => Db::raw('revision + 1'),
+                        'revision' => new Raw('revision + 1'),
                         'updated_at' => $this->date($now),
                     ]);
                 $counts['retired'] += $affected;
@@ -117,7 +121,7 @@ final class ReferenceCodeStore
             }
             $now = $this->databaseNow();
             try {
-                $entryId = (int) Db::name('reference_code_entry')->insertGetId([
+                $entryId = (int) ReferenceCodeEntryRecord::insertGetId([
                     'tenant_id' => $context->tenantId,
                     'set_id' => (int) $set['id'],
                     'code' => $code,
@@ -190,7 +194,7 @@ final class ReferenceCodeStore
             }
             $revision = $expectedRevision + 1;
             $now = $this->databaseNow();
-            $affected = Db::name('reference_code_entry')->where('id', (int) $entry['id'])
+            $affected = ReferenceCodeEntryRecord::where('id', (int) $entry['id'])
                 ->where('lifecycle', 'active')->where('revision', $expectedRevision)->update([
                 'revision' => $revision,
                 'updated_by_member_id' => $context->memberId,
@@ -235,14 +239,14 @@ final class ReferenceCodeStore
             if ((int) $entry['revision'] !== $expectedRevision) {
                 throw ReferenceCodeException::revisionMismatch();
             }
-            $last = Db::name('reference_code_entry_version')->where('entry_id', (int) $entry['id'])
-                ->where('revision', $expectedRevision)->lock(true)->find();
+            $last = ReferenceCodeEntryVersionRecord::where('entry_id', (int) $entry['id'])
+                ->where('revision', $expectedRevision)->lock(true)->find()?->toArray();
             if ($last === null) {
                 throw ReferenceCodeException::internal();
             }
             $revision = $expectedRevision + 1;
             $now = $this->databaseNow();
-            $affected = Db::name('reference_code_entry')->where('id', (int) $entry['id'])
+            $affected = ReferenceCodeEntryRecord::where('id', (int) $entry['id'])
                 ->where('lifecycle', 'active')->where('revision', $expectedRevision)->update([
                 'lifecycle' => 'retired',
                 'revision' => $revision,
@@ -302,7 +306,7 @@ final class ReferenceCodeStore
                     || !$this->memberBelongsToTenant($context->tenantId, $entry['updated_by_member_id'] ?? null)) {
                     throw ReferenceCodeException::internal();
                 }
-                $versions = Db::name('reference_code_entry_version')->where('entry_id', (int) $entry['id'])
+                $versions = ReferenceCodeEntryVersionRecord::where('entry_id', (int) $entry['id'])
                     ->order('revision')->select()->toArray();
                 foreach ($versions as $version) {
                     if (!is_array($version)
@@ -339,7 +343,7 @@ final class ReferenceCodeStore
 
     private function insertDefinition(ReferenceCodeSetDefinition $definition, DateTimeImmutable $now): void
     {
-        Db::name('reference_code_set')->insert([
+        ReferenceCodeSetRecord::insert([
             'module_key' => $definition->moduleKey,
             'set_key' => $definition->key,
             'name' => $definition->name,
@@ -355,12 +359,12 @@ final class ReferenceCodeStore
     /** @return array<string, mixed> */
     private function definitionRow(ReferenceCodeSetDefinition $definition, bool $forShare = false): array
     {
-        $query = Db::name('reference_code_set')->where('module_key', $definition->moduleKey)
+        $query = ReferenceCodeSetRecord::where('module_key', $definition->moduleKey)
             ->where('set_key', $definition->key)->where('lifecycle', 'active');
         if ($forShare) {
             $query->lock('FOR SHARE');
         }
-        $row = $query->find();
+        $row = $query->find()?->toArray();
         if ($row === null || !hash_equals((string) $row['definition_digest'], $definition->digest)) {
             throw ReferenceCodeException::setNotFound();
         }
@@ -392,21 +396,21 @@ final class ReferenceCodeStore
             return false;
         }
 
-        return Db::name('tenant_member')->where('tenant_id', $tenantId)
+        return TenantMember::where('tenant_id', $tenantId)
             ->where('id', $memberId)->value('id') !== null;
     }
 
     /** @return array<string, mixed>|null */
     private function entry(int $setId, int $tenantId, string $code, bool $forUpdate): ?array
     {
-        $query = Db::name('reference_code_entry')->where('tenant_id', $tenantId)
+        $query = ReferenceCodeEntryRecord::where('tenant_id', $tenantId)
             ->where('set_id', $setId)->where('code', $code);
         if ($forUpdate) {
             $query->lock(true);
         }
-        $row = $query->find();
+        $row = $query->find()?->toArray();
 
-        return is_array($row) ? $row : null;
+        return $row;
     }
 
     private function insertVersion(
@@ -421,7 +425,7 @@ final class ReferenceCodeStore
         int $memberId,
         DateTimeImmutable $createdAt,
     ): void {
-        Db::name('reference_code_entry_version')->insert([
+        ReferenceCodeEntryVersionRecord::insert([
             'entry_id' => $entryId,
             'revision' => $revision,
             'label' => $label,
