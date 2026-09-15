@@ -7,7 +7,7 @@ namespace PeanutAdmin\Kernel\Audit;
 use PeanutAdmin\Kernel\Audit\Model\PlatformAuditEventRecord;
 use PeanutAdmin\Kernel\Audit\Model\TenantAuditEventRecord;
 use PeanutAdmin\Kernel\Auth\TenantContext;
-use think\facade\Db;
+use think\db\Raw;
 
 final readonly class AuditService
 {
@@ -42,7 +42,7 @@ final readonly class AuditService
             'target_set_digest' => $targetSetDigest,
             'request_id' => $context->requestId,
             'metadata_json' => $metadata === [] ? null : $metadata,
-            'occurred_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'occurred_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]);
     }
 
@@ -65,7 +65,7 @@ final readonly class AuditService
             'target_count' => 0,
             'request_id' => $requestId,
             'metadata_json' => $metadata === [] ? null : $metadata,
-            'occurred_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'occurred_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]);
     }
 
@@ -98,7 +98,7 @@ final readonly class AuditService
             'before_json' => $before,
             'after_json' => $after,
             'metadata_json' => $metadata === [] ? null : $metadata,
-            'occurred_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'occurred_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]);
     }
 
@@ -136,7 +136,7 @@ final readonly class AuditService
             'before_json' => $before,
             'after_json' => $after,
             'metadata_json' => $metadata === [] ? null : $metadata,
-            'occurred_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'occurred_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]);
     }
 }

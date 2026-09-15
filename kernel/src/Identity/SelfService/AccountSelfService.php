@@ -11,11 +11,18 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use PeanutAdmin\Kernel\Persistence\Model\Account;
+use PeanutAdmin\Kernel\Persistence\Model\AuthSecurityEvent;
 use PeanutAdmin\Kernel\Persistence\Model\Credential;
+use PeanutAdmin\Kernel\Persistence\Model\LoginChallenge;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformSession;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformSessionToken;
+use PeanutAdmin\Kernel\Persistence\Model\TenantSession;
+use PeanutAdmin\Kernel\Persistence\Model\TenantSessionToken;
 use SensitiveParameter;
 use Throwable;
 use RuntimeException;
 use think\db\PDOConnection;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class AccountSelfService
@@ -68,7 +75,7 @@ final readonly class AccountSelfService
             $query->lock(true);
         }
 
-        return $query->find();
+        return $query->find()?->toArray();
     }
 
     /** @param array<string, mixed> $row
@@ -109,7 +116,7 @@ final readonly class AccountSelfService
                     'The account credential is not available.',
                 );
             }
-            Db::name('account')->where('id', $actor->accountId)->where('status', 'active')->update([
+            Account::where('id', $actor->accountId)->where('status', 'active')->update([
                 'display_name' => $displayName,
                 'avatar_uri' => $avatarUri,
                 'updated_at' => $this->now(),
@@ -223,22 +230,44 @@ final readonly class AccountSelfService
                 if (hash_equals($currentPassword, $newPassword)) {
                     return AdminAccessException::invalid('PASSWORD_UNCHANGED', 'The new password must be different.');
                 }
-                Db::name('credential')->where('id', (int) $credential['id'])->where('status', 'active')->update([
+                Credential::where('id', (int) $credential['id'])->where('status', 'active')->update([
                     'secret_hash' => $this->passwords->hash($newPassword),
                     'failed_attempts' => 0,
                     'locked_until' => null,
                     'secret_changed_at' => $now,
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => $now,
                 ]);
-                Db::name('account')->where('id', $actor->accountId)->where('status', 'active')->update([
-                    'security_revision' => Db::raw('security_revision + 1'),
+                Account::where('id', $actor->accountId)->where('status', 'active')->update([
+                    'security_revision' => new Raw('security_revision + 1'),
                     'updated_at' => $now,
                 ]);
-                $this->revokeSessionTokens('tenant_session', 'tenant_session_token', $actor->accountId, $now);
-                $this->revokeSessionTokens('platform_session', 'platform_session_token', $actor->accountId, $now);
-                $this->revokeSessions('tenant_session', $actor->accountId, $now);
-                $this->revokeSessions('platform_session', $actor->accountId, $now);
+                $tenantSessionIds = TenantSession::where('account_id', $actor->accountId)->column('id');
+                if ($tenantSessionIds !== []) {
+                    TenantSessionToken::whereIn('session_id', $tenantSessionIds)->where('status', 'active')->update([
+                        'status' => 'revoked',
+                        'revoked_at' => $now,
+                    ]);
+                }
+                $platformSessionIds = PlatformSession::where('account_id', $actor->accountId)->column('id');
+                if ($platformSessionIds !== []) {
+                    PlatformSessionToken::whereIn('session_id', $platformSessionIds)->where('status', 'active')->update([
+                        'status' => 'revoked',
+                        'revoked_at' => $now,
+                    ]);
+                }
+                TenantSession::where('account_id', $actor->accountId)->where('status', 'active')->update([
+                    'status' => 'revoked',
+                    'revoked_at' => $now,
+                    'revoke_reason' => 'credential_changed',
+                    'updated_at' => $now,
+                ]);
+                PlatformSession::where('account_id', $actor->accountId)->where('status', 'active')->update([
+                    'status' => 'revoked',
+                    'revoked_at' => $now,
+                    'revoke_reason' => 'credential_changed',
+                    'updated_at' => $now,
+                ]);
                 $this->revokeLoginChallenges($actor->accountId, $now);
                 $this->authEvent(
                     'password_changed',
@@ -310,30 +339,9 @@ final readonly class AccountSelfService
         return ($local === '' ? '*' : substr($local, 0, 1)) . '***@' . $domain;
     }
 
-    private function revokeSessionTokens(string $sessionTable, string $tokenTable, int $accountId, string $now): void
-    {
-        $sessionIds = Db::name($sessionTable)->where('account_id', $accountId)->column('id');
-        if ($sessionIds !== []) {
-            Db::name($tokenTable)->whereIn('session_id', $sessionIds)->where('status', 'active')->update([
-                'status' => 'revoked',
-                'revoked_at' => $now,
-            ]);
-        }
-    }
-
-    private function revokeSessions(string $table, int $accountId, string $now): void
-    {
-        Db::name($table)->where('account_id', $accountId)->where('status', 'active')->update([
-            'status' => 'revoked',
-            'revoked_at' => $now,
-            'revoke_reason' => 'credential_changed',
-            'updated_at' => $now,
-        ]);
-    }
-
     private function revokeLoginChallenges(int $accountId, string $now): void
     {
-        Db::name('login_challenge')->where('account_id', $accountId)->where('status', 'active')->update([
+        LoginChallenge::where('account_id', $accountId)->where('status', 'active')->update([
             'status' => 'revoked',
             'revoked_at' => $now,
         ]);
@@ -345,8 +353,7 @@ final readonly class AccountSelfService
         $since = (new DateTimeImmutable($now, new DateTimeZone('UTC')))
             ->modify(self::PASSWORD_CHANGE_RATE_WINDOW)
             ->format('Y-m-d H:i:s.v');
-        $base = Db::name('auth_security_event')
-            ->where('event_type', 'password_change_denied')
+        $base = AuthSecurityEvent::where('event_type', 'password_change_denied')
             ->where('outcome', 'denied')
             ->where('occurred_at', '>=', $since);
 
@@ -407,7 +414,7 @@ final readonly class AccountSelfService
         ?string $userAgent,
         string $now,
     ): void {
-        Db::name('auth_security_event')->insert([
+        AuthSecurityEvent::insert([
             'audience' => 'tenant',
             'event_type' => $eventType,
             'outcome' => $outcome,
