@@ -41,7 +41,9 @@ use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationRepository;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
+use RuntimeException;
 use stdClass;
+use think\App;
 use think\facade\Db;
 use think\db\PDOConnection;
 
@@ -340,6 +342,15 @@ final class ExternalOperationHostTest extends TestCase
                 ++$targetCalls;
             },
         );
+
+        $root = dirname(__DIR__, 6);
+        $app = new App($root . '/backend');
+        $cache = require $root . '/backend/config/cache.php';
+        if (!is_array($cache)) {
+            throw new RuntimeException('The backend cache configuration is invalid.');
+        }
+        $app->config->set($cache, 'cache');
+        $app->cache->clear();
 
         $pdo = new PDO('sqlite::memory:');
         $pdo->exec(<<<'SQL'

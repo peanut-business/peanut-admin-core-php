@@ -21,8 +21,8 @@ final class ModuleHostLayoutTest extends TestCase
         );
         $key = ModuleKey::fromString('dcs.store');
 
-        self::assertSame('backend/app/Modules/Dcs/Store/', $layout->backendRelativePath($key));
-        self::assertSame('Dcs\\App\\Modules\\Dcs\\Store\\', $layout->backendNamespace($key));
+        self::assertSame('backend/app/Modules/dcs/store/', $layout->backendRelativePath($key));
+        self::assertSame('Dcs\\App\\Modules\\dcs\\store\\', $layout->backendNamespace($key));
         self::assertSame('frontend/src/modules/dcs-store/', $layout->frontendRelativePath($key));
     }
 

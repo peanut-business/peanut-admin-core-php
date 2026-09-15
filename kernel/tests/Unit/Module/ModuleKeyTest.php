@@ -16,7 +16,7 @@ final class ModuleKeyTest extends TestCase
         $key = ModuleKey::fromString('example.work-item');
 
         self::assertSame('example.work-item', $key->value());
-        self::assertSame(['Example', 'WorkItem'], $key->pascalSegments());
+        self::assertSame(['example', 'work_item'], $key->snakeSegments());
         self::assertSame('example-work-item', $key->slug());
     }
 
