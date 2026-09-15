@@ -9,6 +9,7 @@ use DateTimeZone;
 use JsonException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use PeanutAdmin\Kernel\Persistence\Model\EditionTenantModel;
@@ -27,12 +28,16 @@ use Throwable;
 
 final readonly class SettingResolver
 {
+    private TenantColumnScope $tenantColumnScope;
+
     public function __construct(
         private SecretProtector $protector,
         private RevisionedSettingCache $cache,
         private TenantPersistenceMode $persistenceMode = TenantPersistenceMode::TenantScoped,
         private ?int $instanceTenantId = null,
-    ) {}
+    ) {
+        $this->tenantColumnScope = new TenantColumnScope($this->persistenceMode, $this->instanceTenantId);
+    }
 
     public function resolveTenant(
         SettingDefinition $definition,
@@ -547,6 +552,10 @@ final readonly class SettingResolver
         if ($tenantId < 1 || ($targetResourceKey === null) !== ($targetId === null)) {
             throw SettingException::notFound();
         }
+        $this->tenantColumnScope->assertStorageMode([
+            'pa_setting_tenant_value',
+            'pa_setting_target_value',
+        ]);
         $scope = $this->tenantScope($tenantId);
 
         return Db::transaction(function () use ($definition, $scope, $targetResourceKey, $targetId): array {

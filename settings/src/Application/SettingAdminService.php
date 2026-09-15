@@ -10,6 +10,7 @@ use JsonException;
 use PeanutAdmin\Kernel\Persistence\Model\EditionTenantModel;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Kernel\Auth\TenantContext;
@@ -29,11 +30,15 @@ use think\Model;
 
 final readonly class SettingAdminService
 {
+    private TenantColumnScope $tenantColumnScope;
+
     public function __construct(
         private SecretProtector $protector,
         private TenantPersistenceMode $persistenceMode = TenantPersistenceMode::TenantScoped,
         private ?int $instanceTenantId = null,
-    ) {}
+    ) {
+        $this->tenantColumnScope = new TenantColumnScope($this->persistenceMode, $this->instanceTenantId);
+    }
 
     public function replaceDeployment(
         SettingDefinition $definition,
@@ -539,6 +544,12 @@ final readonly class SettingAdminService
             throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting does not allow the requested scope.');
         }
         self::assertValidInterval($effectiveAt, $expiresAt);
+        if ($scopeName !== 'deployment') {
+            $this->tenantColumnScope->assertStorageMode([
+                'pa_setting_tenant_value',
+                'pa_setting_target_value',
+            ]);
+        }
         $tenantScope = $scopeName === 'deployment'
             ? null
             : $this->tenantScope($tenantId, 'settings-write');

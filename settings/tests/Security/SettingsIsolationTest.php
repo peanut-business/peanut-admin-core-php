@@ -51,6 +51,32 @@ final class SettingsIsolationTest extends SettingsDatabaseTestCase
         );
     }
 
+    public function testExplicitInstanceScopeRejectsTenantScopedStorageBeforeRead(): void
+    {
+        $tenant = $this->tenant('alpha');
+        $registry = $this->registry([$this->definition([
+            'allowed_scopes' => ['tenant'],
+            'target_resource_key' => null,
+            'target_operation' => null,
+        ])]);
+        $this->synchronize($registry);
+        $definition = $registry->require('example.module', 'display-mode');
+        $resolver = new SettingResolver(
+            $this->protector(),
+            new ArrayRevisionedSettingCache(),
+            TenantPersistenceMode::InstanceScoped,
+            $tenant['tenant_id'],
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH');
+        $resolver->resolveTenant(
+            $definition,
+            $tenant['tenant_id'],
+            new DateTimeImmutable(self::NOW . ' UTC'),
+        );
+    }
+
     public function testTenantReadsAndWritesCannotCrossTenantBoundary(): void
     {
         [$definition, $repository, $protector] = $this->runtime();
@@ -580,6 +606,13 @@ SQL,
     }
 
     private function secretProtector(): SodiumSecretProtector
+    {
+        return new SodiumSecretProtector([
+            'runtime' => random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES),
+        ], 'runtime');
+    }
+
+    private function protector(): SodiumSecretProtector
     {
         return new SodiumSecretProtector([
             'runtime' => random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES),

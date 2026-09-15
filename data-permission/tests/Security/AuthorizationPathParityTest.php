@@ -51,8 +51,8 @@ final class AuthorizationPathParityTest extends DatabaseTestCase
     {
         $rows = $this->fixture->harness->list();
         self::assertSame(['A', 'A', 'B'], array_column($rows, 'project_id'));
-        self::assertStringContainsString('record.tenant_id', $this->fixture->trace->lastSql());
-        self::assertStringContainsString('record.project_id', $this->fixture->trace->lastSql());
+        self::assertStringContainsString('`record`.`tenant_id`', $this->fixture->trace->lastSql());
+        self::assertStringContainsString('`record`.`project_id`', $this->fixture->trace->lastSql());
 
         $projectB = ResourceProviderContractHarness::targets('fixture.project', ['B']);
         self::assertSame(['B'], array_column($this->fixture->harness->list('list', $projectB), 'project_id'));
