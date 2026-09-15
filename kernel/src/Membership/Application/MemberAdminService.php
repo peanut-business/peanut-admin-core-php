@@ -13,9 +13,15 @@ use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
+use PeanutAdmin\Kernel\Persistence\Model\Account;
+use PeanutAdmin\Kernel\Persistence\Model\Credential;
+use PeanutAdmin\Kernel\Persistence\Model\Department;
 use PeanutAdmin\Kernel\Persistence\Model\MemberRole;
+use PeanutAdmin\Kernel\Persistence\Model\Role;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use Throwable;
+use think\db\Raw;
 use think\facade\Db;
 
 /** Owns tenant member administration and atomic profile, role and status commands. */
@@ -136,7 +142,7 @@ final readonly class MemberAdminService
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function list(int $tenantId, PageRequest $page): array
     {
-        $query = Db::name('tenant_member')->where('tenant_id', $tenantId);
+        $query = TenantMember::where('tenant_id', $tenantId);
         $total = (int) (clone $query)->count();
         $rows = $query->field(
             'id,display_name,member_no,member_type,primary_department_id,status,security_revision,authorization_revision',
@@ -148,9 +154,9 @@ final readonly class MemberAdminService
     /** @return array<string, mixed> */
     public function get(int $tenantId, int $memberId): array
     {
-        $row = Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId)->field(
+        $row = TenantMember::where('tenant_id', $tenantId)->where('id', $memberId)->field(
             'id,display_name,member_no,member_type,primary_department_id,status,security_revision,authorization_revision',
-        )->find();
+        )->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -186,8 +192,8 @@ final readonly class MemberAdminService
             throw AdminAccessException::invalid('EMAIL_INVALID', 'The email address is invalid.');
         }
         $this->requireTenantStatus($actor->tenantId, 'active', true);
-        $credential = Db::name('credential')->where('identifier_type', 'email')
-            ->where('identifier_normalized', $identifier)->lock(true)->field('id,account_id,status')->find();
+        $credential = Credential::where('identifier_type', 'email')
+            ->where('identifier_normalized', $identifier)->lock(true)->field('id,account_id,status')->find()?->toArray();
         if ($credential === null) {
             if ($initialPassword === null || $initialPassword === '') {
                 throw AdminAccessException::invalid(
@@ -207,18 +213,18 @@ final readonly class MemberAdminService
                 throw AdminAccessException::conflict('CREDENTIAL_INACTIVE', 'The account credential is inactive.');
             }
             $accountId = (int) $credential['account_id'];
-            if (Db::name('account')->where('id', $accountId)->lock(true)->value('status') !== 'active') {
+            if (Account::where('id', $accountId)->lock(true)->value('status') !== 'active') {
                 throw AdminAccessException::conflict('ACCOUNT_INACTIVE', 'The account is inactive.');
             }
         }
-        $existing = Db::name('tenant_member')->where('tenant_id', $actor->tenantId)
-            ->where('account_id', $accountId)->lock(true)->field('id,status')->find();
+        $existing = TenantMember::where('tenant_id', $actor->tenantId)
+            ->where('account_id', $accountId)->lock(true)->field('id,status')->find()?->toArray();
         if ($existing !== null && $existing['status'] !== 'left') {
             throw AdminAccessException::conflict('MEMBER_ALREADY_EXISTS', 'The account is already a tenant member.');
         }
         $now = $this->now();
         if ($existing === null) {
-            $memberId = (int) Db::name('tenant_member')->insertGetId([
+            $memberId = (int) TenantMember::insertGetId([
                 'tenant_id' => $actor->tenantId,
                 'account_id' => $accountId,
                 'display_name' => $displayName,
@@ -228,18 +234,18 @@ final readonly class MemberAdminService
             ]);
         } else {
             $memberId = (int) $existing['id'];
-            Db::name('tenant_member')->where('tenant_id', $actor->tenantId)->where('id', $memberId)->update([
+            TenantMember::where('tenant_id', $actor->tenantId)->where('id', $memberId)->update([
                 'display_name' => $displayName,
                 'status' => 'pending',
                 'primary_department_id' => null,
-                'security_revision' => Db::raw('security_revision + 1'),
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'security_revision' => new Raw('security_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'joined_at' => null,
                 'suspended_at' => null,
                 'left_at' => null,
                 'updated_at' => $now,
             ]);
-            Db::name('member_role')->where('tenant_id', $actor->tenantId)
+            MemberRole::where('tenant_id', $actor->tenantId)
                 ->where('tenant_member_id', $memberId)->delete();
         }
         $this->bumpTenantAuthorization($actor->tenantId, $now);
@@ -277,16 +283,16 @@ final readonly class MemberAdminService
         if ((int) $member['authorization_revision'] !== $expectedRevision) {
             throw AdminAccessException::revisionMismatch();
         }
-        if ($primaryDepartmentId !== null && Db::name('department')->where('tenant_id', $actor->tenantId)
+        if ($primaryDepartmentId !== null && Department::where('tenant_id', $actor->tenantId)
             ->where('id', $primaryDepartmentId)->where('status', 'active')->value('id') === null) {
             throw AdminAccessException::notFound();
         }
         $now = $this->now();
-        if (Db::name('tenant_member')->where('tenant_id', $actor->tenantId)->where('id', $memberId)
+        if (TenantMember::where('tenant_id', $actor->tenantId)->where('id', $memberId)
             ->where('authorization_revision', $expectedRevision)->update([
                 'display_name' => $displayName,
                 'primary_department_id' => $primaryDepartmentId,
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]) !== 1) {
             throw AdminAccessException::revisionMismatch();
@@ -379,10 +385,10 @@ final readonly class MemberAdminService
         if ($currentlyOwner && !$keepsOwner) {
             $this->assertNotLastActiveOwner($actor->tenantId, $memberId);
         }
-        Db::name('member_role')->where('tenant_id', $actor->tenantId)->where('tenant_member_id', $memberId)->delete();
+        MemberRole::where('tenant_id', $actor->tenantId)->where('tenant_member_id', $memberId)->delete();
         $now = $this->now();
         if ($roleIds !== []) {
-            Db::name('member_role')->insertAll(array_map(
+            MemberRole::insertAll(array_map(
                 static fn(int $roleId): array => [
                     'tenant_id' => $actor->tenantId,
                     'tenant_member_id' => $memberId,
@@ -393,9 +399,9 @@ final readonly class MemberAdminService
                 $roleIds,
             ));
         }
-        if (Db::name('tenant_member')->where('tenant_id', $actor->tenantId)->where('id', $memberId)
+        if (TenantMember::where('tenant_id', $actor->tenantId)->where('id', $memberId)
             ->where('authorization_revision', $expectedRevision)->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]) !== 1) {
             throw AdminAccessException::revisionMismatch();
@@ -452,8 +458,8 @@ final readonly class MemberAdminService
         $now = $this->now();
         $data = [
             'status' => $nextStatus,
-            'security_revision' => Db::raw('security_revision + 1'),
-            'authorization_revision' => Db::raw('authorization_revision + 1'),
+            'security_revision' => new Raw('security_revision + 1'),
+            'authorization_revision' => new Raw('authorization_revision + 1'),
             'updated_at' => $now,
         ];
         if ($nextStatus === 'active') {
@@ -463,7 +469,7 @@ final readonly class MemberAdminService
         } elseif ($nextStatus === 'left') {
             $data['left_at'] = $now;
         }
-        if (Db::name('tenant_member')->where('tenant_id', $actor->tenantId)->where('id', $memberId)
+        if (TenantMember::where('tenant_id', $actor->tenantId)->where('id', $memberId)
             ->where('authorization_revision', $expectedRevision)->update($data) !== 1) {
             throw AdminAccessException::revisionMismatch();
         }
@@ -476,12 +482,12 @@ final readonly class MemberAdminService
     private function createAccountAndCredential(string $identifier, string $displayName, string $password): int
     {
         $now = $this->now();
-        $accountId = (int) Db::name('account')->insertGetId([
+        $accountId = (int) Account::insertGetId([
             'display_name' => $displayName,
             'created_at' => $now,
             'updated_at' => $now,
         ]);
-        Db::name('credential')->insert([
+        Credential::insert([
             'account_id' => $accountId,
             'kind' => 'email_password',
             'identifier_type' => 'email',
@@ -499,17 +505,17 @@ final readonly class MemberAdminService
     /** @return array<string, mixed> */
     private function requireMember(int $tenantId, int $memberId, bool $forUpdate): array
     {
-        $query = Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId);
+        $query = TenantMember::where('tenant_id', $tenantId)->where('id', $memberId);
         if ($forUpdate) {
             $query->lock(true);
         }
 
-        return $query->find() ?? throw AdminAccessException::notFound();
+        return $query->find()?->toArray() ?? throw AdminAccessException::notFound();
     }
 
     private function requireTenantStatus(int $tenantId, string $status, bool $forUpdate): void
     {
-        $query = Db::name('tenant')->where('id', $tenantId);
+        $query = Tenant::where('id', $tenantId);
         if ($forUpdate) {
             $query->lock(true);
         }
@@ -564,7 +570,7 @@ final readonly class MemberAdminService
         }
 
         /** @var list<array{key: string, is_builtin: int}> $roles */
-        $roles = Db::name('role')->where('tenant_id', $tenantId)->where('status', 'active')
+        $roles = Role::where('tenant_id', $tenantId)->where('status', 'active')
             ->whereIn('id', $roleIds)->field('id,key,is_builtin')->select()->toArray();
 
         return $roles;
@@ -609,8 +615,8 @@ final readonly class MemberAdminService
 
     private function bumpTenantAuthorization(int $tenantId, string $now): void
     {
-        Db::name('tenant')->where('id', $tenantId)->update([
-            'authorization_revision' => Db::raw('authorization_revision + 1'),
+        Tenant::where('id', $tenantId)->update([
+            'authorization_revision' => new Raw('authorization_revision + 1'),
             'updated_at' => $now,
         ]);
     }
