@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\EntitlementQuota\Persistence;
 
 use InvalidArgumentException;
+use PDO;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementGrant;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementPolicyRevision;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementReservation;
@@ -17,7 +18,9 @@ use PeanutAdmin\EntitlementQuota\Persistence\Model\EntitlementUsageWindowRecord;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use RuntimeException;
 use think\db\exception\PDOException;
+use think\db\PDOConnection;
 use think\db\Raw;
+use think\facade\Db;
 use think\Model;
 use UnexpectedValueException;
 
@@ -51,6 +54,7 @@ final readonly class ThinkPhpEntitlementQuotaRepository
         int $memberId,
         string $now,
     ): EntitlementPolicyRevision {
+        $this->assertCallerOwnedTransaction();
         if (!hash_equals($canonicalSnapshotSha256, hash('sha256', $canonicalSnapshotJson))) {
             throw new UnexpectedValueException('Entitlement policy snapshot digest is invalid.');
         }
@@ -201,6 +205,7 @@ final readonly class ThinkPhpEntitlementQuotaRepository
         string $windowEnd,
         string $now,
     ): EntitlementUsageWindow {
+        $this->assertCallerOwnedTransaction();
         $policy = $this->policyRevisionById($tenantId, $policyRevisionId)
             ?? throw new RuntimeException('The entitlement policy revision is unavailable.');
         if ($policy->meterKey !== $meterKey
@@ -275,6 +280,7 @@ final readonly class ThinkPhpEntitlementQuotaRepository
         string $reservedAt,
         string $expiresAt,
     ): EntitlementReservation {
+        $this->assertCallerOwnedTransaction();
         if ($amount < 1 || $limitAmount < 1) {
             throw new InvalidArgumentException('Entitlement reservation amounts must be positive integers.');
         }
@@ -351,6 +357,7 @@ final readonly class ThinkPhpEntitlementQuotaRepository
         int $memberId,
         string $now,
     ): EntitlementReservation {
+        $this->assertCallerOwnedTransaction();
         if (!in_array($settlementState, ['committed', 'released'], true)) {
             throw new InvalidArgumentException('The entitlement settlement state is invalid.');
         }
@@ -514,6 +521,18 @@ final readonly class ThinkPhpEntitlementQuotaRepository
         }
 
         return (int) $encoded;
+    }
+
+    private function assertCallerOwnedTransaction(): void
+    {
+        $connection = Db::connect();
+        if (!$connection instanceof PDOConnection) {
+            throw new RuntimeException('Entitlement quota writes require ThinkPHP PDO transaction support.');
+        }
+        $pdo = $connection->connect();
+        if (!$pdo instanceof PDO || !$pdo->inTransaction()) {
+            throw new RuntimeException('Entitlement quota writes require a caller-owned transaction.');
+        }
     }
 
     private function scope(int $tenantId): TenantScope
