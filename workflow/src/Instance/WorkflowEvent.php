@@ -38,7 +38,7 @@ final readonly class WorkflowEvent
         $attachmentSnapshots = $row['attachment_snapshots_json'] ?? null;
         $metadata = $row['metadata_json'] ?? null;
         if (!is_array($attachmentSnapshots) || !array_is_list($attachmentSnapshots)
-            || !is_array($metadata) || array_is_list($metadata)) {
+            || !is_array($metadata) || ($metadata !== [] && array_is_list($metadata))) {
             throw WorkflowException::internal();
         }
 

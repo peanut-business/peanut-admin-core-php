@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Workflow\Persistence;
 
+use JsonException;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Workflow\Application\WorkflowException;
 use PeanutAdmin\Workflow\Definition\WorkflowDefinition;
@@ -20,6 +21,7 @@ use PeanutAdmin\Workflow\Persistence\Model\WorkflowWorkItemRecord;
 use think\db\Raw;
 use think\db\exception\PDOException;
 use think\Model;
+use think\model\type\Json;
 
 /** ThinkORM persistence for workflow definition, transition and event-stream semantics. */
 final readonly class ThinkPhpWorkflowRepository
@@ -273,7 +275,7 @@ final readonly class ThinkPhpWorkflowRepository
             $query->lock(true);
         }
 
-        return $this->mapAll($query->select()->toArray(), WorkflowWorkItem::fromRow(...));
+        return $this->mapAll($query->select(), WorkflowWorkItem::fromRow(...));
     }
 
     /**
@@ -447,7 +449,8 @@ final readonly class ThinkPhpWorkflowRepository
             'occurred_at' => $now,
         ]);
 
-        return WorkflowEvent::fromRow($record->toArray());
+        return $this->mapOne($record, WorkflowEvent::fromRow(...))
+            ?? throw WorkflowException::internal();
     }
 
     public function transitionTraversalCount(int $tenantId, int $instanceId, string $transitionKey): int
@@ -467,7 +470,7 @@ final readonly class ThinkPhpWorkflowRepository
         }
 
         return $this->mapAll(
-            $query->order('id', 'desc')->page($page, $pageSize)->select()->toArray(),
+            $query->order('id', 'desc')->page($page, $pageSize)->select(),
             WorkflowDefinition::fromRow(...),
         );
     }
@@ -479,7 +482,7 @@ final readonly class ThinkPhpWorkflowRepository
             WorkflowDefinitionVersionRecord::scope('tenant', $this->scope($tenantId))
                 ->where('definition_id', $definitionId)
                 ->order('version')
-                ->select()->toArray(),
+                ->select(),
             WorkflowDefinitionVersion::fromRow(...),
         );
     }
@@ -494,7 +497,7 @@ final readonly class ThinkPhpWorkflowRepository
         }
 
         return $this->mapAll(
-            $query->order('id')->page($page, $pageSize)->select()->toArray(),
+            $query->order('id')->page($page, $pageSize)->select(),
             WorkflowWorkItem::fromRow(...),
         );
     }
@@ -508,7 +511,7 @@ final readonly class ThinkPhpWorkflowRepository
                 ->where('sequence_no', '>', $afterSequence)
                 ->order('id')
                 ->limit($pageSize)
-                ->select()->toArray(),
+                ->select(),
             WorkflowEvent::fromRow(...),
         );
     }
@@ -525,12 +528,12 @@ final readonly class ThinkPhpWorkflowRepository
      */
     private function mapOne(?Model $record, callable $mapper): mixed
     {
-        return $record === null ? null : $mapper($record->toArray());
+        return $record === null ? null : $mapper($this->row($record));
     }
 
     /**
      * @template T
-     * @param iterable<array<string, mixed>> $records
+     * @param iterable<Model|array<string, mixed>> $records
      * @param callable(array<string, mixed>): T $mapper
      * @return list<T>
      */
@@ -538,10 +541,34 @@ final readonly class ThinkPhpWorkflowRepository
     {
         $result = [];
         foreach ($records as $record) {
-            $result[] = $mapper($record);
+            $result[] = $mapper($this->row($record));
         }
 
         return $result;
+    }
+
+    /** @return array<string, mixed> */
+    private function row(Model|array $record): array
+    {
+        $row = $record instanceof Model ? $record->getData() : $record;
+        foreach (['draft_graph_json', 'graph_json', 'attachment_snapshots_json', 'metadata_json'] as $field) {
+            if (!array_key_exists($field, $row)) {
+                continue;
+            }
+            $value = $row[$field];
+            if ($value instanceof Json) {
+                $value = $value->value();
+            } elseif (is_string($value)) {
+                try {
+                    $value = json_decode($value, true, 64, JSON_THROW_ON_ERROR);
+                } catch (JsonException) {
+                    throw WorkflowException::internal();
+                }
+            }
+            $row[$field] = $value;
+        }
+
+        return $row;
     }
 
     private function duplicate(PDOException $exception): bool
