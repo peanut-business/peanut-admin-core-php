@@ -483,11 +483,12 @@ final class ExternalOperationHostIntegrationTest extends TestCase
                 ) use ($worker, &$unrelatedCommitObserved, &$targetWaitObserved): void {
                     $context = $this->tenantContext($authorized);
                     $guard = new ModuleAvailabilityService();
-                    $guard->assertDeployment($authorized->operation->moduleKey);
+                    $guard->assertDeployment($authorized->operation->moduleKey, true);
                     $guard->assertTenant(
                         TenantScope::fromTrustedContext($context->tenantId, 'external-host-lock-test'),
                         $authorized->operation->moduleKey,
                         $command->comparisonTime,
+                        true,
                     );
 
                     fwrite($worker['pipes'][0], "go\n");
