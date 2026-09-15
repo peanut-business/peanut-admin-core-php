@@ -10,7 +10,10 @@ use JsonException;
 use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
+use PeanutAdmin\Kernel\Module\Model\TenantModule;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use RuntimeException;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class TenantModuleConfigurationService
@@ -48,22 +51,21 @@ final readonly class TenantModuleConfigurationService
                 throw new ModuleException('MODULE_CONFIG_INVALID', 'Module configuration is not valid JSON.');
             }
             $now = $this->now();
-            if (Db::name('tenant_module')
-                ->where('tenant_id', $actor->tenantId)
+            if (TenantModule::where('tenant_id', $actor->tenantId)
                 ->where('module_key', $moduleKey)
                 ->where('status', 'enabled')
                 ->where('config_revision', $expectedRevision)
                 ->update([
                     'config_json' => $configJson,
-                    'config_revision' => Db::raw('config_revision + 1'),
-                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'config_revision' => new Raw('config_revision + 1'),
+                    'authorization_revision' => new Raw('authorization_revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
-            Db::name('tenant')->where('id', $actor->tenantId)->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
-                'revision' => Db::raw('revision + 1'),
+            Tenant::where('id', $actor->tenantId)->update([
+                'authorization_revision' => new Raw('authorization_revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'updated_at' => $now,
             ]);
             $this->audit->tenantMember(
@@ -92,15 +94,16 @@ final readonly class TenantModuleConfigurationService
     /** @return array<string, mixed> */
     private function row(int $tenantId, string $moduleKey, bool $forUpdate = false): array
     {
-        $query = Db::name('tenant_module')
-            ->where('tenant_id', $tenantId)
+        $query = TenantModule::where('tenant_id', $tenantId)
             ->where('module_key', $moduleKey);
         if ($forUpdate) {
             $query->lock(true);
         }
-        $row = $query->field(
-            'module_key,status,source,config_json,config_revision,authorization_revision,effective_at,expires_at,enabled_at,disabled_at',
-        )->find();
+        $row = $query->field([
+            'module_key', 'status', 'source', 'config_json' => 'stored_config_json',
+            'config_revision', 'authorization_revision', 'effective_at', 'expires_at',
+            'enabled_at', 'disabled_at',
+        ])->find()?->toArray();
 
         return $row ?? throw new ModuleException(
             'MODULE_TENANT_DISABLED',
@@ -114,7 +117,7 @@ final readonly class TenantModuleConfigurationService
     private function normalize(array $row): array
     {
         try {
-            $config = json_decode((string) ($row['config_json'] ?? '{}'), true, 512, JSON_THROW_ON_ERROR);
+            $config = json_decode((string) ($row['stored_config_json'] ?? '{}'), true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
             throw new RuntimeException('Stored module configuration is invalid.', 0, $exception);
         }
