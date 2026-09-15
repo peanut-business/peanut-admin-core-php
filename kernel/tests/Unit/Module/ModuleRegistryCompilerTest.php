@@ -206,7 +206,7 @@ final class ModuleRegistryCompilerTest extends TestCase
 
         $manifest = $this->manifest('example.target');
         $data = $manifest->data;
-        $data['backend']['provider'] = 'PeanutAdmin\\App\\Modules\\Wrong\\Provider';
+        $data['backend']['provider'] = 'PeanutAdmin\\App\\modules\\wrong\\Provider';
         $this->expectModuleCode('MODULE_CONTRACT_MISSING', function () use ($data): void {
             $this->compiler()->compile([ManifestDocument::fromArray('/tmp/example-target', $data)]);
         });
@@ -309,7 +309,7 @@ final class ModuleRegistryCompilerTest extends TestCase
                 $this->manifest('example.work-item', protectedResources: [[
                     'key' => 'example.work-item',
                     'ownership' => 'tenant_owned',
-                    'provider' => 'PeanutAdmin\\App\\Modules\\Example\\Other\\ForeignPolicyProvider',
+                    'provider' => 'PeanutAdmin\\App\\modules\\example\\other\\ForeignPolicyProvider',
                     'operations' => [],
                 ]]),
             ]);
@@ -452,8 +452,8 @@ final class ModuleRegistryCompilerTest extends TestCase
     private function referenceLayout(): ModuleHostLayout
     {
         return new ModuleHostLayout(
-            'backend/app/Modules',
-            'PeanutAdmin\\App\\Modules',
+            'backend/app/modules',
+            'PeanutAdmin\\App\\modules',
             'frontend/src/modules',
         );
     }
