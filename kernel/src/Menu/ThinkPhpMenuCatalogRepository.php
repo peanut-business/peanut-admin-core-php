@@ -8,8 +8,10 @@ use DateTimeImmutable;
 use DateTimeZone;
 use DomainException;
 use JsonException;
+use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
+use PeanutAdmin\Kernel\Module\Model\TenantModule;
 use PeanutAdmin\Kernel\Persistence\Model\MenuDefinition as MenuDefinitionRecord;
-use think\facade\Db;
+use PeanutAdmin\Kernel\Persistence\Model\Permission;
 
 final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
 {
@@ -41,12 +43,12 @@ final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
             'manifest_digest' => $manifestDigest,
             'updated_at' => $now,
         ];
-        $existing = Db::name('menu_definition')->where('key', $definition->key)->value('id');
+        $existing = MenuDefinitionRecord::where('key', $definition->key)->value('id');
         if ($existing === null) {
-            Db::name('menu_definition')->insert(['key' => $definition->key, ...$data, 'created_at' => $now]);
+            MenuDefinitionRecord::create(['key' => $definition->key, ...$data, 'created_at' => $now]);
             return;
         }
-        Db::name('menu_definition')->where('id', (int) $existing)->update($data);
+        MenuDefinitionRecord::where('id', (int) $existing)->update($data);
     }
 
     public function retireMissing(array $activeKeys): void
@@ -54,8 +56,7 @@ final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
         if ($activeKeys === []) {
             throw new DomainException('The active menu catalog cannot be empty.');
         }
-        Db::name('menu_definition')
-            ->where('status', 'active')
+        MenuDefinitionRecord::where('status', 'active')
             ->whereNotIn('key', $activeKeys)
             ->update(['status' => 'retired', 'updated_at' => $this->now()]);
     }
@@ -106,8 +107,7 @@ final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
 
     public function activeDeploymentModules(): array
     {
-        return array_values(array_map('strval', Db::name('module_installation')
-            ->where('status', 'active')
+        return array_values(array_map('strval', ModuleInstallation::where('status', 'active')
             ->order('module_key')
             ->column('module_key')));
     }
@@ -116,8 +116,7 @@ final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
     {
         $now = $this->now();
 
-        return array_values(array_map('strval', Db::name('tenant_module')
-            ->where('tenant_id', $tenantId)
+        return array_values(array_map('strval', TenantModule::where('tenant_id', $tenantId)
             ->where('status', 'enabled')
             ->where(function ($query) use ($now): void {
                 $query->whereNull('effective_at')->whereOr('effective_at', '<=', $now);
@@ -131,7 +130,7 @@ final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
 
     private function permissionId(string $key): int
     {
-        $id = Db::name('permission')->where('key', $key)->where('status', 'active')->value('id');
+        $id = Permission::where('key', $key)->where('status', 'active')->value('id');
 
         return $id === null
             ? throw new DomainException("Menu permission is unavailable: {$key}")
