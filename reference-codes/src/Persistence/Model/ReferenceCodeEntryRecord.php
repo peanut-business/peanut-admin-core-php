@@ -10,6 +10,12 @@ final class ReferenceCodeEntryRecord extends TenantModel
 {
     /** @var string */ protected $name = 'reference_code_entry';
     /** @var array<string, string> */ protected $type = [
-        'id' => 'integer', 'tenant_id' => 'integer', 'set_id' => 'integer', 'revision' => 'integer',
+        'id' => 'integer',
+        'tenant_id' => 'integer',
+        'set_id' => 'integer',
+        'revision' => 'integer',
+        'retired_at' => 'string',
+        'created_at' => 'string',
+        'updated_at' => 'string',
     ];
 }
