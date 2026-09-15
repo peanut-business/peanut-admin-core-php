@@ -125,7 +125,7 @@ final readonly class AuditService
             'event_type' => $eventType,
             'action' => $action,
             'outcome' => $outcome->value,
-            'actor_tenant_id' => $tenantId,
+            'actor_tenant_id' => null,
             'actor_platform_operator_id' => $operatorId,
             'actor_account_id' => $accountId,
             'actor_type' => 'platform_operator',
