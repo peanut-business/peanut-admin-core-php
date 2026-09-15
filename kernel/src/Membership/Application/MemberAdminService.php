@@ -377,13 +377,14 @@ final readonly class MemberAdminService
         if (count($roles) !== count($roleIds)) {
             throw AdminAccessException::notFound();
         }
-        $currentlyOwner = $this->memberIsOwner($actor->tenantId, $memberId);
+        $activeOwnerMemberIds = $this->activeOwnerMemberIdsForUpdate($actor->tenantId);
+        $currentlyOwner = in_array($memberId, $activeOwnerMemberIds, true);
         $keepsOwner = false;
         foreach ($roles as $role) {
             $keepsOwner = $keepsOwner || ($role['key'] === 'core.tenant-owner' && (int) $role['is_builtin'] === 1);
         }
         if ($currentlyOwner && !$keepsOwner) {
-            $this->assertNotLastActiveOwner($actor->tenantId, $memberId);
+            $this->assertOwnerRemovalAllowed($activeOwnerMemberIds);
         }
         MemberRole::where('tenant_id', $actor->tenantId)->where('tenant_member_id', $memberId)->delete();
         $now = $this->now();
@@ -452,8 +453,11 @@ final readonly class MemberAdminService
         if (!in_array($member['status'], $fromStatuses, true)) {
             throw AdminAccessException::conflict('MEMBER_STATUS_CONFLICT', 'The member status transition is not allowed.');
         }
-        if (in_array($nextStatus, ['suspended', 'left'], true) && $this->memberIsOwner($actor->tenantId, $memberId)) {
-            $this->assertNotLastActiveOwner($actor->tenantId, $memberId);
+        if (in_array($nextStatus, ['suspended', 'left'], true)) {
+            $activeOwnerMemberIds = $this->activeOwnerMemberIdsForUpdate($actor->tenantId);
+            if (in_array($memberId, $activeOwnerMemberIds, true)) {
+                $this->assertOwnerRemovalAllowed($activeOwnerMemberIds);
+            }
         }
         $now = $this->now();
         $data = [
@@ -524,35 +528,43 @@ final readonly class MemberAdminService
         }
     }
 
-    private function memberIsOwner(int $tenantId, int $memberId): bool
+    /** @return list<int> */
+    private function activeOwnerMemberIdsForUpdate(int $tenantId): array
     {
-        return MemberRole::alias('member_role')
-            ->join('role role', 'role.tenant_id = member_role.tenant_id AND role.id = member_role.role_id')
-            ->where('member_role.tenant_id', $tenantId)
-            ->where('member_role.tenant_member_id', $memberId)
-            ->where('role.key', 'core.tenant-owner')
-            ->where('role.is_builtin', 1)
-            ->where('role.status', 'active')
-            ->value('member_role.id') !== null;
-    }
-
-    private function assertNotLastActiveOwner(int $tenantId, int $memberId): void
-    {
-        $otherOwners = TenantMember::alias('member')
+        $rows = MemberRole::alias('member_role')
             ->join(
-                'member_role member_role',
-                'member_role.tenant_id = member.tenant_id AND member_role.tenant_member_id = member.id',
+                'tenant_member member',
+                'member.tenant_id = member_role.tenant_id AND member.id = member_role.tenant_member_id',
             )
             ->join('role role', 'role.tenant_id = member_role.tenant_id AND role.id = member_role.role_id')
+            ->where('member_role.tenant_id', $tenantId)
             ->where('member.tenant_id', $tenantId)
+            ->where('role.tenant_id', $tenantId)
             ->where('member.status', 'active')
-            ->where('member.id', '<>', $memberId)
             ->where('role.key', 'core.tenant-owner')
             ->where('role.is_builtin', 1)
             ->where('role.status', 'active')
-            ->distinct(true)
-            ->count('member.id');
-        if ((int) $otherOwners === 0) {
+            ->field([
+                'member_role.id' => 'assignment_id',
+                'member_role.tenant_member_id',
+            ])
+            ->order('member_role.tenant_member_id')
+            ->order('member_role.id')
+            ->lock(true)
+            ->select();
+
+        $memberIds = [];
+        foreach ($rows as $row) {
+            $memberIds[(int) $row->getAttr('tenant_member_id')] = true;
+        }
+
+        return array_keys($memberIds);
+    }
+
+    /** @param list<int> $activeOwnerMemberIds */
+    private function assertOwnerRemovalAllowed(array $activeOwnerMemberIds): void
+    {
+        if (count($activeOwnerMemberIds) <= 1) {
             throw AdminAccessException::conflict(
                 'LAST_ACTIVE_OWNER_REQUIRED',
                 'The final active tenant owner cannot be removed or suspended.',
