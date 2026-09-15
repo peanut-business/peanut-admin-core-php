@@ -13,5 +13,6 @@ final class MenuDefinition extends Model
     /** @var array<string, string> */ protected $type = [
         'id' => 'integer',
         'sort_order' => 'integer',
+        'client_keys_json' => 'json',
     ];
 }

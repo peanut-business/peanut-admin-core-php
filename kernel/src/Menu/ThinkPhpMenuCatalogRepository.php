@@ -12,6 +12,7 @@ use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
 use PeanutAdmin\Kernel\Module\Model\TenantModule;
 use PeanutAdmin\Kernel\Persistence\Model\MenuDefinition as MenuDefinitionRecord;
 use PeanutAdmin\Kernel\Persistence\Model\Permission;
+use think\model\type\Json;
 
 final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
 {
@@ -78,12 +79,18 @@ final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
             ->toArray();
 
         return array_values(array_map(function (array $row): MenuDefinition {
-            try {
-                $clientKeys = json_decode((string) $row['client_keys_json'], true, 512, JSON_THROW_ON_ERROR);
-            } catch (JsonException $exception) {
-                throw new DomainException('Stored menu client keys are invalid.', 0, $exception);
+            $clientKeys = $row['client_keys_json'];
+            if ($clientKeys instanceof Json) {
+                $clientKeys = $clientKeys->value();
+            } elseif (is_string($clientKeys)) {
+                try {
+                    $clientKeys = json_decode($clientKeys, true, 512, JSON_THROW_ON_ERROR);
+                } catch (JsonException $exception) {
+                    throw new DomainException('Stored menu client keys are invalid.', 0, $exception);
+                }
             }
-            if (!is_array($clientKeys) || !array_is_list($clientKeys)) {
+            if (!is_array($clientKeys) || !array_is_list($clientKeys)
+                || array_filter($clientKeys, static fn(mixed $key): bool => !is_string($key)) !== []) {
                 throw new DomainException('Stored menu client keys are invalid.');
             }
 
@@ -98,7 +105,7 @@ final class ThinkPhpMenuCatalogRepository implements MenuCatalogRepository
                 $row['route_path'] === null ? null : (string) $row['route_path'],
                 $row['component_key'] === null ? null : (string) $row['component_key'],
                 $row['required_permission'] === null ? null : (string) $row['required_permission'],
-                array_map('strval', $clientKeys),
+                $clientKeys,
                 (int) $row['sort_order'],
                 $row['icon'] === null ? null : (string) $row['icon'],
             );
