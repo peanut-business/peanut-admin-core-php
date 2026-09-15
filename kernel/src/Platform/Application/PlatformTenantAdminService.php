@@ -12,10 +12,15 @@ use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Module\ModuleException;
+use PeanutAdmin\Kernel\Module\Model\TenantModule;
 use PeanutAdmin\Kernel\Module\TenantModuleManager;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
+use PeanutAdmin\Kernel\Persistence\Model\Role;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use PeanutAdmin\Kernel\Tenancy\TenantStatus;
 use Throwable;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class PlatformTenantAdminService
@@ -42,12 +47,12 @@ final readonly class PlatformTenantAdminService
         return $this->transaction(function () use ($actor, $code, $name, $displayName, $locale, $timezone): array {
             $this->requireOperator($actor);
             $now = $this->now();
-            $tenantId = (int) Db::name('tenant')->insertGetId([
+            $tenantId = (int) Tenant::insertGetId([
                 'code' => $code, 'name' => $name, 'display_name' => $displayName,
                 'status' => TenantStatus::Provisioning->value, 'locale' => $locale, 'timezone' => $timezone,
                 'created_at' => $now, 'updated_at' => $now,
             ]);
-            Db::name('role')->insert([
+            Role::insert([
                 'tenant_id' => $tenantId, 'key' => 'core.tenant-owner', 'name' => 'Tenant Owner',
                 'description' => 'Built-in owner role for tenant governance.', 'is_builtin' => 1,
                 'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
@@ -86,9 +91,9 @@ final readonly class PlatformTenantAdminService
                 throw AdminAccessException::conflict('TENANT_CLOSED', 'A closed tenant cannot be updated.');
             }
             $this->assertRevision($before, $expectedRevision);
-            if (Db::name('tenant')->where('id', $tenantId)->where('revision', $expectedRevision)->update([
+            if (Tenant::where('id', $tenantId)->where('revision', $expectedRevision)->update([
                 'name' => $name, 'display_name' => $displayName, 'locale' => $locale, 'timezone' => $timezone,
-                'revision' => Db::raw('revision + 1'), 'updated_at' => $this->now(),
+                'revision' => new Raw('revision + 1'), 'updated_at' => $this->now(),
             ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
@@ -127,8 +132,8 @@ final readonly class PlatformTenantAdminService
             }
             $now = $this->now();
             $changes = [
-                'status' => $next->value, 'security_revision' => Db::raw('security_revision + 1'),
-                'revision' => Db::raw('revision + 1'), 'updated_at' => $now,
+                'status' => $next->value, 'security_revision' => new Raw('security_revision + 1'),
+                'revision' => new Raw('revision + 1'), 'updated_at' => $now,
             ];
             $lifecycleField = match ($next) {
                 TenantStatus::Active => 'activated_at', TenantStatus::Suspended => 'suspended_at',
@@ -136,7 +141,7 @@ final readonly class PlatformTenantAdminService
                 TenantStatus::Provisioning => throw new DomainException('Provisioning is not a lifecycle target.'),
             };
             $changes[$lifecycleField] = $now;
-            if (Db::name('tenant')->where('id', $tenantId)->where('revision', $expectedRevision)->update($changes) !== 1) {
+            if (Tenant::where('id', $tenantId)->where('revision', $expectedRevision)->update($changes) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
             $after = $this->tenant($tenantId);
@@ -265,7 +270,7 @@ final readonly class PlatformTenantAdminService
 
     private function requireOperator(PlatformContext $actor): void
     {
-        if (Db::name('platform_operator')->where('id', $actor->operatorId)->where('account_id', $actor->accountId)
+        if (PlatformOperator::where('id', $actor->operatorId)->where('account_id', $actor->accountId)
             ->where('status', 'active')->lock(true)->value('id') === null) {
             throw new AdminAccessException('PLATFORM_OPERATOR_INACTIVE', 403, 'An active platform operator is required.');
         }
@@ -285,14 +290,14 @@ final readonly class PlatformTenantAdminService
     /** @return array<string, mixed> */
     private function tenant(int $tenantId, bool $forUpdate = false): array
     {
-        $query = Db::name('tenant')->where('id', $tenantId);
+        $query = Tenant::where('id', $tenantId);
         if ($forUpdate) {
             $query->lock(true);
         }
         $row = $query->field(
             'id,code,name,display_name,status,locale,timezone,security_revision,authorization_revision,revision,'
             . 'activated_at,suspended_at,closed_at,created_at,updated_at',
-        )->find();
+        )->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -303,25 +308,26 @@ final readonly class PlatformTenantAdminService
     /** @return array<string, mixed>|null */
     private function tenantModule(int $tenantId, string $moduleKey, bool $forUpdate = false): ?array
     {
-        $query = Db::name('tenant_module')->where('tenant_id', $tenantId)->where('module_key', $moduleKey);
+        $query = TenantModule::where('tenant_id', $tenantId)->where('module_key', $moduleKey);
         if ($forUpdate) {
             $query->lock(true);
         }
-        $row = $query->field(
-            'id,tenant_id,module_key,status,source,config_json,config_revision,authorization_revision,'
-            . 'effective_at,expires_at,enabled_at,disabled_at,disabled_reason,created_at,updated_at',
-        )->find();
+        $row = $query->field([
+            'id', 'tenant_id', 'module_key', 'status', 'source', 'config_json' => 'stored_config_json',
+            'config_revision', 'authorization_revision', 'effective_at', 'expires_at', 'enabled_at',
+            'disabled_at', 'disabled_reason', 'created_at', 'updated_at',
+        ])->find()?->toArray();
         if ($row === null) {
             return null;
         }
         try {
-            $config = $row['config_json'] === null
-                ? [] : json_decode((string) $row['config_json'], true, 512, JSON_THROW_ON_ERROR);
+            $config = $row['stored_config_json'] === null
+                ? [] : json_decode((string) $row['stored_config_json'], true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             throw new AdminAccessException('DATABASE_DATA_INVALID', 500, 'Stored module configuration is invalid.');
         }
         $row['config'] = is_array($config) ? $config : [];
-        unset($row['config_json']);
+        unset($row['stored_config_json']);
 
         return $this->normalize($row);
     }
