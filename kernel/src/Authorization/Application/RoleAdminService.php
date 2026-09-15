@@ -8,8 +8,13 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Module\Model\TenantModule;
+use PeanutAdmin\Kernel\Persistence\Model\Permission;
+use PeanutAdmin\Kernel\Persistence\Model\Role;
 use PeanutAdmin\Kernel\Persistence\Model\RolePermission;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use Throwable;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class RoleAdminService
@@ -19,7 +24,7 @@ final readonly class RoleAdminService
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function list(int $tenantId, PageRequest $page): array
     {
-        $query = Db::name('role')->where('tenant_id', $tenantId);
+        $query = Role::where('tenant_id', $tenantId);
         $total = (int) (clone $query)->count();
         $rows = $query->field('id,key,name,description,is_builtin,status,authorization_revision')
             ->order('id')->limit($page->offset(), $page->pageSize)->select()->toArray();
@@ -30,8 +35,8 @@ final readonly class RoleAdminService
     /** @return array<string, mixed> */
     public function get(int $tenantId, int $roleId): array
     {
-        $row = Db::name('role')->where('tenant_id', $tenantId)->where('id', $roleId)
-            ->field('id,key,name,description,is_builtin,status,authorization_revision')->find();
+        $row = Role::where('tenant_id', $tenantId)->where('id', $roleId)
+            ->field('id,key,name,description,is_builtin,status,authorization_revision')->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -49,7 +54,7 @@ final readonly class RoleAdminService
         return $this->transaction(function () use ($actor, $key, $name, $description): array {
             $this->lockTenant($actor->tenantId);
             $now = $this->now();
-            $roleId = (int) Db::name('role')->insertGetId([
+            $roleId = (int) Role::insertGetId([
                 'tenant_id' => $actor->tenantId,
                 'key' => $key,
                 'name' => $name,
@@ -78,11 +83,11 @@ final readonly class RoleAdminService
             $role = $this->requireRole($actor->tenantId, $roleId, true);
             $this->assertRevision($role, $expectedRevision);
             $now = $this->now();
-            if (Db::name('role')->where('tenant_id', $actor->tenantId)->where('id', $roleId)
+            if (Role::where('tenant_id', $actor->tenantId)->where('id', $roleId)
                 ->where('authorization_revision', $expectedRevision)->update([
                     'name' => $name,
                     'description' => $description,
-                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'authorization_revision' => new Raw('authorization_revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -107,11 +112,11 @@ final readonly class RoleAdminService
                 throw AdminAccessException::conflict('ROLE_ALREADY_ARCHIVED', 'The role is already archived.');
             }
             $now = $this->now();
-            if (Db::name('role')->where('tenant_id', $actor->tenantId)->where('id', $roleId)
+            if (Role::where('tenant_id', $actor->tenantId)->where('id', $roleId)
                 ->where('authorization_revision', $expectedRevision)->update([
                     'status' => 'archived',
                     'archived_at' => $now,
-                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'authorization_revision' => new Raw('authorization_revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -150,10 +155,10 @@ final readonly class RoleAdminService
                     'A permission is retired, belongs to the platform, or its module is unavailable.',
                 );
             }
-            Db::name('role_permission')->where('tenant_id', $actor->tenantId)->where('role_id', $roleId)->delete();
+            RolePermission::where('tenant_id', $actor->tenantId)->where('role_id', $roleId)->delete();
             $now = $this->now();
             if ($permissions !== []) {
-                Db::name('role_permission')->insertAll(array_map(
+                RolePermission::insertAll(array_map(
                     static fn(array $permission): array => [
                         'tenant_id' => $actor->tenantId,
                         'role_id' => $roleId,
@@ -164,9 +169,9 @@ final readonly class RoleAdminService
                     $permissions,
                 ));
             }
-            if (Db::name('role')->where('tenant_id', $actor->tenantId)->where('id', $roleId)
+            if (Role::where('tenant_id', $actor->tenantId)->where('id', $roleId)
                 ->where('authorization_revision', $expectedRevision)->update([
-                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'authorization_revision' => new Raw('authorization_revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -186,12 +191,12 @@ final readonly class RoleAdminService
     /** @return array<string, mixed> */
     private function requireRole(int $tenantId, int $roleId, bool $forUpdate): array
     {
-        $query = Db::name('role')->where('tenant_id', $tenantId)->where('id', $roleId);
+        $query = Role::where('tenant_id', $tenantId)->where('id', $roleId);
         if ($forUpdate) {
             $query->lock(true);
         }
 
-        return $query->find() ?? throw AdminAccessException::notFound();
+        return $query->find()?->toArray() ?? throw AdminAccessException::notFound();
     }
 
     /** @param array<string, mixed> $role */
@@ -210,15 +215,15 @@ final readonly class RoleAdminService
         if ($permissionKeys === []) {
             return [];
         }
-        $modules = Db::name('tenant_module')->where('tenant_id', $tenantId)->where('status', 'enabled')
+        $modules = TenantModule::where('tenant_id', $tenantId)->where('status', 'enabled')
             ->where(function ($query): void {
-                $query->whereNull('effective_at')->whereOr('effective_at', '<=', Db::raw('UTC_TIMESTAMP(3)'));
+                $query->whereNull('effective_at')->whereOr('effective_at', '<=', new Raw('UTC_TIMESTAMP(3)'));
             })->where(function ($query): void {
-                $query->whereNull('expires_at')->whereOr('expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+                $query->whereNull('expires_at')->whereOr('expires_at', '>', new Raw('UTC_TIMESTAMP(3)'));
             })->column('module_key');
 
         /** @var list<array{id: int, key: string}> $permissions */
-        $permissions = Db::name('permission')->whereIn('key', $permissionKeys)->where('status', 'active')
+        $permissions = Permission::whereIn('key', $permissionKeys)->where('status', 'active')
             ->whereNotLike('key', 'platform.%')->whereIn('module_key', array_values(array_unique(['core', ...$modules])))
             ->field('id,key')->order('key')->select()->toArray();
 
@@ -260,15 +265,15 @@ final readonly class RoleAdminService
 
     private function lockTenant(int $tenantId): void
     {
-        if (Db::name('tenant')->where('id', $tenantId)->where('status', 'active')->lock(true)->value('id') === null) {
+        if (Tenant::where('id', $tenantId)->where('status', 'active')->lock(true)->value('id') === null) {
             throw new AdminAccessException('TENANT_STATUS_INVALID', 403, 'The tenant is not active.');
         }
     }
 
     private function bumpTenant(int $tenantId, string $now): void
     {
-        Db::name('tenant')->where('id', $tenantId)->update([
-            'authorization_revision' => Db::raw('authorization_revision + 1'),
+        Tenant::where('id', $tenantId)->update([
+            'authorization_revision' => new Raw('authorization_revision + 1'),
             'updated_at' => $now,
         ]);
     }
