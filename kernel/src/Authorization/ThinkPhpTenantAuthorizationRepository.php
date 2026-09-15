@@ -8,18 +8,19 @@ use JsonException;
 use PeanutAdmin\Kernel\Module\Model\TenantModule;
 use PeanutAdmin\Kernel\Persistence\Model\MemberRole;
 use PeanutAdmin\Kernel\Persistence\Model\RolePermission;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
-use think\facade\Db;
+use think\db\Raw;
 
 final class ThinkPhpTenantAuthorizationRepository implements TenantAuthorizationRepository
 {
     public function member(int $tenantId, int $memberId): ?array
     {
-        $row = Db::name('tenant_member')
-            ->where('tenant_id', $tenantId)
+        $record = TenantMember::where('tenant_id', $tenantId)
             ->where('id', $memberId)
             ->field('id,display_name,status,primary_department_id')
             ->find();
+        $row = $record?->toArray();
 
         return $row === null ? null : [
             'id' => (int) $row['id'],
@@ -61,18 +62,18 @@ final class ThinkPhpTenantAuthorizationRepository implements TenantAuthorization
 
     public function revision(int $tenantId, int $memberId): string
     {
-        $tenant = Db::name('tenant')
-            ->where('id', $tenantId)
+        $tenantRecord = Tenant::where('id', $tenantId)
             ->field('status,authorization_revision')
             ->find();
+        $tenant = $tenantRecord?->toArray();
         if ($tenant === null) {
             return hash('sha256', "missing:{$tenantId}:{$memberId}");
         }
-        $member = Db::name('tenant_member')
-            ->where('tenant_id', $tenantId)
+        $memberRecord = TenantMember::where('tenant_id', $tenantId)
             ->where('id', $memberId)
             ->field('status,authorization_revision')
             ->find();
+        $member = $memberRecord?->toArray();
         $roles = MemberRole::alias('member_role')
             ->join('role role', 'role.tenant_id = member_role.tenant_id AND role.id = member_role.role_id')
             ->where('member_role.tenant_id', $tenantId)
@@ -107,7 +108,7 @@ final class ThinkPhpTenantAuthorizationRepository implements TenantAuthorization
 
     public function permissions(int $tenantId, int $memberId): EffectivePermissionSet
     {
-        $tenantActive = Db::name('tenant')->where('id', $tenantId)->where('status', 'active')->value('id');
+        $tenantActive = Tenant::where('id', $tenantId)->where('status', 'active')->value('id');
         if ($tenantActive === null) {
             return new EffectivePermissionSet([]);
         }
@@ -130,11 +131,11 @@ final class ThinkPhpTenantAuthorizationRepository implements TenantAuthorization
                 ->where('tenant_module.status', 'enabled')
                 ->where(function ($query): void {
                     $query->whereNull('tenant_module.effective_at')
-                        ->whereOr('tenant_module.effective_at', '<=', Db::raw('UTC_TIMESTAMP(3)'));
+                        ->whereOr('tenant_module.effective_at', '<=', new Raw('UTC_TIMESTAMP(3)'));
                 })
                 ->where(function ($query): void {
                     $query->whereNull('tenant_module.expires_at')
-                        ->whereOr('tenant_module.expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+                        ->whereOr('tenant_module.expires_at', '>', new Raw('UTC_TIMESTAMP(3)'));
                 })
                 ->column('tenant_module.module_key');
             $permissions = RolePermission::alias('role_permission')
