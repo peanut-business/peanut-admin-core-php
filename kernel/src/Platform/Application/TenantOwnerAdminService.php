@@ -9,13 +9,20 @@ use DateTimeZone;
 use InvalidArgumentException;
 use JsonException;
 use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Audit\Model\PlatformAuditEventRecord;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
+use PeanutAdmin\Kernel\Persistence\Model\Account;
+use PeanutAdmin\Kernel\Persistence\Model\Credential;
 use PeanutAdmin\Kernel\Persistence\Model\MemberRole;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
+use PeanutAdmin\Kernel\Persistence\Model\Role;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use Throwable;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class TenantOwnerAdminService
@@ -42,7 +49,7 @@ final readonly class TenantOwnerAdminService
         return $this->transaction(function () use ($actor, $tenantId, $identifier, $displayName, $initialPassword): array {
             $this->requireOperator($actor);
             $this->requireProvisioningTenant($tenantId);
-            $ownerRoleId = Db::name('role')->where('tenant_id', $tenantId)->where('key', 'core.tenant-owner')
+            $ownerRoleId = Role::where('tenant_id', $tenantId)->where('key', 'core.tenant-owner')
                 ->where('is_builtin', 1)->where('status', 'active')->lock(true)->value('id');
             if ($ownerRoleId === null) {
                 throw AdminAccessException::conflict(
@@ -56,8 +63,8 @@ final readonly class TenantOwnerAdminService
                     'A pending or active owner candidate already exists.',
                 );
             }
-            $credential = Db::name('credential')->where('identifier_type', 'email')
-                ->where('identifier_normalized', $identifier)->lock(true)->field('id,account_id,status')->find();
+            $credential = Credential::where('identifier_type', 'email')
+                ->where('identifier_normalized', $identifier)->lock(true)->field('id,account_id,status')->find()?->toArray();
             if ($credential === null) {
                 if ($initialPassword === null || $initialPassword === '') {
                     throw AdminAccessException::invalid(
@@ -77,11 +84,11 @@ final readonly class TenantOwnerAdminService
                     throw AdminAccessException::conflict('CREDENTIAL_INACTIVE', 'The account credential is inactive.');
                 }
                 $accountId = (int) $credential['account_id'];
-                if (Db::name('account')->where('id', $accountId)->lock(true)->value('status') !== 'active') {
+                if (Account::where('id', $accountId)->lock(true)->value('status') !== 'active') {
                     throw AdminAccessException::conflict('ACCOUNT_INACTIVE', 'The account is inactive.');
                 }
             }
-            if (Db::name('tenant_member')->where('tenant_id', $tenantId)->where('account_id', $accountId)
+            if (TenantMember::where('tenant_id', $tenantId)->where('account_id', $accountId)
                 ->lock(true)->value('id') !== null) {
                 throw AdminAccessException::conflict(
                     'TENANT_MEMBER_ALREADY_EXISTS',
@@ -89,7 +96,7 @@ final readonly class TenantOwnerAdminService
                 );
             }
             $now = $this->now();
-            $memberId = (int) Db::name('tenant_member')->insertGetId([
+            $memberId = (int) TenantMember::insertGetId([
                 'tenant_id' => $tenantId,
                 'account_id' => $accountId,
                 'display_name' => $displayName,
@@ -97,18 +104,18 @@ final readonly class TenantOwnerAdminService
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            Db::name('member_role')->insert([
+            MemberRole::insert([
                 'tenant_id' => $tenantId,
                 'tenant_member_id' => $memberId,
                 'role_id' => (int) $ownerRoleId,
                 'assigned_at' => $now,
             ]);
-            Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId)->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+            TenantMember::where('tenant_id', $tenantId)->where('id', $memberId)->update([
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]);
-            Db::name('tenant')->where('id', $tenantId)->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+            Tenant::where('id', $tenantId)->update([
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]);
             $this->audit->platform(
@@ -151,7 +158,7 @@ final readonly class TenantOwnerAdminService
             $member = TenantMember::alias('member')
                 ->join('account account', 'account.id = member.account_id')
                 ->where('member.tenant_id', $tenantId)->where('member.id', $memberId)
-                ->field(['member.*', 'account.status' => 'account_status'])->lock(true)->find();
+                ->field(['member.*', 'account.status' => 'account_status'])->lock(true)->find()?->toArray();
             if ($member === null) {
                 throw AdminAccessException::notFound();
             }
@@ -174,18 +181,18 @@ final readonly class TenantOwnerAdminService
                 throw AdminAccessException::conflict('TENANT_OWNER_ROLE_MISSING', 'The candidate does not hold the owner role.');
             }
             $now = $this->now();
-            if (Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId)
+            if (TenantMember::where('tenant_id', $tenantId)->where('id', $memberId)
                 ->where('status', 'pending')->where('authorization_revision', $expectedRevision)->update([
                     'status' => 'active',
                     'joined_at' => $now,
-                    'security_revision' => Db::raw('security_revision + 1'),
-                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'security_revision' => new Raw('security_revision + 1'),
+                    'authorization_revision' => new Raw('authorization_revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
-            Db::name('tenant')->where('id', $tenantId)->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+            Tenant::where('id', $tenantId)->update([
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]);
             $metadata = [
@@ -219,8 +226,8 @@ final readonly class TenantOwnerAdminService
     /** @return array<string, mixed> */
     private function candidate(int $tenantId, int $memberId): array
     {
-        $row = Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId)
-            ->field('id,account_id,display_name,status,security_revision,authorization_revision')->find();
+        $row = TenantMember::where('tenant_id', $tenantId)->where('id', $memberId)
+            ->field('id,account_id,display_name,status,security_revision,authorization_revision')->find()?->toArray();
         if ($row === null) {
             throw AdminAccessException::notFound();
         }
@@ -250,7 +257,7 @@ final readonly class TenantOwnerAdminService
 
     private function requireOperator(PlatformContext $actor): void
     {
-        if (Db::name('platform_operator')->where('id', $actor->operatorId)->where('account_id', $actor->accountId)
+        if (PlatformOperator::where('id', $actor->operatorId)->where('account_id', $actor->accountId)
             ->where('status', 'active')->lock(true)->value('id') === null) {
             throw new AdminAccessException('PLATFORM_OPERATOR_INVALID', 403, 'An active platform operator is required.');
         }
@@ -258,7 +265,7 @@ final readonly class TenantOwnerAdminService
 
     private function requireProvisioningTenant(int $tenantId): void
     {
-        if (Db::name('tenant')->where('id', $tenantId)->where('status', 'provisioning')->lock(true)->value('id') === null) {
+        if (Tenant::where('id', $tenantId)->where('status', 'provisioning')->lock(true)->value('id') === null) {
             throw AdminAccessException::conflict(
                 'TENANT_NOT_PROVISIONING',
                 'Owner provisioning is only available while the tenant is provisioning.',
@@ -281,10 +288,10 @@ final readonly class TenantOwnerAdminService
     private function createAccountAndCredential(string $identifier, string $displayName, string $password): int
     {
         $now = $this->now();
-        $accountId = (int) Db::name('account')->insertGetId([
+        $accountId = (int) Account::insertGetId([
             'display_name' => $displayName, 'created_at' => $now, 'updated_at' => $now,
         ]);
-        Db::name('credential')->insert([
+        Credential::insert([
             'account_id' => $accountId, 'kind' => 'email_password', 'identifier_type' => 'email',
             'identifier_normalized' => $identifier, 'secret_hash' => $this->passwords->hash($password),
             'verified_at' => $now, 'secret_changed_at' => $now, 'created_at' => $now, 'updated_at' => $now,
@@ -304,9 +311,9 @@ final readonly class TenantOwnerAdminService
 
     private function activeCredentialExists(int $accountId): bool
     {
-        return Db::name('credential')->where('account_id', $accountId)->where('status', 'active')
+        return Credential::where('account_id', $accountId)->where('status', 'active')
             ->where(function ($query): void {
-                $query->whereNull('expires_at')->whereOr('expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+                $query->whereNull('expires_at')->whereOr('expires_at', '>', new Raw('UTC_TIMESTAMP(3)'));
             })->value('id') !== null;
     }
 
@@ -316,7 +323,7 @@ final readonly class TenantOwnerAdminService
         int $memberId,
         string $idempotencyHash,
     ): bool {
-        $rows = Db::name('platform_audit_event')->where('operator_id', $operatorId)
+        $rows = PlatformAuditEventRecord::where('operator_id', $operatorId)
             ->where('event_type', 'tenant.owner-candidate.activated')
             ->where('target_type', 'tenant-owner-candidate')->where('target_id', (string) $memberId)
             ->column('metadata_json');
