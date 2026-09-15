@@ -24,6 +24,7 @@ use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use Throwable;
 use think\db\Raw;
 use think\facade\Db;
+use think\model\type\Json;
 
 final readonly class TenantOwnerAdminService
 {
@@ -163,7 +164,13 @@ final readonly class TenantOwnerAdminService
                 throw AdminAccessException::notFound();
             }
             if ($member['status'] === 'active') {
-                if ($this->activationWasApplied($actor->operatorId, $tenantId, $memberId, $idempotencyHash)) {
+                if ($this->activationWasApplied(
+                    $actor->operatorId,
+                    $tenantId,
+                    $memberId,
+                    $idempotencyHash,
+                    $changeReason,
+                )) {
                     return $this->candidate($tenantId, $memberId);
                 }
                 throw AdminAccessException::conflict('OWNER_ALREADY_ACTIVE', 'The owner candidate is already active.');
@@ -208,6 +215,8 @@ final readonly class TenantOwnerAdminService
                 'tenant.owner-candidate.activated',
                 'platform.tenant.provision-owner',
                 $metadata,
+                targetType: 'tenant-owner-candidate',
+                targetId: (string) $memberId,
             );
             $this->audit->tenantPlatformOperator(
                 $tenantId,
@@ -322,20 +331,28 @@ final readonly class TenantOwnerAdminService
         int $tenantId,
         int $memberId,
         string $idempotencyHash,
+        string $changeReason,
     ): bool {
         $rows = PlatformAuditEventRecord::where('operator_id', $operatorId)
             ->where('event_type', 'tenant.owner-candidate.activated')
             ->where('target_type', 'tenant-owner-candidate')->where('target_id', (string) $memberId)
             ->column('metadata_json');
         foreach ($rows as $json) {
-            try {
-                $metadata = json_decode((string) $json, true, 32, JSON_THROW_ON_ERROR);
-            } catch (JsonException) {
-                continue;
+            if ($json instanceof Json) {
+                $json = $json->value();
             }
-            if (is_array($metadata)
-                && ($metadata['tenant_id'] ?? null) === (string) $tenantId
-                && ($metadata['idempotency_hash'] ?? null) === $idempotencyHash) {
+            if (is_string($json)) {
+                try {
+                    $json = json_decode($json, true, 32, JSON_THROW_ON_ERROR);
+                } catch (JsonException) {
+                    continue;
+                }
+            }
+            if (is_array($json)
+                && ($json['tenant_id'] ?? null) === (string) $tenantId
+                && ($json['member_id'] ?? null) === (string) $memberId
+                && ($json['idempotency_hash'] ?? null) === $idempotencyHash
+                && ($json['change_reason'] ?? null) === $changeReason) {
                 return true;
             }
         }
