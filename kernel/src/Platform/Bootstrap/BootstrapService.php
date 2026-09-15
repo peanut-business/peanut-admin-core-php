@@ -15,12 +15,17 @@ use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use PeanutAdmin\Kernel\Membership\TenantMemberStatus;
 use PeanutAdmin\Kernel\Persistence\Model\Account;
 use PeanutAdmin\Kernel\Persistence\Model\Credential;
+use PeanutAdmin\Kernel\Persistence\Model\MemberRole;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformOperatorRole;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformRole;
+use PeanutAdmin\Kernel\Persistence\Model\Role;
 use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use PeanutAdmin\Kernel\Platform\PlatformOperatorStatus;
 use PeanutAdmin\Kernel\Tenancy\TenantStatus;
 use think\db\PDOConnection;
+use think\db\Raw;
 use think\facade\Db;
 
 /** Fresh-install bootstrap over the application-managed ThinkPHP connection. */
@@ -100,14 +105,14 @@ final readonly class BootstrapService
                     'updated_at' => $now,
                 ]);
                 $operatorId = (int) $operator->getKey();
-                $roleId = (int) Db::name('platform_role')->insertGetId([
+                $roleId = (int) PlatformRole::insertGetId([
                     'key' => self::PLATFORM_OWNER_ROLE,
                     'name' => 'Platform Bootstrap Owner',
                     'is_builtin' => 1,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
-                Db::name('platform_operator_role')->insert([
+                PlatformOperatorRole::insert([
                     'platform_operator_id' => $operatorId,
                     'platform_role_id' => $roleId,
                     'assigned_at' => $now,
@@ -162,7 +167,7 @@ final readonly class BootstrapService
                 'updated_at' => $now,
             ]);
             $tenantId = (int) $tenant->getKey();
-            $roleId = (int) Db::name('role')->insertGetId([
+            $roleId = (int) Role::insertGetId([
                 'tenant_id' => $tenantId,
                 'key' => self::TENANT_OWNER_ROLE,
                 'name' => 'Tenant Owner',
@@ -218,14 +223,14 @@ final readonly class BootstrapService
                 'updated_at' => $now,
             ]);
             $memberId = (int) $member->getKey();
-            Db::name('member_role')->insert([
+            MemberRole::insert([
                 'tenant_id' => $tenantId,
                 'tenant_member_id' => $memberId,
                 'role_id' => $roleId,
                 'assigned_at' => $now,
             ]);
             TenantMember::withoutGlobalScope()->where('tenant_id', $tenantId)->where('id', $memberId)->update([
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'updated_at' => $now,
             ]);
             $this->audit->platform(
@@ -275,8 +280,8 @@ final readonly class BootstrapService
             $now = $this->now();
             TenantMember::withoutGlobalScope()->where('tenant_id', $tenantId)->where('id', $memberId)->update([
                 'status' => TenantMemberStatus::Active->value,
-                'security_revision' => Db::raw('security_revision + 1'),
-                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'security_revision' => new Raw('security_revision + 1'),
+                'authorization_revision' => new Raw('authorization_revision + 1'),
                 'joined_at' => $now,
                 'updated_at' => $now,
             ]);
@@ -308,8 +313,8 @@ final readonly class BootstrapService
             $now = $this->now();
             Tenant::where('id', $tenantId)->update([
                 'status' => TenantStatus::Active->value,
-                'security_revision' => Db::raw('security_revision + 1'),
-                'revision' => Db::raw('revision + 1'),
+                'security_revision' => new Raw('security_revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'activated_at' => $now,
                 'updated_at' => $now,
             ]);
@@ -338,11 +343,10 @@ final readonly class BootstrapService
 
     private function memberHasOwnerRole(int $tenantId, int $memberId): bool
     {
-        $roleId = Db::name('role')->where('tenant_id', $tenantId)
+        $roleId = Role::where('tenant_id', $tenantId)
             ->where('key', self::TENANT_OWNER_ROLE)->where('status', 'active')->value('id');
 
-        return $roleId !== null && Db::name('member_role')
-            ->where('tenant_id', $tenantId)
+        return $roleId !== null && MemberRole::where('tenant_id', $tenantId)
             ->where('tenant_member_id', $memberId)
             ->where('role_id', (int) $roleId)
             ->find() !== null;
@@ -351,12 +355,12 @@ final readonly class BootstrapService
     /** @param non-empty-list<string> $statuses */
     private function memberWithOwnerRoleExists(int $tenantId, array $statuses): bool
     {
-        $roleId = Db::name('role')->where('tenant_id', $tenantId)
+        $roleId = Role::where('tenant_id', $tenantId)
             ->where('key', self::TENANT_OWNER_ROLE)->where('status', 'active')->value('id');
         if ($roleId === null) {
             return false;
         }
-        $memberIds = Db::name('member_role')->where('tenant_id', $tenantId)
+        $memberIds = MemberRole::where('tenant_id', $tenantId)
             ->where('role_id', (int) $roleId)->column('tenant_member_id');
 
         return $memberIds !== [] && TenantMember::withoutGlobalScope()
