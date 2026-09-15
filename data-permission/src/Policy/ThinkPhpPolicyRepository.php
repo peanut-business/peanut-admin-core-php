@@ -10,7 +10,7 @@ use PeanutAdmin\DataPermission\Model\DataPermissionTargetRecord;
 use PeanutAdmin\Kernel\Persistence\Model\MemberRole;
 use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
-use think\facade\Db;
+use think\db\Raw;
 
 final readonly class ThinkPhpPolicyRepository implements PolicyRepository
 {
@@ -47,8 +47,8 @@ MIN(CASE
 END) AS next_transition
 SQL)
             ->group('t.id,t.authorization_revision,tm.authorization_revision')
-            ->find();
-        if (!is_array($row)) {
+            ->find()?->toArray();
+        if ($row === null) {
             return new PolicyRevision(hash('sha256', "missing:{$tenantId}:{$memberId}"), null);
         }
         $nextTransition = is_string($row['next_transition'])
@@ -64,8 +64,8 @@ SQL)
             ->where('id', $memberId)
             ->where('status', 'active')
             ->field('primary_department_id')
-            ->find();
-        if (!is_array($memberRow)) {
+            ->find()?->toArray();
+        if ($memberRow === null) {
             return new EffectivePolicySet([], null);
         }
 
@@ -82,14 +82,14 @@ SQL)
             ->where('member_role.tenant_member_id', $memberId)
             ->where('policy.resource_operation_id', $operationId)
             ->where(function ($query): void {
-                $query->whereNull('policy.valid_from')->whereOr('policy.valid_from', '<=', Db::raw('CURRENT_TIMESTAMP(3)'));
+                $query->whereNull('policy.valid_from')->whereOr('policy.valid_from', '<=', new Raw('CURRENT_TIMESTAMP(3)'));
             })
             ->where(function ($query): void {
-                $query->whereNull('policy.valid_until')->whereOr('policy.valid_until', '>', Db::raw('CURRENT_TIMESTAMP(3)'));
+                $query->whereNull('policy.valid_until')->whereOr('policy.valid_until', '>', new Raw('CURRENT_TIMESTAMP(3)'));
             })
             ->where(function ($query): void {
                 $query->where('definition.key', '<>', 'core.specified_objects')
-                    ->whereOr('allowed_condition.selector_resource_key', '=', Db::raw('target_set.target_resource_key'));
+                    ->whereOr('allowed_condition.selector_resource_key', '=', new Raw('target_set.target_resource_key'));
             })
             ->field([
                 'policy.id' => 'policy_id', 'policy.role_id', 'policy_group.id' => 'group_id',

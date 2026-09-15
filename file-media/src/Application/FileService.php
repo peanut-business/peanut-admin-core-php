@@ -17,6 +17,7 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Module\ModuleAvailabilityService;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
+use think\db\Raw;
 use think\facade\Db;
 use think\Model;
 use Throwable;
@@ -53,7 +54,7 @@ final readonly class FileService
                 $scope = self::scope($context);
                 $this->modules->assertAvailable($scope, 'peanut.file-media', self::now(), true);
                 $this->assertTenantActor($context, $scope);
-                $now = Db::raw('UTC_TIMESTAMP(3)');
+                $now = new Raw('UTC_TIMESTAMP(3)');
                 $record = new FileObjectRecord();
                 $record->save([
                     'file_key' => $fileKey,
@@ -178,14 +179,14 @@ final readonly class FileService
             if ($current->status === 'archived') {
                 return $current;
             }
-            $now = Db::raw('UTC_TIMESTAMP(3)');
+            $now = new Raw('UTC_TIMESTAMP(3)');
             $affected = FileObjectRecord::scope('tenant', $scope)
                 ->where('id', $current->id)
                 ->where('status', 'ready')
                 ->where('revision', $revision)
                 ->update([
                     'status' => 'archived',
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'archived_at' => $now,
                     'updated_at' => $now,
                 ]);
@@ -280,7 +281,7 @@ final readonly class FileService
             return;
         }
         $metadata = (new ImageMetadataInspector())->inspect($sourcePath);
-        $now = Db::raw('UTC_TIMESTAMP(3)');
+        $now = new Raw('UTC_TIMESTAMP(3)');
         (new FileImageMetadataRecord())->save([
             'tenant_id' => $scope->tenantId(),
             'file_object_id' => $fileId,

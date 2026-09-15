@@ -9,6 +9,7 @@ use DateTimeZone;
 use JsonException;
 use PeanutAdmin\Settings\Application\SettingException;
 use PeanutAdmin\Settings\Model\SettingDefinitionRecord;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class SettingDefinitionSynchronizer
@@ -42,7 +43,7 @@ final readonly class SettingDefinitionSynchronizer
                 }
                 $values = $this->values($definition, $now, false);
                 $values['status'] = 'active';
-                $values['revision'] = Db::raw('revision + 1');
+                $values['revision'] = new Raw('revision + 1');
                 SettingDefinitionRecord::where('id', (int) $record['id'])->update($values);
                 ++$counts['updated'];
             }
@@ -52,7 +53,7 @@ final readonly class SettingDefinitionSynchronizer
                 }
                 if (SettingDefinitionRecord::where('id', (int) $record['id'])->update([
                     'status' => 'retired',
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => self::date($now),
                 ])) {
                     ++$counts['retired'];

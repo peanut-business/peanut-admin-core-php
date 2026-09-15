@@ -12,7 +12,7 @@ use PeanutAdmin\ArtifactRevision\Workflow\ArtifactSubjectRevisionReader;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use RuntimeException;
 use think\db\exception\PDOException;
-use think\facade\Db;
+use think\db\Raw;
 use UnexpectedValueException;
 
 /** ThinkORM persistence for the artifact aggregate's CAS and immutable-lineage rules. */
@@ -141,8 +141,8 @@ final readonly class ThinkPhpArtifactRevisionRepository implements ArtifactSubje
             ->where('id', $artifactId)
             ->where('revision', $expectedArtifactRevision)
             ->update([
-                'revision' => Db::raw('revision + 1'),
-                'next_revision_number' => Db::raw('next_revision_number + 1'),
+                'revision' => new Raw('revision + 1'),
+                'next_revision_number' => new Raw('next_revision_number + 1'),
                 'updated_by_member_id' => $memberId,
                 'updated_at' => $now,
             ]);
@@ -247,7 +247,7 @@ final readonly class ThinkPhpArtifactRevisionRepository implements ArtifactSubje
             ->where('revision', $expectedRevision)
             ->update([
                 'state' => 'finalized',
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'payload_schema_key' => $payloadSchemaKey,
                 'payload_schema_version' => $payloadSchemaVersion,
                 'payload_ref' => $payloadRef,
@@ -279,7 +279,7 @@ final readonly class ThinkPhpArtifactRevisionRepository implements ArtifactSubje
             ->where('id', $artifactId)
             ->where('revision', $expectedArtifactRevision)
             ->update([
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'latest_finalized_revision_id' => $latestId,
                 'updated_by_member_id' => $memberId,
                 'updated_at' => $now,

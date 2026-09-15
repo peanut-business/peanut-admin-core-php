@@ -17,7 +17,7 @@ use PeanutAdmin\EntitlementQuota\Persistence\Model\EntitlementUsageWindowRecord;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use RuntimeException;
 use think\db\exception\PDOException;
-use think\facade\Db;
+use think\db\Raw;
 use think\Model;
 use UnexpectedValueException;
 
@@ -129,7 +129,7 @@ final readonly class ThinkPhpEntitlementQuotaRepository
                 ->where('revision', $grant->revision)
                 ->update([
                     'current_policy_revision_id' => $policy->id,
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_by_member_id' => $memberId,
                     'updated_at' => $now,
                 ]);
@@ -375,8 +375,8 @@ final readonly class ThinkPhpEntitlementQuotaRepository
                 ->where('revision', $window->revision)
                 ->where('committed_amount', '<=', PHP_INT_MAX - $reservation->amount)
                 ->update([
-                    'committed_amount' => Db::raw('committed_amount + ' . $reservation->amount),
-                    'revision' => Db::raw('revision + 1'),
+                    'committed_amount' => new Raw('committed_amount + ' . $reservation->amount),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => $now,
                 ]);
             if ($updated !== 1) {
@@ -435,7 +435,7 @@ final readonly class ThinkPhpEntitlementQuotaRepository
             ->where('revision', $reservation->revision)
             ->update([
                 'state' => $state,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'settled_by_member_id' => $memberId,
                 'settled_at' => $now,
             ]);
