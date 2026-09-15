@@ -75,7 +75,7 @@ final readonly class ArtifactRevision
             $row['attachment_manifest_sha256'] === null
                 ? null
                 : (string) $row['attachment_manifest_sha256'],
-            $row['canonical_envelope_json'] === null ? null : (string) $row['canonical_envelope_json'],
+            self::canonicalEnvelopeJson($row['canonical_envelope_json']),
             $row['canonical_envelope_sha256'] === null
                 ? null
                 : (string) $row['canonical_envelope_sha256'],
@@ -153,6 +153,28 @@ final readonly class ArtifactRevision
         } catch (JsonException $exception) {
             throw new UnexpectedValueException('Artifact revision envelope cannot be encoded.', 0, $exception);
         }
+    }
+
+    private static function canonicalEnvelopeJson(mixed $value): ?string
+    {
+        if ($value === null || is_string($value)) {
+            return $value;
+        }
+        if (is_array($value) && !array_is_list($value)) {
+            if (count($value) !== count(self::ENVELOPE_KEYS)
+                || array_diff(self::ENVELOPE_KEYS, array_keys($value)) !== []
+                || array_diff(array_keys($value), self::ENVELOPE_KEYS) !== []) {
+                throw new UnexpectedValueException('Artifact revision envelope storage fields are invalid.');
+            }
+            $canonical = [];
+            foreach (self::ENVELOPE_KEYS as $key) {
+                $canonical[$key] = $value[$key];
+            }
+
+            return self::encodeEnvelope($canonical);
+        }
+
+        throw new UnexpectedValueException('Artifact revision envelope storage value is invalid.');
     }
 
     /** @return array<string, mixed> */
