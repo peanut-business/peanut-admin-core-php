@@ -9,24 +9,30 @@ use DateTimeZone;
 use JsonException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
+use PeanutAdmin\Kernel\Persistence\Model\EditionTenantModel;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Settings\Cache\RevisionedSettingCache;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
-use PeanutAdmin\Settings\Persistence\SettingStore;
+use PeanutAdmin\Settings\Model\DeploymentSettingValue;
+use PeanutAdmin\Settings\Model\SettingDefinitionRecord;
+use PeanutAdmin\Settings\Model\TargetSettingValue;
+use PeanutAdmin\Settings\Model\TenantSettingValue;
 use PeanutAdmin\Settings\Secret\SecretProtector;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
+use think\Model;
+use think\facade\Db;
 use Throwable;
 
 final readonly class SettingResolver
 {
-    private SettingAdminService $admin;
-
     public function __construct(
-        private SettingStore $repository,
         private SecretProtector $protector,
         private RevisionedSettingCache $cache,
-    ) {
-        $this->admin = new SettingAdminService($repository, $protector);
-    }
+        private TenantPersistenceMode $persistenceMode = TenantPersistenceMode::TenantScoped,
+        private ?int $instanceTenantId = null,
+    ) {}
 
     public function resolveTenant(
         SettingDefinition $definition,
@@ -36,7 +42,7 @@ final readonly class SettingResolver
         if ($tenantId < 1) {
             throw SettingException::notFound();
         }
-        $snapshot = $this->repository->resolutionSnapshot($definition, $tenantId);
+        $snapshot = $this->resolutionSnapshot($definition, $tenantId);
 
         return $this->resolve($definition, $tenantId, null, null, 'tenant', $asOf, $snapshot);
     }
@@ -45,7 +51,7 @@ final readonly class SettingResolver
         SettingDefinition $definition,
         DateTimeImmutable $asOf,
     ): EffectiveSetting {
-        $snapshot = $this->repository->deploymentSnapshot($definition);
+        $snapshot = $this->deploymentSnapshot($definition);
 
         return $this->resolve($definition, null, null, null, 'deployment', $asOf, [
             'definition' => $snapshot['definition'],
@@ -64,7 +70,7 @@ final readonly class SettingResolver
             $authorized,
             $definition,
         );
-        $snapshot = $this->repository->resolutionSnapshot(
+        $snapshot = $this->resolutionSnapshot(
             $definition,
             $tenantId,
             $targetResourceKey,
@@ -273,7 +279,20 @@ final readonly class SettingResolver
             return null;
         }
 
-        return $this->admin->effective($definition, $row, $scope, $value);
+        $revision = (int) $row['revision'];
+
+        return new EffectiveSetting(
+            $definition->moduleKey,
+            $definition->key,
+            $value,
+            $scope,
+            true,
+            $revision,
+            '"rev-' . $revision . '"',
+            $effectiveAt->format('Y-m-d\TH:i:s.v\Z'),
+            $expiresAt?->format('Y-m-d\TH:i:s.v\Z'),
+            $definition->secret,
+        );
     }
 
     /** @param array<string, mixed> $definitionRow
@@ -516,6 +535,107 @@ final readonly class SettingResolver
         }
 
         return [$context->tenantId, $target->targetResourceKey, $target->targetIds[0]];
+    }
+
+    /** @return array{definition:array<string,mixed>,deployment:array<string,mixed>|null,tenant:array<string,mixed>|null,target:array<string,mixed>|null} */
+    private function resolutionSnapshot(
+        SettingDefinition $definition,
+        int $tenantId,
+        ?string $targetResourceKey = null,
+        ?string $targetId = null,
+    ): array {
+        if ($tenantId < 1 || ($targetResourceKey === null) !== ($targetId === null)) {
+            throw SettingException::notFound();
+        }
+        $scope = $this->tenantScope($tenantId);
+
+        return Db::transaction(function () use ($definition, $scope, $targetResourceKey, $targetId): array {
+            if (!Tenant::where('id', $scope->tenantId())->find() instanceof Tenant) {
+                throw SettingException::notFound();
+            }
+            $definitionRow = $this->definitionRow($definition);
+            $definitionId = (int) $definitionRow['id'];
+
+            return [
+                'definition' => $definitionRow,
+                'deployment' => $definition->allows('deployment')
+                    ? $this->row(DeploymentSettingValue::where('definition_id', $definitionId)->find())
+                    : null,
+                'tenant' => $definition->allows('tenant')
+                    ? $this->row(TenantSettingValue::scope(
+                        'tenant',
+                        $scope,
+                        $this->persistenceMode,
+                        $this->instanceTenantId,
+                    )->where('definition_id', $definitionId)->find())
+                    : null,
+                'target' => $definition->allows('target') && $targetResourceKey !== null && $targetId !== null
+                    ? $this->row(TargetSettingValue::scope(
+                        'tenant',
+                        $scope,
+                        $this->persistenceMode,
+                        $this->instanceTenantId,
+                    )
+                        ->where('definition_id', $definitionId)
+                        ->where('target_resource_key', $targetResourceKey)
+                        ->where('target_id', $targetId)
+                        ->find())
+                    : null,
+            ];
+        });
+    }
+
+    /** @return array{definition:array<string,mixed>,deployment:array<string,mixed>|null} */
+    private function deploymentSnapshot(SettingDefinition $definition): array
+    {
+        return Db::transaction(function () use ($definition): array {
+            $definitionRow = $this->definitionRow($definition);
+
+            return [
+                'definition' => $definitionRow,
+                'deployment' => $definition->allows('deployment')
+                    ? $this->row(DeploymentSettingValue::where('definition_id', (int) $definitionRow['id'])->find())
+                    : null,
+            ];
+        });
+    }
+
+    /** @return array<string,mixed> */
+    private function definitionRow(SettingDefinition $definition): array
+    {
+        $record = SettingDefinitionRecord::where('module_key', $definition->moduleKey)
+            ->where('setting_key', $definition->key)
+            ->where('status', 'active')
+            ->find();
+        if (!$record instanceof SettingDefinitionRecord
+            || !hash_equals((string) $record->getAttr('definition_digest'), $definition->digest)) {
+            throw SettingException::notFound();
+        }
+
+        return $record->getData();
+    }
+
+    /** @return ?array<string,mixed> */
+    private function row(mixed $record): ?array
+    {
+        return $record instanceof Model ? $record->getData() : null;
+    }
+
+    private function tenantScope(int $tenantId): TenantScope
+    {
+        try {
+            $scope = TenantScope::fromTrustedContext($tenantId, 'settings-resolution');
+            EditionTenantModel::tenantAttributes(
+                $scope,
+                $this->persistenceMode,
+                $this->instanceTenantId,
+                [],
+            );
+
+            return $scope;
+        } catch (\RuntimeException) {
+            throw SettingException::notFound();
+        }
     }
 
     private function storedValueInvalid(): SettingException

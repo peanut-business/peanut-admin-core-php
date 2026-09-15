@@ -7,19 +7,13 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Auth;
 use DateTimeImmutable;
 use DateTimeZone;
 use PeanutAdmin\Kernel\Auth\AuthException;
-use PeanutAdmin\Kernel\Auth\Persistence\PdoPlatformAuthRepository;
-use PeanutAdmin\Kernel\Auth\Persistence\PdoTenantAuthRepository;
+use PeanutAdmin\Kernel\Auth\Persistence\ThinkPhpPlatformAuthRepository;
+use PeanutAdmin\Kernel\Auth\Persistence\ThinkPhpTenantAuthRepository;
 use PeanutAdmin\Kernel\Auth\PlatformAuthService;
 use PeanutAdmin\Kernel\Auth\PlatformRefreshCookie;
 use PeanutAdmin\Kernel\Auth\TenantAuthService;
 use PeanutAdmin\Kernel\Auth\TokenIssuer;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoIdentityRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoMembershipRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoPlatformRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTenantRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
 use PeanutAdmin\Kernel\Platform\Bootstrap\BootstrapService;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 
@@ -37,17 +31,8 @@ final class PlatformAuthServiceIntegrationTest extends DatabaseTestCase
         parent::setUp();
         $this->runner->migrate();
 
-        $transactions = new PdoTransactionManager($this->database);
         $passwords = new PasswordHasher();
-        $bootstrap = new BootstrapService(
-            $transactions,
-            new PdoIdentityRepository($this->database),
-            new PdoTenantRepository($this->database),
-            new PdoMembershipRepository($this->database),
-            new PdoPlatformRepository($this->database),
-            new PdoAuditRepository($this->database),
-            $passwords,
-        );
+        $bootstrap = new BootstrapService(passwords: $passwords);
         $bootstrap->bootstrapPlatformOwner(
             'platform@example.com',
             'platform correct horse password',
@@ -61,16 +46,14 @@ final class PlatformAuthServiceIntegrationTest extends DatabaseTestCase
         ));
         $tokens = new TokenIssuer();
         $this->platformAuth = new PlatformAuthService(
-            $transactions,
-            new PdoPlatformAuthRepository($this->database),
+            new ThinkPhpPlatformAuthRepository(),
             $passwords,
             $this->clock,
             $tokens,
             'test-platform-audience-hmac-key-32-bytes',
         );
         $this->tenantAuth = new TenantAuthService(
-            $transactions,
-            new PdoTenantAuthRepository($this->database),
+            new ThinkPhpTenantAuthRepository(),
             $passwords,
             $this->clock,
             $tokens,

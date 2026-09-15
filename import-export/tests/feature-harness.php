@@ -15,13 +15,14 @@ use PeanutAdmin\ImportExport\Database\Schema;
 use PeanutAdmin\ImportExport\Execution\CsvOperationRunner;
 use PeanutAdmin\ImportExport\File\FileMediaGateway;
 use PeanutAdmin\ImportExport\Persistence\ImportExportStore;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
+use PeanutAdmin\Kernel\Persistence\Schema\KernelSchema;
+use think\facade\Db;
 
 $root = dirname(__DIR__, 4);
 require_once $root . '/vendor/autoload.php';
@@ -135,27 +136,6 @@ final class HarnessFiles implements FileMediaGateway
     }
 }
 
-final class HarnessAudit implements AuditRepository
-{
-    /** @var list<string> */ public array $events = [];
-    public function appendPlatform(string $eventType, string $action, string $requestId, ?int $operatorId, ?int $accountId, array $metadata = []): void
-    {
-        throw new RuntimeException('platform audit not expected');
-    }
-    public function appendTenantSystem(int $tenantId, string $eventType, string $action, string $requestId, array $metadata = []): void
-    {
-        throw new RuntimeException('system audit not expected');
-    }
-    public function appendTenantMember(TenantContext $context, string $eventType, string $action, ?string $targetResourceType = null, ?string $targetResourceId = null, ?string $boundaryTargetType = null, ?string $boundaryTargetId = null, int $targetCount = 0, ?string $targetSetDigest = null, array $metadata = []): void
-    {
-        $this->events[] = $eventType . ':' . implode(',', array_keys($metadata));
-    }
-    public function appendTenantPlatformOperator(int $tenantId, int $operatorId, int $accountId, string $eventType, string $action, string $requestId, array $metadata = []): void
-    {
-        throw new RuntimeException('platform audit not expected');
-    }
-}
-
 $host = getenv('IMPORT_EXPORT_MYSQL_HOST') ?: '127.0.0.1';
 $port = getenv('IMPORT_EXPORT_MYSQL_PORT') ?: '33431';
 $database = getenv('IMPORT_EXPORT_MYSQL_DATABASE') ?: 'peanut_import_export_test';
@@ -173,6 +153,7 @@ $run = static function (TenantPersistenceMode $mode) use ($host, $port, $databas
     $pdo->exec('CREATE TABLE pa_tenant_member (id BIGINT UNSIGNED NOT NULL, tenant_id BIGINT UNSIGNED NOT NULL, account_id BIGINT UNSIGNED NOT NULL, status VARCHAR(16) NOT NULL, PRIMARY KEY (id), UNIQUE KEY uk_member_tenant (tenant_id,id)) ENGINE=InnoDB');
     $pdo->exec("INSERT INTO pa_tenant VALUES (101),(202)");
     $pdo->exec("INSERT INTO pa_tenant_member VALUES (501,101,111,'active'),(502,202,212,'active')");
+    $pdo->exec(KernelSchema::createSql('pa_tenant_audit_event'));
     foreach (Schema::tableNames() as $table) {
         $pdo->exec(Schema::createSql($table, $mode));
     }
@@ -189,18 +170,16 @@ SQL)->fetchColumn();
     }
 
     $connection = ThinkPhpTestConnection::fromPdo($pdo);
-    $transactions = new ThinkPhpTransactionManager($connection);
     $repository = new ImportExportStore(
-        $connection,
         $mode,
         $mode === TenantPersistenceMode::InstanceScoped ? 101 : null,
     );
     $provider = new HarnessProvider();
     $files = new HarnessFiles();
-    $audit = new HarnessAudit();
+    $audit = new AuditService();
     $registry = new DataProviderRegistry([$provider]);
-    $runner = new CsvOperationRunner($repository, $transactions, $registry, $files, $audit);
-    $atomic = static fn(callable $operation): mixed => $transactions->run($operation);
+    $runner = new CsvOperationRunner($repository, $registry, $files, $audit);
+    $atomic = static fn(callable $operation): mixed => Db::transaction($operation);
     $create101 = context(101, 501, 'create');
     $read101 = context(101, 501, 'read');
     ImportExportService::assertOperation($create101, 'create');
@@ -249,7 +228,11 @@ SQL)->fetchColumn();
             throw new RuntimeException('CSV formula was not neutralized: ' . bin2hex($safeText));
         }
     }
-    check(['tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.progress:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows'], $audit->events, 'redacted lifecycle audit');
+    $events = array_map(static function (array $row): string {
+        $metadata = json_decode((string) $row['metadata_json'], true, 32, JSON_THROW_ON_ERROR);
+        return (string) $row['event_type'] . ':' . implode(',', array_keys($metadata));
+    }, $pdo->query('SELECT event_type, metadata_json FROM pa_tenant_audit_event ORDER BY id')->fetchAll());
+    check(['tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.progress:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows', 'tenant.import_export.started:direction,provider_key,revision,attempt', 'tenant.import_export.succeeded:direction,provider_key,revision,processed_rows,accepted_rows,rejected_rows'], $events, 'redacted lifecycle audit');
 
     problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->normalizeImportRow(["\xC3\x28"], ['Name'], ['Name' => 'name']), 'invalid UTF-8 import cell');
     problem('IMPORT_EXPORT_SCHEMA_MISMATCH', fn() => $provider->schema()->normalizeImportRow(['Alice', "\xC3\x28"], ['Name', 'Ignored'], ['Name' => 'name']), 'invalid UTF-8 unmapped import cell');
@@ -288,7 +271,6 @@ SQL)->fetchColumn();
         runtimeProblem(
             'TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH',
             fn() => (new ImportExportStore(
-                ThinkPhpTestConnection::fromPdo($pdo),
                 TenantPersistenceMode::InstanceScoped,
                 101,
             ))->expireDue(),

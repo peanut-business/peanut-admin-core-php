@@ -7,14 +7,7 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Domain;
 use DomainException;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use PeanutAdmin\Kernel\Membership\TenantMemberStatus;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoIdentityRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoMembershipRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoPlatformRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTenantRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
 use PeanutAdmin\Kernel\Platform\Bootstrap\BootstrapService;
-use PeanutAdmin\Kernel\Platform\PlatformOperatorStatus;
 use PeanutAdmin\Kernel\Tenancy\TenantStatus;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 
@@ -23,29 +16,13 @@ require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 final class BootstrapServiceIntegrationTest extends DatabaseTestCase
 {
     private BootstrapService $bootstrap;
-    private PdoIdentityRepository $identity;
-    private PdoTenantRepository $tenants;
-    private PdoMembershipRepository $memberships;
-    private PdoPlatformRepository $platform;
 
     protected function setUp(): void
     {
         parent::setUp();
         $this->runner->migrate();
 
-        $this->identity = new PdoIdentityRepository($this->database);
-        $this->tenants = new PdoTenantRepository($this->database);
-        $this->memberships = new PdoMembershipRepository($this->database);
-        $this->platform = new PdoPlatformRepository($this->database);
-        $this->bootstrap = new BootstrapService(
-            new PdoTransactionManager($this->database),
-            $this->identity,
-            $this->tenants,
-            $this->memberships,
-            $this->platform,
-            new PdoAuditRepository($this->database),
-            new PasswordHasher(),
-        );
+        $this->bootstrap = new BootstrapService();
     }
 
     public function testPlatformBootstrapIsSecretSafeAndCannotBeRepeated(): void
@@ -58,11 +35,10 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
         );
 
         self::assertSame(['account_id', 'operator_id', 'role_id'], array_keys($result->toArray()));
-        $credential = $this->identity->activeCredentialForAccount($result->accountId);
-        self::assertNotNull($credential);
+        $credentialHash = $this->activeCredentialHash($result->accountId);
         self::assertTrue((new PasswordHasher())->verify(
             'correct horse battery staple',
-            $credential->secretHash,
+            $credentialHash,
         ));
         self::assertStringNotContainsString(
             'correct horse battery staple',
@@ -70,11 +46,6 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
         );
         self::assertSame(0, $this->countRows('pa_tenant_member'));
         self::assertSame(0, $this->countRows('pa_platform_role_permission'));
-        $this->assertDomainRejects(fn() => $this->platform->transitionOperator(
-            $result->operatorId,
-            PlatformOperatorStatus::Suspended,
-        ));
-
         $this->assertDomainRejects(fn() => $this->bootstrap->bootstrapPlatformOwner(
             'second@example.com',
             'another correct horse battery staple',
@@ -93,8 +64,7 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
             'Owner',
             'request-platform',
         );
-        $originalCredential = $this->identity->activeCredentialForAccount($platform->accountId);
-        self::assertNotNull($originalCredential);
+        $originalCredentialHash = $this->activeCredentialHash($platform->accountId);
 
         $alpha = $this->bootstrap->provisionTenantOwnerCandidate(
             $platform->operatorId,
@@ -120,12 +90,12 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
         self::assertSame(2, $this->countRows('pa_tenant_member'));
         self::assertSame(0, $this->countRows('pa_department'));
         self::assertSame(
-            TenantMemberStatus::Pending,
-            $this->memberships->byId($alpha->tenantId, $alpha->memberId)?->status,
+            TenantMemberStatus::Pending->value,
+            $this->memberStatus($alpha->tenantId, $alpha->memberId),
         );
         self::assertSame(
-            $originalCredential->secretHash,
-            $this->identity->activeCredentialForAccount($platform->accountId)?->secretHash,
+            $originalCredentialHash,
+            $this->activeCredentialHash($platform->accountId),
         );
 
         $this->bootstrap->activateTenantOwner(
@@ -135,12 +105,12 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
             'request-activate-owner',
         );
         self::assertSame(
-            TenantMemberStatus::Active,
-            $this->memberships->byId($alpha->tenantId, $alpha->memberId)?->status,
+            TenantMemberStatus::Active->value,
+            $this->memberStatus($alpha->tenantId, $alpha->memberId),
         );
         self::assertSame(
-            TenantStatus::Provisioning,
-            $this->tenants->byId($alpha->tenantId)?->status,
+            TenantStatus::Provisioning->value,
+            $this->tenantStatus($alpha->tenantId),
         );
 
         $this->bootstrap->activateTenant(
@@ -148,7 +118,7 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
             $alpha->tenantId,
             'request-activate-tenant',
         );
-        self::assertSame(TenantStatus::Active, $this->tenants->byId($alpha->tenantId)->status);
+        self::assertSame(TenantStatus::Active->value, $this->tenantStatus($alpha->tenantId));
 
         $this->assertDomainRejects(fn() => $this->bootstrap->provisionTenantOwnerCandidate(
             $platform->operatorId,
@@ -159,10 +129,12 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
             'Owner',
             'request-overwrite',
         ));
-        self::assertNull($this->tenants->byCode('invalid-password-overwrite'));
+        self::assertSame(0, (int) $this->query(
+            "SELECT COUNT(*) FROM pa_tenant WHERE code = 'invalid-password-overwrite'",
+        )->fetchColumn());
         self::assertSame(
-            $originalCredential->secretHash,
-            $this->identity->activeCredentialForAccount($platform->accountId)?->secretHash,
+            $originalCredentialHash,
+            $this->activeCredentialHash($platform->accountId),
         );
     }
 
@@ -184,11 +156,10 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
             'request-new-owner',
         );
 
-        $credential = $this->identity->activeCredentialForAccount($candidate->accountId);
-        self::assertNotNull($credential);
+        $credentialHash = $this->activeCredentialHash($candidate->accountId);
         self::assertTrue((new PasswordHasher())->verify(
             'tenant correct horse password',
-            $credential->secretHash,
+            $credentialHash,
         ));
         self::assertStringNotContainsString(
             'tenant correct horse password',
@@ -199,6 +170,25 @@ final class BootstrapServiceIntegrationTest extends DatabaseTestCase
     private function countRows(string $table): int
     {
         return (int) $this->query("SELECT COUNT(*) FROM `{$table}`")->fetchColumn();
+    }
+
+    private function activeCredentialHash(int $accountId): string
+    {
+        return (string) $this->query(
+            "SELECT secret_hash FROM pa_credential WHERE account_id = {$accountId} AND status = 'active' ORDER BY id LIMIT 1",
+        )->fetchColumn();
+    }
+
+    private function memberStatus(int $tenantId, int $memberId): string
+    {
+        return (string) $this->query(
+            "SELECT status FROM pa_tenant_member WHERE tenant_id = {$tenantId} AND id = {$memberId}",
+        )->fetchColumn();
+    }
+
+    private function tenantStatus(int $tenantId): string
+    {
+        return (string) $this->query("SELECT status FROM pa_tenant WHERE id = {$tenantId}")->fetchColumn();
     }
 
     private function assertDomainRejects(callable $operation): void

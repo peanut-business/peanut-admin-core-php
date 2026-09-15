@@ -28,7 +28,7 @@ final class BackupRestoreProviderRegistry
             $provider->key(),
             $provider->backupHandlerKey(),
             $provider->restoreHandlerKey(),
-            array_values($provider->restoreTargetKeys()),
+            $provider->restoreTargetKeys(),
             $provider->maximumAttempts(),
         );
         if (isset($this->providers[$descriptor->key])) {

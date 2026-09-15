@@ -4,15 +4,22 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Integration\Membership;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
+use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\Application\RoleAdminService;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 use PeanutAdmin\Kernel\Membership\Application\MemberAdminService;
 use PeanutAdmin\Kernel\Organization\Application\DepartmentAdminService;
+use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Platform\Application\TenantOwnerAdminService;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 use RuntimeException;
@@ -33,7 +40,7 @@ final class AdminAccessServiceTest extends DatabaseTestCase
         parent::setUp();
         $this->runner->migrate();
         (new CorePermissionCatalogSynchronizer(
-            new PdoAuthorizationCatalogRepository($this->database),
+            new ThinkPhpAuthorizationCatalogRepository(),
         ))->synchronize();
 
         $this->actorAccountId = $this->account('Tenant administrator');
@@ -45,13 +52,10 @@ final class AdminAccessServiceTest extends DatabaseTestCase
     {
         $service = $this->members();
         $candidate = $service->createPending(
-            $this->tenantId,
+            $this->tenantContext('request-member-create'),
             'new-member@example.test',
             'New member',
             'Initial-password-123!',
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-member-create',
         );
         self::assertSame('pending', $candidate['status']);
         self::assertSame('new-member@example.test', (string) $this->query(
@@ -60,24 +64,18 @@ final class AdminAccessServiceTest extends DatabaseTestCase
 
         $memberId = (int) $candidate['id'];
         $activated = $service->activate(
-            $this->tenantId,
+            $this->tenantContext('request-member-activate'),
             $memberId,
             (int) $candidate['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-member-activate',
         );
         self::assertSame('active', $activated['status']);
 
         $roleId = $this->role($this->tenantId, 'sales');
         $assigned = $service->replaceRoles(
-            $this->tenantId,
+            $this->tenantContext('request-member-roles'),
             $memberId,
             [$roleId],
             (int) $activated['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-member-roles',
         );
         self::assertSame(['sales'], $assigned['role_keys']);
 
@@ -85,13 +83,10 @@ final class AdminAccessServiceTest extends DatabaseTestCase
         $otherRole = $this->role($otherTenant, 'other-role');
         try {
             $service->replaceRoles(
-                $this->tenantId,
+                $this->tenantContext('request-cross-role'),
                 $memberId,
                 [$otherRole],
                 (int) $assigned['revision'],
-                $this->actorMemberId,
-                $this->actorAccountId,
-                'request-cross-role',
             );
             self::fail('Expected a cross-tenant role to be hidden.');
         } catch (AdminAccessException $exception) {
@@ -125,22 +120,16 @@ final class AdminAccessServiceTest extends DatabaseTestCase
             try {
                 if ($operation === 'suspend') {
                     $this->members()->suspend(
-                        $this->tenantId,
+                        $this->tenantContext('request-last-owner-suspend'),
                         $this->actorMemberId,
                         (int) $member['revision'],
-                        $this->actorMemberId,
-                        $this->actorAccountId,
-                        'request-last-owner-suspend',
                     );
                 } else {
                     $this->members()->replaceRoles(
-                        $this->tenantId,
+                        $this->tenantContext('request-last-owner-role'),
                         $this->actorMemberId,
                         [],
                         (int) $member['revision'],
-                        $this->actorMemberId,
-                        $this->actorAccountId,
-                        'request-last-owner-role',
                     );
                 }
                 self::fail('Expected the final active owner guard to reject the operation.');
@@ -191,14 +180,17 @@ final class AdminAccessServiceTest extends DatabaseTestCase
                             throw new RuntimeException('Owner race start signal was missing.');
                         }
                         try {
-                            (new MemberAdminService($connection))->replaceRoles(
-                                $this->tenantId,
+                            ThinkPhpTestConnection::fromPdo($connection);
+                            (new MemberAdminService(new AuditService()))->replaceRoles(
+                                $this->tenantContext(
+                                    'owner-race-' . $memberId,
+                                    $this->tenantId,
+                                    $memberId,
+                                    $accountId,
+                                ),
                                 $memberId,
                                 [],
                                 1,
-                                $memberId,
-                                $accountId,
-                                'owner-race-' . $memberId,
                             );
                             $outcome = 'success';
                         } catch (AdminAccessException $exception) {
@@ -302,46 +294,33 @@ SQL)->fetchColumn());
 
     public function testOversizedRoleCommandsFailBeforeTransactionsOrSql(): void
     {
-        $pdo = $this->createMock(PDO::class);
-        foreach (['beginTransaction', 'prepare', 'query', 'exec'] as $method) {
-            $pdo->expects(self::never())->method($method);
-        }
-        $service = new MemberAdminService($pdo);
+        $service = new MemberAdminService(new AuditService());
         // Count the original array: repeated identifiers must not bypass the work bound.
         $roleIds = array_fill(0, MemberAdminService::MAX_ROLE_IDS + 1, 1);
         foreach ([
             fn() => $service->replaceRoles(
-                $this->tenantId,
+                $this->tenantContext('oversized-role-replace'),
                 $this->actorMemberId,
                 $roleIds,
                 1,
-                $this->actorMemberId,
-                $this->actorAccountId,
-                'oversized-role-replace',
             ),
             fn() => $service->createAdministrator(
-                $this->tenantId,
+                $this->tenantContext('oversized-admin-create'),
                 'oversized@example.test',
                 'Oversized',
                 'Initial-password-123!',
                 null,
                 $roleIds,
                 true,
-                $this->actorMemberId,
-                $this->actorAccountId,
-                'oversized-admin-create',
             ),
             fn() => $service->updateAdministrator(
-                $this->tenantId,
+                $this->tenantContext('oversized-admin-update'),
                 $this->actorMemberId,
                 'Oversized',
                 null,
                 $roleIds,
                 true,
                 1,
-                $this->actorMemberId,
-                $this->actorAccountId,
-                'oversized-admin-update',
             ),
         ] as $command) {
             try {
@@ -361,24 +340,18 @@ SQL)->fetchColumn());
             $roleIds[] = $this->role($this->tenantId, 'r' . $index);
         }
         $assigned = $this->members()->replaceRoles(
-            $this->tenantId,
+            $this->tenantContext('role-limit-boundary'),
             $this->actorMemberId,
             $roleIds,
             1,
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'role-limit-boundary',
         );
         self::assertCount(MemberAdminService::MAX_ROLE_IDS, $assigned['role_keys']);
 
         $cleared = $this->members()->replaceRoles(
-            $this->tenantId,
+            $this->tenantContext('role-limit-empty'),
             $this->actorMemberId,
             [],
             (int) $assigned['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'role-limit-empty',
         );
         self::assertSame([], $cleared['role_keys']);
         self::assertSame('active', $cleared['status']);
@@ -386,83 +359,65 @@ SQL)->fetchColumn());
 
     public function testDepartmentTreeRejectsCyclesDepthOverflowAndStaleRevisions(): void
     {
-        $service = new DepartmentAdminService($this->database);
+        $service = new DepartmentAdminService(new AuditService());
         $parentId = null;
         $departments = [];
         for ($depth = 1; $depth <= 10; ++$depth) {
             $department = $service->create(
-                $this->tenantId,
+                $this->tenantContext('request-department-' . $depth),
                 'depth-' . $depth,
                 'Depth ' . $depth,
                 $parentId,
                 $depth,
-                $this->actorMemberId,
-                $this->actorAccountId,
-                'request-department-' . $depth,
             );
             $departments[] = $department;
             $parentId = (int) $department['id'];
         }
 
         $this->assertAdminError('DEPARTMENT_DEPTH_EXCEEDED', fn() => $service->create(
-            $this->tenantId,
+            $this->tenantContext('request-department-11'),
             'depth-11',
             'Depth 11',
             $parentId,
             11,
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-department-11',
         ));
         $root = $departments[0];
         $this->assertAdminError('DEPARTMENT_CYCLE', fn() => $service->move(
-            $this->tenantId,
+            $this->tenantContext('request-department-cycle'),
             (int) $root['id'],
             (int) $departments[1]['id'],
             (int) $root['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-department-cycle',
         ));
 
         $updated = $service->update(
-            $this->tenantId,
+            $this->tenantContext('request-department-update'),
             (int) $root['id'],
             'root-updated',
             'Root updated',
             0,
             (int) $root['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-department-update',
         );
         self::assertSame('2', $updated['revision']);
         $this->assertAdminStatus(412, fn() => $service->update(
-            $this->tenantId,
+            $this->tenantContext('request-department-stale'),
             (int) $root['id'],
             'stale',
             'Stale',
             0,
             (int) $root['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-department-stale',
         ));
     }
 
     public function testRolePermissionAssignmentRequiresAnAvailableTenantModule(): void
     {
-        $service = new RoleAdminService($this->database);
+        $service = new RoleAdminService(new AuditService());
         $role = $service->create(
-            $this->tenantId,
+            $this->tenantContext('request-role-create'),
             'example-reader',
             'Example reader',
             null,
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-role-create',
         );
-        $catalog = new PdoAuthorizationCatalogRepository($this->database);
+        $catalog = new ThinkPhpAuthorizationCatalogRepository();
         $catalog->syncPermission(new PermissionDefinition(
             'example.record.read',
             'example.records',
@@ -480,34 +435,25 @@ SQL)->fetchColumn());
         ]);
 
         $this->assertAdminError('PERMISSION_NOT_ASSIGNABLE', fn() => $service->replacePermissions(
-            $this->tenantId,
+            $this->tenantContext('request-role-permissions-disabled'),
             (int) $role['id'],
             ['example.record.read'],
             (int) $role['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-role-permissions-disabled',
         ));
         $this->database->exec("UPDATE pa_tenant_module SET status = 'enabled' WHERE tenant_id = {$this->tenantId} AND module_key = 'example.records'");
         $updated = $service->replacePermissions(
-            $this->tenantId,
+            $this->tenantContext('request-role-permissions'),
             (int) $role['id'],
             ['example.record.read'],
             (int) $role['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-role-permissions',
         );
         self::assertSame(['example.record.read'], $updated['permission_keys']);
 
         $this->assertAdminError('PERMISSION_NOT_ASSIGNABLE', fn() => $service->replacePermissions(
-            $this->tenantId,
+            $this->tenantContext('request-platform-permission'),
             (int) $role['id'],
             ['platform.tenant.read'],
             (int) $updated['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'request-platform-permission',
         ));
     }
 
@@ -529,15 +475,13 @@ SQL)->fetchColumn());
             'created_at' => self::NOW,
             'updated_at' => self::NOW,
         ]);
-        $service = new TenantOwnerAdminService($this->database);
+        $service = new TenantOwnerAdminService(new AuditService());
         $candidate = $service->createCandidate(
-            $operatorId,
-            $operatorAccountId,
+            $this->platformContext('request-owner-candidate', $operatorAccountId, $operatorId),
             $tenantId,
             'first-owner@example.test',
             'First owner',
             'Initial-password-123!',
-            'request-owner-candidate',
         );
         self::assertSame('pending', $candidate['member']['status']);
         self::assertArrayNotHasKey('initial_password', $candidate);
@@ -546,38 +490,32 @@ SQL)->fetchColumn());
         )->fetchColumn());
 
         $this->assertAdminError('TENANT_OWNER_CANDIDATE_EXISTS', fn() => $service->createCandidate(
-            $operatorId,
-            $operatorAccountId,
+            $this->platformContext('request-second-owner', $operatorAccountId, $operatorId),
             $tenantId,
             'other-owner@example.test',
             'Other owner',
             'Another-password-123!',
-            'request-second-owner',
         ));
 
         $memberId = (int) $candidate['member']['id'];
         $revision = (int) $candidate['member']['revision'];
         $activated = $service->activateCandidate(
-            $operatorId,
-            $operatorAccountId,
+            $this->platformContext('request-owner-activate', $operatorAccountId, $operatorId),
             $tenantId,
             $memberId,
             $revision,
             'owner-activate-key',
             'Initial tenant owner confirmed',
-            'request-owner-activate',
         );
         self::assertSame('active', $activated['member']['status']);
 
         $replayed = $service->activateCandidate(
-            $operatorId,
-            $operatorAccountId,
+            $this->platformContext('request-owner-activate-retry', $operatorAccountId, $operatorId),
             $tenantId,
             $memberId,
             $revision,
             'owner-activate-key',
             'Initial tenant owner confirmed',
-            'request-owner-activate-retry',
         );
         self::assertSame($activated['member']['revision'], $replayed['member']['revision']);
         self::assertSame(1, (int) $this->query(<<<'SQL'
@@ -587,7 +525,36 @@ SQL)->fetchColumn());
 
     private function members(): MemberAdminService
     {
-        return new MemberAdminService($this->database);
+        return new MemberAdminService(new AuditService());
+    }
+
+    private function tenantContext(
+        string $requestId,
+        ?int $tenantId = null,
+        ?int $memberId = null,
+        ?int $accountId = null,
+    ): TenantContext {
+        return TenantContext::fromValidatedSession(new ValidatedTenantSession(
+            1,
+            'admin-access-session',
+            $tenantId ?? $this->tenantId,
+            $accountId ?? $this->actorAccountId,
+            $memberId ?? $this->actorMemberId,
+            'admin-web',
+            new DateTimeImmutable(self::NOW, new DateTimeZone('UTC')),
+            1,
+        ), $requestId);
+    }
+
+    private function platformContext(string $requestId, int $accountId, int $operatorId): PlatformContext
+    {
+        return PlatformContext::fromTrustedAutomation(
+            $accountId,
+            $operatorId,
+            'platform-web',
+            $requestId,
+            new DateTimeImmutable(self::NOW, new DateTimeZone('UTC')),
+        );
     }
 
     public function testAdministratorCreateRollsBackAccountCredentialAndMembershipOnInvalidRelations(): void
@@ -603,32 +570,26 @@ SQL)->fetchColumn());
 
         foreach ([[null, [$foreignRole]], [$departmentId, [$localRole]]] as [$departmentId, $roles]) {
             $this->assertAdminStatus(404, fn() => $this->members()->createAdministrator(
-                $this->tenantId,
+                $this->tenantContext('atomic-create-invalid'),
                 'atomic-new@example.test',
                 'Atomic new',
                 'Initial-password-123!',
                 $departmentId,
                 $roles,
                 true,
-                $this->actorMemberId,
-                $this->actorAccountId,
-                'atomic-create-invalid',
             ));
             self::assertSame($before, $this->administrationState());
             self::assertFalse($this->database->inTransaction());
         }
 
         $created = $this->members()->createAdministrator(
-            $this->tenantId,
+            $this->tenantContext('atomic-create-success'),
             'atomic-new@example.test',
             'Atomic new',
             'Initial-password-123!',
             null,
             [$localRole],
             true,
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-create-success',
         );
         self::assertSame('active', $created['status']);
         self::assertSame(['local'], $created['role_keys']);
@@ -653,31 +614,25 @@ SQL)->fetchColumn());
 
         // The suspension guard runs after profile and role writes and their audits.
         $this->assertAdminError('LAST_ACTIVE_OWNER_REQUIRED', fn() => $this->members()->updateAdministrator(
-            $this->tenantId,
+            $this->tenantContext('atomic-edit-owner'),
             $this->actorMemberId,
             'Must roll back',
             null,
             [$ownerRole, $extraRole],
             false,
             (int) $member['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-edit-owner',
         ));
         self::assertSame($before, $this->administrationState());
         self::assertFalse($this->database->inTransaction());
 
         $this->assertAdminError('LAST_ACTIVE_OWNER_REQUIRED', fn() => $this->members()->updateAdministrator(
-            $this->tenantId,
+            $this->tenantContext('atomic-edit-remove-owner'),
             $this->actorMemberId,
             'Must roll back',
             null,
             [$extraRole],
             true,
             (int) $member['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-edit-remove-owner',
         ));
         self::assertSame($before, $this->administrationState());
     }
@@ -686,16 +641,13 @@ SQL)->fetchColumn());
     {
         $role = $this->role($this->tenantId, 'atomic-role');
         $created = $this->members()->createAdministrator(
-            $this->tenantId,
+            $this->tenantContext('atomic-pending'),
             'atomic-edit@example.test',
             'Before',
             'Initial-password-123!',
             null,
             [$role],
             false,
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-pending',
         );
         self::assertSame('pending', $created['status']);
         $otherTenant = $this->tenant('atomic-edit-other', 'active');
@@ -703,54 +655,42 @@ SQL)->fetchColumn());
         $before = $this->administrationState();
 
         $this->assertAdminStatus(404, fn() => $this->members()->updateAdministrator(
-            $this->tenantId,
+            $this->tenantContext('atomic-edit-foreign-role'),
             (int) $created['id'],
             'Must roll back',
             null,
             [$otherRole],
             true,
             (int) $created['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-edit-foreign-role',
         ));
         $this->assertAdminStatus(404, fn() => $this->members()->updateAdministrator(
-            $otherTenant,
+            $this->tenantContext('atomic-edit-foreign-member', $otherTenant),
             (int) $created['id'],
             'Must roll back',
             null,
             [$otherRole],
             true,
             (int) $created['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-edit-foreign-member',
         ));
         $this->assertAdminStatus(412, fn() => $this->members()->updateAdministrator(
-            $this->tenantId,
+            $this->tenantContext('atomic-edit-stale'),
             (int) $created['id'],
             'Must roll back',
             null,
             [$role],
             true,
             (int) $created['revision'] - 1,
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-edit-stale',
         ));
         self::assertSame($before, $this->administrationState());
 
         $updated = $this->members()->updateAdministrator(
-            $this->tenantId,
+            $this->tenantContext('atomic-edit-success'),
             (int) $created['id'],
             'After',
             null,
             [$role],
             true,
             (int) $created['revision'],
-            $this->actorMemberId,
-            $this->actorAccountId,
-            'atomic-edit-success',
         );
         self::assertSame('After', $updated['display_name']);
         self::assertSame('active', $updated['status']);

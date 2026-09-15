@@ -8,12 +8,12 @@ use DateTimeImmutable;
 use PDO;
 use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\DataPermission\Application\EffectiveAccessPreviewService;
-use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
+use PeanutAdmin\DataPermission\Catalog\ThinkPhpResourceOperationCatalog;
 use PeanutAdmin\DataPermission\Constraint\ColumnReference;
-use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
+use PeanutAdmin\DataPermission\Constraint\ThinkPhpQueryConstraintApplier;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
-use PeanutAdmin\DataPermission\Policy\PolicyStore;
+use PeanutAdmin\DataPermission\Policy\ThinkPhpPolicyRepository;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Provider\ConditionProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\ThinkPhpDepartmentHierarchyProvider;
@@ -25,22 +25,21 @@ use PeanutAdmin\DataPermission\Provider\StandardResourcePolicyProvider;
 use PeanutAdmin\DataPermission\Target\TargetCatalogProviderRegistry;
 use PeanutAdmin\DataPermission\Target\TargetResolverRegistry;
 use PeanutAdmin\DataPermission\Tests\Integration\Schema\DataPermissionMigrationRunner;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\Clock;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\PdoTenantAuthorizationRepository;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\ThinkPhpTenantAuthorizationRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
 use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
-use RuntimeException;
 use think\db\PDOConnection;
+use think\db\Query;
+use think\facade\Db;
 
 require_once dirname(__DIR__, 4) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
 require_once dirname(__DIR__) . '/Schema/DataPermissionMigrationRunner.php';
@@ -56,9 +55,9 @@ final class EffectiveAccessPreviewServiceTest extends DatabaseTestCase
     private int $roleA;
     private int $roleB;
     private TenantContext $actor;
-    private PdoTenantAuthorizationRepository $authorization;
-    private ResourceOperationStore $catalog;
-    private PolicyStore $policies;
+    private ThinkPhpTenantAuthorizationRepository $authorization;
+    private ThinkPhpResourceOperationCatalog $catalog;
+    private ThinkPhpPolicyRepository $policies;
     private PDOConnection $connection;
 
     protected function setUp(): void
@@ -73,7 +72,7 @@ final class EffectiveAccessPreviewServiceTest extends DatabaseTestCase
             getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
         ))->migrate();
         (new CorePermissionCatalogSynchronizer(
-            new PdoAuthorizationCatalogRepository($this->database),
+            new ThinkPhpAuthorizationCatalogRepository(),
         ))->synchronize();
 
         $this->tenantId = $this->tenant('preview-alpha');
@@ -94,10 +93,10 @@ final class EffectiveAccessPreviewServiceTest extends DatabaseTestCase
 
         $this->seedOperations();
         $this->seedConditionalPolicies();
-        $this->authorization = new PdoTenantAuthorizationRepository($this->database);
+        $this->authorization = new ThinkPhpTenantAuthorizationRepository();
         $this->connection = ThinkPhpTestConnection::fromPdo($this->database);
-        $this->catalog = new ResourceOperationStore($this->connection);
-        $this->policies = new PolicyStore($this->connection);
+        $this->catalog = new ThinkPhpResourceOperationCatalog();
+        $this->policies = new ThinkPhpPolicyRepository();
         $this->actor = TenantContext::fromValidatedSession(new ValidatedTenantSession(
             1,
             '01J00000000000000000000000',
@@ -112,7 +111,7 @@ final class EffectiveAccessPreviewServiceTest extends DatabaseTestCase
 
     public function testBuildsExactRedactedModesDigestAndOneAuditEvent(): void
     {
-        $service = $this->service(new PdoAuditRepository($this->database));
+        $service = $this->service();
 
         $result = $service->preview($this->actor, $this->subjectMemberId, new PageRequest(1, 100));
         $data = $result['data'];
@@ -220,7 +219,7 @@ SQL)->fetch(PDO::FETCH_ASSOC);
 
     public function testPreviewModesStayInParityWithDataPermissionEngine(): void
     {
-        $preview = $this->service(new PdoAuditRepository($this->database))->preview(
+        $preview = $this->service()->preview(
             $this->actor,
             $this->subjectMemberId,
             new PageRequest(1, 100),
@@ -292,7 +291,7 @@ SQL)->fetchColumn();
 
     public function testPaginatesOperationsAndChangesTheDigestByPage(): void
     {
-        $service = $this->service(new PdoAuditRepository($this->database));
+        $service = $this->service();
 
         $first = $service->preview($this->actor, $this->subjectMemberId, new PageRequest(1, 2));
         $second = $service->preview($this->actor, $this->subjectMemberId, new PageRequest(2, 2));
@@ -332,7 +331,7 @@ SQL)->fetchColumn();
             "UPDATE pa_tenant_member SET status = 'suspended' WHERE id = {$this->subjectMemberId}",
         );
 
-        $result = $this->service(new PdoAuditRepository($this->database))->preview(
+        $result = $this->service()->preview(
             $this->actor,
             $this->subjectMemberId,
             new PageRequest(1, 100),
@@ -352,7 +351,7 @@ SQL)->fetchColumn();
     {
         $otherTenant = $this->tenant('preview-beta');
         $otherMember = $this->member($otherTenant, $this->account('Other tenant member'), 'Other');
-        $service = $this->service(new PdoAuditRepository($this->database));
+        $service = $this->service();
 
         foreach ([$otherMember, PHP_INT_MAX] as $memberId) {
             try {
@@ -368,21 +367,19 @@ SQL)->fetchColumn();
 
     public function testAuditFailureRollsBackAndFailsTheRequest(): void
     {
-        $service = $this->service(new FailingAuditRepository());
+        $this->database->exec('DROP TABLE pa_tenant_audit_event');
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('audit unavailable');
-        $service->preview($this->actor, $this->subjectMemberId, new PageRequest());
+        $this->expectException(\think\db\exception\PDOException::class);
+        $this->service()->preview($this->actor, $this->subjectMemberId, new PageRequest());
     }
 
-    private function service(AuditRepository $audit): EffectiveAccessPreviewService
+    private function service(): EffectiveAccessPreviewService
     {
         return new EffectiveAccessPreviewService(
-            new ThinkPhpTransactionManager($this->connection),
             $this->authorization,
             $this->catalog,
             $this->policies,
-            $audit,
+            new AuditService(),
             new PreviewClock(),
         );
     }
@@ -396,8 +393,8 @@ SQL)->fetchColumn();
                 new ColumnReference('preview_record.department_id'),
                 ['preview.project' => new ColumnReference('preview_record.project_id')],
             ),
-            new ThinkPhpDepartmentHierarchyProvider($this->connection),
-            new ThinkPhpTargetSetMembershipProvider($this->connection),
+            new ThinkPhpDepartmentHierarchyProvider(),
+            new ThinkPhpTargetSetMembershipProvider(),
             new ConditionProviderRegistry(),
         );
         $providers = new ResourceProviderRegistry();
@@ -420,9 +417,15 @@ SQL)->fetchColumn();
         TenantContext $subject,
         string $resourceKey,
     ): string {
-        return (new PdoQueryConstraintCompiler())->compile(
+        $query = new Query($this->connection);
+        $query->name('preview_record');
+        $query->alias('preview_record');
+        (new ThinkPhpQueryConstraintApplier())->apply(
+            $query,
             $engine->queryConstraint($subject, $resourceKey, 'inspect'),
-        )->sql;
+        );
+
+        return (string) (clone $query)->fetchSql()->select();
     }
 
     private function engineError(callable $operation): string
@@ -752,49 +755,4 @@ final class PreviewClock implements Clock
     {
         return new DateTimeImmutable('2026-07-19T08:00:00Z');
     }
-}
-
-final class FailingAuditRepository implements AuditRepository
-{
-    public function appendPlatform(
-        string $eventType,
-        string $action,
-        string $requestId,
-        ?int $operatorId,
-        ?int $accountId,
-        array $metadata = [],
-    ): void {}
-
-    public function appendTenantSystem(
-        int $tenantId,
-        string $eventType,
-        string $action,
-        string $requestId,
-        array $metadata = [],
-    ): void {}
-
-    public function appendTenantMember(
-        TenantContext $context,
-        string $eventType,
-        string $action,
-        ?string $targetResourceType = null,
-        ?string $targetResourceId = null,
-        ?string $boundaryTargetType = null,
-        ?string $boundaryTargetId = null,
-        int $targetCount = 0,
-        ?string $targetSetDigest = null,
-        array $metadata = [],
-    ): void {
-        throw new RuntimeException('audit unavailable');
-    }
-
-    public function appendTenantPlatformOperator(
-        int $tenantId,
-        int $operatorId,
-        int $accountId,
-        string $eventType,
-        string $action,
-        string $requestId,
-        array $metadata = [],
-    ): void {}
 }

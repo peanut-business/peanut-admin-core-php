@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Workflow\Instance;
 
-use JsonException;
 use PeanutAdmin\Workflow\Application\WorkflowException;
 
 final readonly class WorkflowEvent
 {
+    /**
+     * @param list<array<string, mixed>> $attachmentSnapshots
+     * @param array<string, mixed> $metadata
+     */
     public function __construct(
         public int $id,
         public int $tenantId,
@@ -24,14 +27,21 @@ final readonly class WorkflowEvent
         public string $subjectRevisionSha256,
         public ?string $commentText,
         public ?string $commentSha256,
-        public string $attachmentSnapshotsJson,
-        public string $metadataJson,
+        public array $attachmentSnapshots,
+        public array $metadata,
         public string $occurredAt,
     ) {}
 
     /** @param array<string, mixed> $row */
     public static function fromRow(array $row): self
     {
+        $attachmentSnapshots = $row['attachment_snapshots_json'] ?? null;
+        $metadata = $row['metadata_json'] ?? null;
+        if (!is_array($attachmentSnapshots) || !array_is_list($attachmentSnapshots)
+            || !is_array($metadata) || array_is_list($metadata)) {
+            throw WorkflowException::internal();
+        }
+
         return new self(
             (int) $row['id'],
             (int) $row['tenant_id'],
@@ -47,8 +57,8 @@ final readonly class WorkflowEvent
             (string) $row['subject_revision_sha256'],
             $row['comment_text'] === null ? null : (string) $row['comment_text'],
             $row['comment_sha256'] === null ? null : (string) $row['comment_sha256'],
-            (string) $row['attachment_snapshots_json'],
-            (string) $row['metadata_json'],
+            $attachmentSnapshots,
+            $metadata,
             (string) $row['occurred_at'],
         );
     }
@@ -56,13 +66,6 @@ final readonly class WorkflowEvent
     /** @return array<string, mixed> */
     public function toArray(): array
     {
-        try {
-            $attachments = json_decode($this->attachmentSnapshotsJson, true, 32, JSON_THROW_ON_ERROR);
-            $metadata = json_decode($this->metadataJson, true, 32, JSON_THROW_ON_ERROR);
-        } catch (JsonException) {
-            throw WorkflowException::internal();
-        }
-
         return [
             'sequence_no' => $this->sequenceNo,
             'event_key' => $this->eventKey,
@@ -75,8 +78,8 @@ final readonly class WorkflowEvent
             'subject_revision_sha256' => $this->subjectRevisionSha256,
             'comment_text' => $this->commentText,
             'comment_sha256' => $this->commentSha256,
-            'attachment_snapshots' => $attachments,
-            'metadata' => $metadata,
+            'attachment_snapshots' => $this->attachmentSnapshots,
+            'metadata' => $this->metadata,
             'occurred_at' => $this->occurredAt,
         ];
     }

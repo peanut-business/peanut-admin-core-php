@@ -8,12 +8,12 @@ use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
 use PeanutAdmin\Kernel\Api\ApiException;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Workflow\Adapter\WorkflowAssignmentResolver;
 use PeanutAdmin\Workflow\Adapter\WorkflowAttachmentResolver;
 use PeanutAdmin\Workflow\Adapter\WorkflowAuthorizationResolver;
@@ -28,16 +28,16 @@ use PeanutAdmin\Workflow\Definition\WorkflowTransition;
 use PeanutAdmin\Workflow\Instance\WorkflowInstance;
 use PeanutAdmin\Workflow\Instance\WorkflowWorkItem;
 use PeanutAdmin\Workflow\Package;
-use PeanutAdmin\Workflow\Persistence\WorkflowRepository;
+use PeanutAdmin\Workflow\Persistence\ThinkPhpWorkflowRepository;
 use Throwable;
+use think\facade\Db;
 
 final readonly class WorkflowRuntime
 {
     public function __construct(
-        private WorkflowRepository $repository,
-        private TransactionManager $transactions,
-        private PdoIdempotencyRepository $idempotency,
-        private AuditRepository $audit,
+        private ThinkPhpWorkflowRepository $repository,
+        private IdempotencyService $idempotency,
+        private AuditService $audit,
         private WorkflowAssignmentResolver $assignments,
         private WorkflowAuthorizationResolver $authorization,
         private WorkflowSubjectRevisionResolver $subjects,
@@ -86,7 +86,7 @@ final readonly class WorkflowRuntime
                     $expectedRevision,
                     $now,
                 );
-                $this->audit->appendTenantMember(
+                $this->audit->tenantMember(
                     $context->tenantContext,
                     'tenant.workflow.definition.draft_saved',
                     Package::DEFINITION_RESOURCE_KEY . '.write',
@@ -151,7 +151,7 @@ final readonly class WorkflowRuntime
                 $definition = $published['definition'];
                 $version = $published['version'];
                 $version->graph();
-                $this->audit->appendTenantMember(
+                $this->audit->tenantMember(
                     $context->tenantContext,
                     'tenant.workflow.definition.published',
                     Package::DEFINITION_RESOURCE_KEY . '.publish',
@@ -207,7 +207,7 @@ final readonly class WorkflowRuntime
                     $now,
                 );
                 $definition->draftGraph();
-                $this->audit->appendTenantMember(
+                $this->audit->tenantMember(
                     $context->tenantContext,
                     'tenant.workflow.definition.retired',
                     Package::DEFINITION_RESOURCE_KEY . '.publish',
@@ -353,7 +353,7 @@ final readonly class WorkflowRuntime
                     $now,
                 );
                 $this->publishEffects($authorized, $instance, $event->sequenceNo, $transition, $idempotencyKey);
-                $this->audit->appendTenantMember(
+                $this->audit->tenantMember(
                     $context->tenantContext,
                     'tenant.workflow.instance.started',
                     Package::INSTANCE_START_PERMISSION,
@@ -686,6 +686,9 @@ final readonly class WorkflowRuntime
         if ($target->type !== 'review') {
             return [];
         }
+        if ($target->assignments === []) {
+            throw WorkflowException::assignmentDenied();
+        }
         $resolved = $this->assignments->resolve(
             $context,
             $target->assignments,
@@ -698,17 +701,13 @@ final readonly class WorkflowRuntime
         }
         $normalized = [];
         foreach ($resolved as $assignment) {
-            $keys = is_array($assignment) ? array_keys($assignment) : [];
+            $keys = array_keys($assignment);
             sort($keys, SORT_STRING);
-            if (!is_array($assignment)
-                || $keys !== ['member_id', 'source_key', 'source_kind']
-                || !is_string($assignment['source_kind'])
+            if ($keys !== ['member_id', 'source_key', 'source_kind']
                 || !in_array($assignment['source_kind'], ['member', 'role', 'department', 'initiator', 'previous_actor'], true)
-                || !is_string($assignment['source_key'])
                 || $assignment['source_key'] === ''
                 || strlen($assignment['source_key']) > 160
                 || preg_match('/^[\x21-\x7e]+$/D', $assignment['source_key']) !== 1
-                || !is_int($assignment['member_id'])
                 || $assignment['member_id'] < 1
                 || !$this->assignmentMatchesRule(
                     $assignment['source_kind'],
@@ -741,6 +740,9 @@ final readonly class WorkflowRuntime
     ): AuthorizedOperationContext {
         $permissionKeys = array_values(array_unique($permissionKeys, SORT_STRING));
         sort($permissionKeys, SORT_STRING);
+        if ($permissionKeys === []) {
+            throw WorkflowException::subjectNotFound();
+        }
         $authorized = $this->authorization->authorize(
             $basis,
             $resourceKey,
@@ -756,8 +758,7 @@ final readonly class WorkflowRuntime
             throw WorkflowException::subjectNotFound();
         }
         $target = $authorized->targets[0];
-        if (!$target instanceof RequestedTargetSet
-            || !hash_equals($target->targetResourceKey, $resourceKey)
+        if (!hash_equals($target->targetResourceKey, $resourceKey)
             || !hash_equals($target->targetRole, 'primary')
             || $target->targetIds !== [$subjectKey]
         ) {
@@ -820,7 +821,7 @@ final readonly class WorkflowRuntime
     ): void {
         $metadata = $this->instanceAuditMetadata($before, $before->currentNodeKey, $after->currentNodeKey, $transition->key);
         if ($parentJobKey === null) {
-            $this->audit->appendTenantMember(
+            $this->audit->tenantMember(
                 $context->tenantContext,
                 'tenant.workflow.instance.transitioned',
                 Package::INSTANCE_TRANSITION_PERMISSION,
@@ -832,7 +833,7 @@ final readonly class WorkflowRuntime
             return;
         }
         $metadata['parent_job_key_sha256'] = hash('sha256', $parentJobKey);
-        $this->audit->appendTenantSystem(
+        $this->audit->tenantSystem(
             $before->tenantId,
             'tenant.workflow.instance.automated',
             $transition->operation,
@@ -896,7 +897,7 @@ final readonly class WorkflowRuntime
             $comparison = new DateTimeImmutable('now', new DateTimeZone('UTC'));
             $expires = $comparison->modify('+1 day');
 
-            return $this->transactions->run(function () use (
+            return Db::transaction(function () use (
                 $context,
                 $operationId,
                 $key,
@@ -905,9 +906,11 @@ final readonly class WorkflowRuntime
                 $expires,
                 $operation,
             ): WorkflowReceipt {
-                $this->sideEffects->assertTransactionParticipation();
                 $record = $this->idempotency->beginTenant(
-                    $context->tenantContext->tenantId,
+                    TenantScope::fromTrustedContext(
+                        $context->tenantContext->tenantId,
+                        'workflow-command',
+                    ),
                     $context->tenantContext->memberId,
                     $operationId,
                     $key,
@@ -927,6 +930,10 @@ final readonly class WorkflowRuntime
                 }
                 $receipt = $operation($comparison->format('Y-m-d H:i:s.v'));
                 $this->idempotency->completeTenant(
+                    TenantScope::fromTrustedContext(
+                        $context->tenantContext->tenantId,
+                        'workflow-command',
+                    ),
                     $record->id,
                     200,
                     $receipt->toArray(),
@@ -1000,8 +1007,6 @@ final readonly class WorkflowRuntime
         $keys = array_keys($revision);
         sort($keys, SORT_STRING);
         if ($keys !== ['revision_key', 'sha256']
-            || !is_string($revision['revision_key'])
-            || !is_string($revision['sha256'])
             || !hash_equals($revision['revision_key'], $expectedKey)
             || preg_match('/^[0-9a-f]{64}$/D', $revision['sha256']) !== 1
             || ($expectedSha256 !== null && !hash_equals($revision['sha256'], $expectedSha256))) {
@@ -1009,12 +1014,15 @@ final readonly class WorkflowRuntime
         }
     }
 
-    /** @param list<string> $fileKeys @return list<string> */
+    /**
+     * @param list<string> $fileKeys
+     * @return list<string>
+     */
     private function fileKeys(array $fileKeys): array
     {
         $normalized = [];
         foreach ($fileKeys as $fileKey) {
-            if (!is_string($fileKey) || preg_match('/^file_[0-9a-f]{32}$/D', $fileKey) !== 1 || isset($normalized[$fileKey])) {
+            if (preg_match('/^file_[0-9a-f]{32}$/D', $fileKey) !== 1 || isset($normalized[$fileKey])) {
                 throw WorkflowException::attachmentUnavailable();
             }
             $normalized[$fileKey] = true;

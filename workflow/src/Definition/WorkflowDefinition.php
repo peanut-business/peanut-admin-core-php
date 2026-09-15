@@ -8,13 +8,14 @@ use PeanutAdmin\Workflow\Application\WorkflowException;
 
 final readonly class WorkflowDefinition
 {
+    /** @param array<string, mixed> $draftGraph */
     public function __construct(
         public int $id,
         public int $tenantId,
         public string $moduleKey,
         public string $workflowKey,
         public string $status,
-        public string $draftGraphJson,
+        public array $draftGraph,
         public string $draftGraphSha256,
         public int $latestVersion,
         public int $revision,
@@ -28,13 +29,18 @@ final readonly class WorkflowDefinition
     /** @param array<string, mixed> $row */
     public static function fromRow(array $row): self
     {
+        $draftGraph = $row['draft_graph_json'] ?? null;
+        if (!is_array($draftGraph) || array_is_list($draftGraph)) {
+            throw WorkflowException::internal();
+        }
+
         return new self(
             (int) $row['id'],
             (int) $row['tenant_id'],
             (string) $row['module_key'],
             (string) $row['workflow_key'],
             (string) $row['status'],
-            (string) $row['draft_graph_json'],
+            $draftGraph,
             (string) $row['draft_graph_sha256'],
             (int) $row['latest_version'],
             (int) $row['revision'],
@@ -48,7 +54,7 @@ final readonly class WorkflowDefinition
 
     public function draftGraph(): WorkflowGraph
     {
-        $graph = WorkflowGraph::fromJson($this->draftGraphJson);
+        $graph = WorkflowGraph::fromArray($this->draftGraph);
         if (!hash_equals($this->draftGraphSha256, $graph->sha256)) {
             throw WorkflowException::internal();
         }

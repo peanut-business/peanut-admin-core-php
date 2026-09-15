@@ -7,20 +7,31 @@ namespace PeanutAdmin\DataPermission\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
+use PeanutAdmin\DataPermission\Model\DataPermissionConditionRecord;
+use PeanutAdmin\DataPermission\Model\DataPermissionGroupRecord;
+use PeanutAdmin\DataPermission\Model\DataPermissionPolicyRecord;
+use PeanutAdmin\DataPermission\Model\DataPermissionTargetRecord;
+use PeanutAdmin\DataPermission\Model\DataPermissionTargetSetRecord;
+use PeanutAdmin\DataPermission\Model\ProtectedResourceRecord;
+use PeanutAdmin\DataPermission\Model\ResourceOperationConditionRecord;
+use PeanutAdmin\DataPermission\Model\TargetTypeRecord;
 use PeanutAdmin\DataPermission\Target\TargetResolverRegistry;
 use PeanutAdmin\DataPermission\Target\TypedResourceTargetSet;
 use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
-use think\db\PDOConnection;
+use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
+use PeanutAdmin\Kernel\Persistence\Model\Department;
+use PeanutAdmin\Kernel\Persistence\Model\Role;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
+use think\facade\Db;
 use Throwable;
 
 final readonly class DataPolicyAdminService
 {
     public function __construct(
-        private PDOConnection $connection,
-        private TransactionManager $transactions,
         private TargetResolverRegistry $targetResolvers,
+        private AuditService $audit,
     ) {}
 
     /** @return array<string, mixed> */
@@ -28,19 +39,15 @@ final readonly class DataPolicyAdminService
     {
         $catalog = $this->operation($tenantId, $resourceKey, $operation);
         $this->requireRole($tenantId, $roleId, false);
-        $policy = $this->fetchOne(<<<'SQL'
-SELECT id FROM pa_data_permission_policy
-WHERE tenant_id = :tenant_id AND role_id = :role_id AND resource_operation_id = :operation_id
-SQL, [
-            'tenant_id' => $tenantId,
-            'role_id' => $roleId,
-            'operation_id' => (int) $catalog['operation_id'],
-        ]);
-        if ($policy === null) {
+        $policyId = DataPermissionPolicyRecord::where('tenant_id', $tenantId)
+            ->where('role_id', $roleId)
+            ->where('resource_operation_id', (int) $catalog['operation_id'])
+            ->value('id');
+        if ($policyId === null) {
             throw AdminAccessException::notFound();
         }
 
-        return $this->policy((int) $policy['id']);
+        return $this->policy((int) $policyId);
     }
 
     public function targetCardinality(int $tenantId, string $resourceKey, string $operation): string
@@ -61,7 +68,7 @@ SQL, [
     ): array {
         $input = $this->validatePayload($payload);
 
-        return $this->transaction(function () use (
+        return Db::transaction(function () use (
             $actor,
             $roleId,
             $resourceKey,
@@ -72,15 +79,11 @@ SQL, [
             $this->tenant($actor->tenantId, true);
             $role = $this->requireRole($actor->tenantId, $roleId, true);
             $catalog = $this->operation($actor->tenantId, $resourceKey, $operation);
-            $existing = $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_data_permission_policy
-WHERE tenant_id = :tenant_id AND role_id = :role_id AND resource_operation_id = :operation_id
-FOR UPDATE
-SQL, [
-                'tenant_id' => $actor->tenantId,
-                'role_id' => $roleId,
-                'operation_id' => (int) $catalog['operation_id'],
-            ]);
+            $existing = DataPermissionPolicyRecord::where('tenant_id', $actor->tenantId)
+                ->where('role_id', $roleId)
+                ->where('resource_operation_id', (int) $catalog['operation_id'])
+                ->lock(true)
+                ->find();
             if ($existing !== null) {
                 if ($expectedRevision === null) {
                     throw AdminAccessException::preconditionRequired();
@@ -96,50 +99,35 @@ SQL, [
             $preparedGroups = $this->prepareGroups($actor, $input['groups'], $allowedConditions);
             $now = $this->now();
             if ($existing === null) {
-                $this->execute(<<<'SQL'
-INSERT INTO pa_data_permission_policy (
-    tenant_id, role_id, protected_resource_id, resource_operation_id,
-    status, valid_from, valid_until, revision, reason,
-    created_by_member_id, updated_by_member_id, created_at, updated_at
-) VALUES (
-    :tenant_id, :role_id, :resource_id, :operation_id,
-    :status, :valid_from, :valid_until, 1, :reason,
-    :member_id, :member_id_again, :created_at, :updated_at
-)
-SQL, [
+                $policyId = (int) DataPermissionPolicyRecord::insertGetId([
                     'tenant_id' => $actor->tenantId,
                     'role_id' => $roleId,
-                    'resource_id' => (int) $catalog['resource_id'],
-                    'operation_id' => (int) $catalog['operation_id'],
+                    'protected_resource_id' => (int) $catalog['resource_id'],
+                    'resource_operation_id' => (int) $catalog['operation_id'],
                     'status' => $input['status'],
                     'valid_from' => $input['valid_from'],
                     'valid_until' => $input['valid_until'],
+                    'revision' => 1,
                     'reason' => $input['reason'],
-                    'member_id' => $actor->memberId,
-                    'member_id_again' => $actor->memberId,
+                    'created_by_member_id' => $actor->memberId,
+                    'updated_by_member_id' => $actor->memberId,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
-                $policyId = $this->lastInsertId();
             } else {
                 $policyId = (int) $existing['id'];
                 $this->deletePolicyChildren($actor->tenantId, $policyId);
-                if ($this->execute(<<<'SQL'
-UPDATE pa_data_permission_policy
-SET status = :status, valid_from = :valid_from, valid_until = :valid_until,
-    reason = :reason, revision = revision + 1,
-    updated_by_member_id = :member_id, updated_at = :updated_at
-WHERE tenant_id = :tenant_id AND id = :policy_id AND revision = :expected_revision
-SQL, [
+                if (DataPermissionPolicyRecord::where('tenant_id', $actor->tenantId)
+                    ->where('id', $policyId)
+                    ->where('revision', $expectedRevision)
+                    ->update([
                     'status' => $input['status'],
                     'valid_from' => $input['valid_from'],
                     'valid_until' => $input['valid_until'],
                     'reason' => $input['reason'],
-                    'member_id' => $actor->memberId,
+                    'revision' => Db::raw('revision + 1'),
+                    'updated_by_member_id' => $actor->memberId,
                     'updated_at' => $now,
-                    'tenant_id' => $actor->tenantId,
-                    'policy_id' => $policyId,
-                    'expected_revision' => $expectedRevision,
                 ]) !== 1) {
                     throw AdminAccessException::revisionMismatch();
                 }
@@ -151,21 +139,17 @@ SQL, [
                 $preparedGroups,
                 $now,
             );
-            $this->execute(<<<'SQL'
-UPDATE pa_role
-SET authorization_revision = authorization_revision + 1, updated_at = :updated_at
-WHERE tenant_id = :tenant_id AND id = :role_id AND authorization_revision = :expected_revision
-SQL, [
+            Role::where('tenant_id', $actor->tenantId)
+                ->where('id', $roleId)
+                ->where('authorization_revision', (int) $role['authorization_revision'])
+                ->update([
+                'authorization_revision' => Db::raw('authorization_revision + 1'),
                 'updated_at' => $now,
-                'tenant_id' => $actor->tenantId,
-                'role_id' => $roleId,
-                'expected_revision' => (int) $role['authorization_revision'],
             ]);
-            $this->execute(<<<'SQL'
-UPDATE pa_tenant
-SET authorization_revision = authorization_revision + 1, updated_at = :updated_at
-WHERE id = :tenant_id
-SQL, ['updated_at' => $now, 'tenant_id' => $actor->tenantId]);
+            Tenant::where('id', $actor->tenantId)->update([
+                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'updated_at' => $now,
+            ]);
             $this->audit(
                 $actor,
                 $policyId,
@@ -173,7 +157,6 @@ SQL, ['updated_at' => $now, 'tenant_id' => $actor->tenantId]);
                 $resourceKey,
                 $operation,
                 $targetAuditKeys,
-                $now,
             );
 
             return $this->policy($policyId);
@@ -357,11 +340,11 @@ SQL, ['updated_at' => $now, 'tenant_id' => $actor->tenantId]);
         if ($targetMode === 'department') {
             $this->validateDepartments($actor->tenantId, $targetIds);
         } else {
-            $targetType = $this->fetchOne(<<<'SQL'
-SELECT resolver_key, module_key FROM pa_target_type
-WHERE `key` = :target_resource_key AND status = 'active'
-SQL, ['target_resource_key' => $targetResourceKey]);
-            if ($targetType === null || !$this->moduleAvailable($actor->tenantId, (string) $targetType['module_key'])) {
+            $targetType = TargetTypeRecord::where('key', $targetResourceKey)
+                ->where('status', 'active')
+                ->field('resolver_key,module_key')
+                ->find();
+            if (!is_array($targetType) || !$this->moduleAvailable($actor->tenantId, (string) $targetType['module_key'])) {
                 throw AdminAccessException::invalid(
                     'DATA_POLICY_TARGET_TYPE_MISMATCH',
                     'The target type is unavailable for this tenant.',
@@ -379,12 +362,11 @@ SQL, ['target_resource_key' => $targetResourceKey]);
     /** @param list<string> $targetIds */
     private function validateDepartments(int $tenantId, array $targetIds): void
     {
-        $placeholders = implode(', ', array_fill(0, count($targetIds), '?'));
-        $row = $this->connection->query(
-            "SELECT COUNT(*) AS aggregate FROM pa_department WHERE tenant_id = ? AND status = 'active' AND id IN ({$placeholders})",
-            [$tenantId, ...$targetIds],
-        )[0] ?? null;
-        if (!is_array($row) || (int) $row['aggregate'] !== count($targetIds)) {
+        $count = Department::where('tenant_id', $tenantId)
+            ->where('status', 'active')
+            ->whereIn('id', $targetIds)
+            ->count();
+        if ((int) $count !== count($targetIds)) {
             throw AdminAccessException::invalid(
                 'AUTHZ_TARGET_NOT_FOUND',
                 'A selected department does not exist in the tenant.',
@@ -404,71 +386,50 @@ SQL, ['target_resource_key' => $targetResourceKey]);
     ): array {
         $auditKeys = [];
         foreach ($groups as $sortOrder => $group) {
-            $this->execute(<<<'SQL'
-INSERT INTO pa_data_permission_group (
-    tenant_id, data_permission_policy_id, name, match_mode, sort_order, status, created_at, updated_at
-) VALUES (
-    :tenant_id, :policy_id, :name, 'all', :sort_order, 'active', :created_at, :updated_at
-)
-SQL, [
+            $groupId = (int) DataPermissionGroupRecord::insertGetId([
                 'tenant_id' => $tenantId,
-                'policy_id' => $policyId,
+                'data_permission_policy_id' => $policyId,
                 'name' => $group['name'],
+                'match_mode' => 'all',
                 'sort_order' => $sortOrder,
+                'status' => 'active',
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            $groupId = $this->lastInsertId();
             foreach ($group['conditions'] as $condition) {
                 $targetSetId = null;
                 if ($condition['target_set'] !== null) {
                     $targetSet = $condition['target_set'];
-                    $this->execute(<<<'SQL'
-INSERT INTO pa_data_permission_target_set (
-    tenant_id, name, target_mode, target_resource_key, status,
-    created_by_member_id, updated_by_member_id, created_at, updated_at
-) VALUES (
-    :tenant_id, :name, :target_mode, :target_resource_key, 'active',
-    :member_id, :member_id_again, :created_at, :updated_at
-)
-SQL, [
+                    $targetSetId = (int) DataPermissionTargetSetRecord::insertGetId([
                         'tenant_id' => $tenantId,
                         'name' => $targetSet['name'],
                         'target_mode' => $condition['target_mode'],
                         'target_resource_key' => $targetSet['target_resource_key'],
-                        'member_id' => $memberId,
-                        'member_id_again' => $memberId,
+                        'status' => 'active',
+                        'created_by_member_id' => $memberId,
+                        'updated_by_member_id' => $memberId,
                         'created_at' => $now,
                         'updated_at' => $now,
                     ]);
-                    $targetSetId = $this->lastInsertId();
                     foreach ($targetSet['target_ids'] as $targetId) {
-                        $this->execute(<<<'SQL'
-INSERT INTO pa_data_permission_target (
-    tenant_id, target_set_id, target_id, status, added_by_member_id, added_at
-) VALUES (:tenant_id, :target_set_id, :target_id, 'active', :member_id, :added_at)
-SQL, [
+                        DataPermissionTargetRecord::insert([
                             'tenant_id' => $tenantId,
                             'target_set_id' => $targetSetId,
                             'target_id' => $targetId,
-                            'member_id' => $memberId,
+                            'status' => 'active',
+                            'added_by_member_id' => $memberId,
                             'added_at' => $now,
                         ]);
                         $auditKeys[] = $targetSet['target_resource_key'] . ':' . $targetId;
                     }
                 }
-                $this->execute(<<<'SQL'
-INSERT INTO pa_data_permission_condition (
-    tenant_id, data_permission_group_id, condition_definition_id,
-    target_set_id, config_json, status, created_at, updated_at
-) VALUES (
-    :tenant_id, :group_id, :definition_id, :target_set_id, NULL, 'active', :created_at, :updated_at
-)
-SQL, [
+                DataPermissionConditionRecord::insert([
                     'tenant_id' => $tenantId,
-                    'group_id' => $groupId,
-                    'definition_id' => $condition['definition_id'],
+                    'data_permission_group_id' => $groupId,
+                    'condition_definition_id' => $condition['definition_id'],
                     'target_set_id' => $targetSetId,
+                    'config_json' => null,
+                    'status' => 'active',
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
@@ -482,73 +443,61 @@ SQL, [
 
     private function deletePolicyChildren(int $tenantId, int $policyId): void
     {
-        $rows = $this->connection->query(<<<'SQL'
-SELECT DISTINCT condition_row.target_set_id
-FROM pa_data_permission_group group_row
-JOIN pa_data_permission_condition condition_row
-  ON condition_row.tenant_id = group_row.tenant_id
- AND condition_row.data_permission_group_id = group_row.id
-WHERE group_row.tenant_id = :tenant_id
-  AND group_row.data_permission_policy_id = :policy_id
-  AND condition_row.target_set_id IS NOT NULL
-SQL, ['tenant_id' => $tenantId, 'policy_id' => $policyId]);
-        $targetSetIds = array_values(array_map(
-            static fn(array $row): int => (int) $row['target_set_id'],
-            $rows,
-        ));
+        $targetSetIds = array_values(array_map('intval', DataPermissionGroupRecord::alias('group_row')
+            ->join(
+                'data_permission_condition condition_row',
+                'condition_row.tenant_id = group_row.tenant_id AND condition_row.data_permission_group_id = group_row.id',
+            )
+            ->where('group_row.tenant_id', $tenantId)
+            ->where('group_row.data_permission_policy_id', $policyId)
+            ->whereNotNull('condition_row.target_set_id')
+            ->distinct(true)
+            ->column('condition_row.target_set_id')));
         if ($targetSetIds !== []) {
-            $placeholders = implode(', ', array_fill(0, count($targetSetIds), '?'));
-            $this->connection->execute(
-                "DELETE FROM pa_data_permission_target WHERE tenant_id = ? AND target_set_id IN ({$placeholders})",
-                [$tenantId, ...$targetSetIds],
-            );
+            DataPermissionTargetRecord::where('tenant_id', $tenantId)
+                ->whereIn('target_set_id', $targetSetIds)
+                ->delete();
         }
         $groupIds = $this->groupIds($tenantId, $policyId);
         if ($groupIds !== []) {
-            $placeholders = implode(', ', array_fill(0, count($groupIds), '?'));
-            $this->connection->execute(
-                "DELETE FROM pa_data_permission_condition WHERE tenant_id = ? AND data_permission_group_id IN ({$placeholders})",
-                [$tenantId, ...$groupIds],
-            );
+            DataPermissionConditionRecord::where('tenant_id', $tenantId)
+                ->whereIn('data_permission_group_id', $groupIds)
+                ->delete();
         }
         if ($targetSetIds !== []) {
-            $placeholders = implode(', ', array_fill(0, count($targetSetIds), '?'));
-            $this->connection->execute(
-                "DELETE FROM pa_data_permission_target_set WHERE tenant_id = ? AND id IN ({$placeholders})",
-                [$tenantId, ...$targetSetIds],
-            );
+            DataPermissionTargetSetRecord::where('tenant_id', $tenantId)
+                ->whereIn('id', $targetSetIds)
+                ->delete();
         }
-        $this->execute(<<<'SQL'
-DELETE FROM pa_data_permission_group
-WHERE tenant_id = :tenant_id AND data_permission_policy_id = :policy_id
-SQL, ['tenant_id' => $tenantId, 'policy_id' => $policyId]);
+        DataPermissionGroupRecord::where('tenant_id', $tenantId)
+            ->where('data_permission_policy_id', $policyId)
+            ->delete();
     }
 
     /** @return list<int> */
     private function groupIds(int $tenantId, int $policyId): array
     {
-        $rows = $this->connection->query(<<<'SQL'
-SELECT id FROM pa_data_permission_group
-WHERE tenant_id = :tenant_id AND data_permission_policy_id = :policy_id
-ORDER BY id
-SQL, ['tenant_id' => $tenantId, 'policy_id' => $policyId]);
-
-        return array_values(array_map(static fn(array $row): int => (int) $row['id'], $rows));
+        return array_values(array_map('intval', DataPermissionGroupRecord::where('tenant_id', $tenantId)
+            ->where('data_permission_policy_id', $policyId)
+            ->order('id')
+            ->column('id')));
     }
 
     /** @return array<string, list<array<string, mixed>>> */
     private function allowedConditions(int $operationId): array
     {
-        $rows = $this->connection->query(<<<'SQL'
-SELECT definition.id AS definition_id, definition.`key` AS condition_key,
-       definition.target_mode, definition.config_schema_json,
-       allowed.selector_resource_key
-FROM pa_resource_operation_condition allowed
-JOIN pa_data_condition_definition definition
-  ON definition.id = allowed.condition_definition_id AND definition.status = 'active'
-WHERE allowed.resource_operation_id = :operation_id AND allowed.status = 'active'
-ORDER BY definition.`key`, allowed.selector_resource_key
-SQL, ['operation_id' => $operationId]);
+        $rows = ResourceOperationConditionRecord::alias('allowed')
+            ->join('data_condition_definition definition', "definition.id = allowed.condition_definition_id AND definition.status = 'active'")
+            ->where('allowed.resource_operation_id', $operationId)
+            ->where('allowed.status', 'active')
+            ->field([
+                'definition.id' => 'definition_id', 'definition.key' => 'condition_key',
+                'definition.target_mode', 'definition.config_schema_json', 'allowed.selector_resource_key',
+            ])
+            ->order('definition.key')
+            ->order('allowed.selector_resource_key')
+            ->select()
+            ->toArray();
         $conditions = [];
         foreach ($rows as $row) {
             $conditions[(string) $row['condition_key']][] = $row;
@@ -560,15 +509,21 @@ SQL, ['operation_id' => $operationId]);
     /** @return array<string, mixed> */
     private function operation(int $tenantId, string $resourceKey, string $operation): array
     {
-        $row = $this->fetchOne(<<<'SQL'
-SELECT resource.id AS resource_id, resource.module_key,
-       operation_row.id AS operation_id, operation_row.target_cardinality
-FROM pa_protected_resource resource
-JOIN pa_resource_operation operation_row
-  ON operation_row.protected_resource_id = resource.id AND operation_row.status = 'active'
-WHERE resource.`key` = :resource_key AND resource.status = 'active'
-  AND operation_row.operation = :operation
-SQL, ['resource_key' => $resourceKey, 'operation' => $operation]);
+        $row = ProtectedResourceRecord::alias('resource')
+            ->join(
+                'resource_operation operation_row',
+                "operation_row.protected_resource_id = resource.id AND operation_row.status = 'active'",
+            )
+            ->where('resource.key', $resourceKey)
+            ->where('resource.status', 'active')
+            ->where('operation_row.operation', $operation)
+            ->field([
+                'resource.id' => 'resource_id',
+                'resource.module_key',
+                'operation_row.id' => 'operation_id',
+                'operation_row.target_cardinality',
+            ])
+            ->find();
         if ($row === null || !$this->moduleAvailable($tenantId, (string) $row['module_key'])) {
             throw AdminAccessException::notFound();
         }
@@ -582,25 +537,33 @@ SQL, ['resource_key' => $resourceKey, 'operation' => $operation]);
             return true;
         }
 
-        return $this->fetchOne(<<<'SQL'
-SELECT tenant_module.id
-FROM pa_module_installation installation
-JOIN pa_tenant_module tenant_module ON tenant_module.module_key = installation.module_key
-WHERE installation.module_key = :module_key AND installation.status = 'active'
-  AND tenant_module.tenant_id = :tenant_id AND tenant_module.status = 'enabled'
-  AND (tenant_module.effective_at IS NULL OR tenant_module.effective_at <= CURRENT_TIMESTAMP(3))
-  AND (tenant_module.expires_at IS NULL OR tenant_module.expires_at > CURRENT_TIMESTAMP(3))
-SQL, ['module_key' => $moduleKey, 'tenant_id' => $tenantId]) !== null;
+        return ModuleInstallation::alias('installation')
+            ->join('tenant_module tenant_module', 'tenant_module.module_key = installation.module_key')
+            ->where('installation.module_key', $moduleKey)
+            ->where('installation.status', 'active')
+            ->where('tenant_module.tenant_id', $tenantId)
+            ->where('tenant_module.status', 'enabled')
+            ->where(function ($query): void {
+                $query->whereNull('tenant_module.effective_at')
+                    ->whereOr('tenant_module.effective_at', '<=', Db::raw('UTC_TIMESTAMP(3)'));
+            })
+            ->where(function ($query): void {
+                $query->whereNull('tenant_module.expires_at')
+                    ->whereOr('tenant_module.expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+            })
+            ->value('tenant_module.id') !== null;
     }
 
     /** @return array<string, mixed> */
     private function requireRole(int $tenantId, int $roleId, bool $forUpdate): array
     {
-        $role = $this->fetchOne(
-            "SELECT * FROM pa_role WHERE tenant_id = :tenant_id AND id = :role_id AND status = 'active'"
-            . ($forUpdate ? ' FOR UPDATE' : ''),
-            ['tenant_id' => $tenantId, 'role_id' => $roleId],
-        );
+        $query = Role::where('tenant_id', $tenantId)
+            ->where('id', $roleId)
+            ->where('status', 'active');
+        if ($forUpdate) {
+            $query->lock(true);
+        }
+        $role = $query->find();
         if ($role === null) {
             throw AdminAccessException::notFound();
         }
@@ -610,11 +573,11 @@ SQL, ['module_key' => $moduleKey, 'tenant_id' => $tenantId]) !== null;
 
     private function tenant(int $tenantId, bool $forUpdate): void
     {
-        if ($this->fetchOne(
-            "SELECT id FROM pa_tenant WHERE id = :tenant_id AND status = 'active'"
-            . ($forUpdate ? ' FOR UPDATE' : ''),
-            ['tenant_id' => $tenantId],
-        ) === null) {
+        $query = Tenant::where('id', $tenantId)->where('status', 'active');
+        if ($forUpdate) {
+            $query->lock(true);
+        }
+        if ($query->value('id') === null) {
             throw AdminAccessException::notFound();
         }
     }
@@ -622,39 +585,43 @@ SQL, ['module_key' => $moduleKey, 'tenant_id' => $tenantId]) !== null;
     /** @return array<string, mixed> */
     private function policy(int $policyId): array
     {
-        $policy = $this->fetchOne(<<<'SQL'
-SELECT policy.id, policy.tenant_id, policy.role_id,
-       resource.`key` AS resource_key, operation_row.operation,
-       policy.status, policy.valid_from, policy.valid_until,
-       policy.revision, policy.reason, policy.created_at, policy.updated_at
-FROM pa_data_permission_policy policy
-JOIN pa_protected_resource resource ON resource.id = policy.protected_resource_id
-JOIN pa_resource_operation operation_row ON operation_row.id = policy.resource_operation_id
-WHERE policy.id = :policy_id
-SQL, ['policy_id' => $policyId]);
+        $policy = DataPermissionPolicyRecord::alias('policy')
+            ->join('protected_resource resource', 'resource.id = policy.protected_resource_id')
+            ->join('resource_operation operation_row', 'operation_row.id = policy.resource_operation_id')
+            ->where('policy.id', $policyId)
+            ->field([
+                'policy.id', 'policy.tenant_id', 'policy.role_id', 'resource.key' => 'resource_key',
+                'operation_row.operation', 'policy.status', 'policy.valid_from', 'policy.valid_until',
+                'policy.revision', 'policy.reason', 'policy.created_at', 'policy.updated_at',
+            ])
+            ->find();
         if ($policy === null) {
             throw AdminAccessException::notFound();
         }
-        $groupRows = $this->connection->query(<<<'SQL'
-SELECT id, name, match_mode, sort_order, status, revision
-FROM pa_data_permission_group
-WHERE tenant_id = :tenant_id AND data_permission_policy_id = :policy_id
-ORDER BY sort_order, id
-SQL, ['tenant_id' => (int) $policy['tenant_id'], 'policy_id' => $policyId]);
+        $groupRows = DataPermissionGroupRecord::where('tenant_id', (int) $policy['tenant_id'])
+            ->where('data_permission_policy_id', $policyId)
+            ->field('id,name,match_mode,sort_order,status,revision')
+            ->order('sort_order')
+            ->order('id')
+            ->select()
+            ->toArray();
         $groups = [];
         foreach ($groupRows as $group) {
-            $conditionRows = $this->connection->query(<<<'SQL'
-SELECT condition_row.id, definition.`key` AS condition_key,
-       condition_row.target_set_id, condition_row.config_json,
-       condition_row.status, condition_row.revision
-FROM pa_data_permission_condition condition_row
-JOIN pa_data_condition_definition definition ON definition.id = condition_row.condition_definition_id
-WHERE condition_row.tenant_id = :tenant_id AND condition_row.data_permission_group_id = :group_id
-ORDER BY condition_row.id
-SQL, [
-                'tenant_id' => (int) $policy['tenant_id'],
-                'group_id' => (int) $group['id'],
-            ]);
+            $conditionRows = DataPermissionConditionRecord::alias('condition_row')
+                ->join(
+                    'data_condition_definition definition',
+                    'definition.id = condition_row.condition_definition_id',
+                )
+                ->where('condition_row.tenant_id', (int) $policy['tenant_id'])
+                ->where('condition_row.data_permission_group_id', (int) $group['id'])
+                ->field([
+                    'condition_row.id', 'definition.key' => 'condition_key',
+                    'condition_row.target_set_id', 'condition_row.config_json',
+                    'condition_row.status', 'condition_row.revision',
+                ])
+                ->order('condition_row.id')
+                ->select()
+                ->toArray();
             $conditions = [];
             foreach ($conditionRows as $condition) {
                 $condition['target_set'] = $condition['target_set_id'] === null
@@ -678,23 +645,21 @@ SQL, [
     /** @return array<string, mixed> */
     private function targetSet(int $tenantId, int $targetSetId): array
     {
-        $targetSet = $this->fetchOne(<<<'SQL'
-SELECT id, name, target_mode, target_resource_key, status, revision
-FROM pa_data_permission_target_set
-WHERE tenant_id = :tenant_id AND id = :target_set_id
-SQL, ['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
+        $targetSet = DataPermissionTargetSetRecord::where('tenant_id', $tenantId)
+            ->where('id', $targetSetId)
+            ->field('id,name,target_mode,target_resource_key,status,revision')
+            ->find();
         if ($targetSet === null) {
             throw new AdminAccessException('DATABASE_DATA_INVALID', 500, 'Policy target set is missing.');
         }
-        $rows = $this->connection->query(<<<'SQL'
-SELECT target_id FROM pa_data_permission_target
-WHERE tenant_id = :tenant_id AND target_set_id = :target_set_id AND status = 'active'
-ORDER BY target_id
-SQL, ['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
-        $targetSet['targets'] = array_values(array_map(
-            static fn(array $row): array => ['target_id' => (string) $row['target_id']],
-            $rows,
-        ));
+        $targetSet['targets'] = array_map(
+            static fn(mixed $targetId): array => ['target_id' => (string) $targetId],
+            DataPermissionTargetRecord::where('tenant_id', $tenantId)
+                ->where('target_set_id', $targetSetId)
+                ->where('status', 'active')
+                ->order('target_id')
+                ->column('target_id'),
+        );
 
         return $this->normalize($targetSet);
     }
@@ -707,37 +672,22 @@ SQL, ['tenant_id' => $tenantId, 'target_set_id' => $targetSetId]);
         string $resourceKey,
         string $operation,
         array $targetKeys,
-        string $now,
     ): void {
         $digest = $targetKeys === [] ? null : hash('sha256', implode('|', $targetKeys));
-        $this->execute(<<<'SQL'
-INSERT INTO pa_tenant_audit_event (
-    tenant_id, event_type, action, outcome,
-    actor_tenant_id, actor_tenant_member_id, actor_account_id, actor_type,
-    target_resource_type, target_resource_id, target_count, target_set_digest,
-    request_id, metadata_json, occurred_at
-) VALUES (
-    :tenant_id, 'tenant.data-policy.replaced', 'core.role.data-policy.manage', 'success',
-    :actor_tenant_id, :member_id, :account_id, 'member',
-    'data-policy', :policy_id, :target_count, :target_digest,
-    :request_id, :metadata_json, :occurred_at
-)
-SQL, [
-            'tenant_id' => $actor->tenantId,
-            'actor_tenant_id' => $actor->tenantId,
-            'member_id' => $actor->memberId,
-            'account_id' => $actor->accountId,
-            'policy_id' => (string) $policyId,
-            'target_count' => count($targetKeys),
-            'target_digest' => $digest,
-            'request_id' => $actor->requestId,
-            'metadata_json' => json_encode([
+        $this->audit->tenantMember(
+            context: $actor,
+            eventType: 'tenant.data-policy.replaced',
+            action: 'core.role.data-policy.manage',
+            targetResourceType: 'data-policy',
+            targetResourceId: (string) $policyId,
+            metadata: [
                 'role_id' => (string) $roleId,
                 'resource_key' => $resourceKey,
                 'operation' => $operation,
-            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-            'occurred_at' => $now,
-        ]);
+            ],
+            targetCount: count($targetKeys),
+            targetSetDigest: $digest,
+        );
     }
 
     /** @param array<string, mixed> $value
@@ -817,43 +767,9 @@ SQL, [
         return $row;
     }
 
-    /** @param array<string, int|string|null> $parameters */
-    private function execute(string $sql, array $parameters = []): int
-    {
-        return $this->connection->execute($sql, $parameters);
-    }
-
-    /** @param array<string, int|string|null> $parameters
-     * @return array<string, mixed>|null
-     */
-    private function fetchOne(string $sql, array $parameters = []): ?array
-    {
-        $row = $this->connection->query($sql, $parameters)[0] ?? null;
-
-        return is_array($row) ? $row : null;
-    }
-
-    private function lastInsertId(): int
-    {
-        $row = $this->fetchOne('SELECT LAST_INSERT_ID() AS id');
-        if ($row === null) {
-            throw new AdminAccessException('DATABASE_ERROR', 500, 'Could not read the inserted policy identifier.');
-        }
-
-        return (int) $row['id'];
-    }
-
     private function now(): string
     {
         return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
     }
 
-    /** @template T
-     * @param callable(): T $operation
-     * @return T
-     */
-    private function transaction(callable $operation): mixed
-    {
-        return $this->transactions->run($operation);
-    }
 }

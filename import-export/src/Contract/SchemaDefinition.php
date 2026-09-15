@@ -29,7 +29,10 @@ final readonly class SchemaDefinition
         $this->byKey = $byKey;
     }
 
-    /** @param array<string, string> $mapping @return array<string, string> */
+    /**
+     * @param array<string, string> $mapping
+     * @return array<string, string>
+     */
     public function validateImportMapping(array $mapping): array
     {
         if ($mapping === [] || count($mapping) > 100) {
@@ -37,7 +40,7 @@ final readonly class SchemaDefinition
         }
         $targets = [];
         foreach ($mapping as $source => $target) {
-            if (!is_string($source) || preg_match('//u', $source) !== 1 || trim($source) !== $source || $source === '' || strlen($source) > 120
+            if (preg_match('//u', $source) !== 1 || trim($source) !== $source || $source === '' || strlen($source) > 120
                 || !isset($this->byKey[$target]) || !$this->byKey[$target]->importable || isset($targets[$target])) {
                 throw ImportExportException::schemaMismatch();
             }
@@ -58,8 +61,11 @@ final readonly class SchemaDefinition
         return array_values(array_filter($this->columns, static fn(ColumnDefinition $column): bool => $column->exportable));
     }
 
-    /** @param list<string|null> $values @param list<string> $headings @param array<string, string> $mapping
-     *  @return array{row: array<string, string|null>, issues: list<RowIssue>}
+    /**
+     * @param list<string|null> $values
+     * @param list<string> $headings
+     * @param array<string, string> $mapping
+     * @return array{row: array<string, string|null>, issues: list<RowIssue>}
      */
     public function normalizeImportRow(array $values, array $headings, array $mapping): array
     {
@@ -70,7 +76,7 @@ final readonly class SchemaDefinition
         $issues = [];
         foreach ($headings as $index => $heading) {
             $value = $values[$index];
-            if ($value !== null && (!is_string($value) || preg_match('//u', $value) !== 1)) {
+            if ($value !== null && preg_match('//u', $value) !== 1) {
                 throw ImportExportException::schemaMismatch();
             }
             if (!isset($mapping[$heading])) {
@@ -93,7 +99,10 @@ final readonly class SchemaDefinition
         return ['row' => $row, 'issues' => $issues];
     }
 
-    /** @param array<string, bool|int|float|string|null> $row @return list<string> */
+    /**
+     * @param array<string, bool|int|float|string|null> $row
+     * @return list<string>
+     */
     public function exportValues(array $row): array
     {
         $values = [];
@@ -104,9 +113,6 @@ final readonly class SchemaDefinition
             $value = $row[$column->key];
             if (is_bool($value)) {
                 $value = $value ? 'true' : 'false';
-            }
-            if ($value !== null && !is_int($value) && !is_float($value) && !is_string($value)) {
-                throw ImportExportException::schemaMismatch();
             }
             $text = $value === null ? '' : (string) $value;
             if (preg_match('//u', $text) !== 1) {

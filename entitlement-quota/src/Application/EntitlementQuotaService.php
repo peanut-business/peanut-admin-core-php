@@ -7,7 +7,6 @@ namespace PeanutAdmin\EntitlementQuota\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
-use PDOException;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementGrantSnapshot;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeter;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeterRegistry;
@@ -16,30 +15,30 @@ use PeanutAdmin\EntitlementQuota\Model\EntitlementPolicyRevision;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementReservation;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementUsageWindow;
 use PeanutAdmin\EntitlementQuota\Package;
-use PeanutAdmin\EntitlementQuota\Persistence\EntitlementQuotaRepository;
+use PeanutAdmin\EntitlementQuota\Persistence\ThinkPhpEntitlementQuotaRepository;
 use PeanutAdmin\Kernel\Api\ApiException;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\Clock;
 use PeanutAdmin\Kernel\Auth\SystemClock;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use RuntimeException;
 use Throwable;
 use UnexpectedValueException;
+use think\facade\Db;
 
 final readonly class EntitlementQuotaService
 {
     private Clock $clock;
 
     public function __construct(
-        private EntitlementQuotaRepository $repository,
+        private ThinkPhpEntitlementQuotaRepository $repository,
         private EntitlementMeterRegistry $meters,
         private EntitlementPolicyProvider $policies,
-        private TransactionManager $transactions,
-        private PdoIdempotencyRepository $idempotency,
-        private AuditRepository $audit,
+        private IdempotencyService $idempotency,
+        private AuditService $audit,
         ?Clock $clock = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
@@ -418,7 +417,7 @@ final readonly class EntitlementQuotaService
             $now = $comparisonTime ?? $this->now();
             $expiresAt = $now->modify('+1 day');
 
-            $result = $this->transactions->run(function () use (
+            $result = Db::transaction(function () use (
                 $context,
                 $operationKey,
                 $key,
@@ -429,7 +428,10 @@ final readonly class EntitlementQuotaService
                 $semanticInputs,
             ): EntitlementQuotaReceipt|EntitlementQuotaException {
                 $record = $this->idempotency->beginTenant(
-                    $context->tenantContext->tenantId,
+                    TenantScope::fromTrustedContext(
+                        $context->tenantContext->tenantId,
+                        'entitlement-quota-command',
+                    ),
                     $context->tenantContext->memberId,
                     $operationKey,
                     $key,
@@ -454,6 +456,10 @@ final readonly class EntitlementQuotaService
                 $receipt = $operation($this->databaseTime($now));
                 if ($receipt instanceof EntitlementQuotaException) {
                     $this->idempotency->failTenant(
+                        TenantScope::fromTrustedContext(
+                            $context->tenantContext->tenantId,
+                            'entitlement-quota-command',
+                        ),
                         $record->id,
                         $receipt->httpStatus,
                         $this->failureToArray($receipt),
@@ -466,6 +472,10 @@ final readonly class EntitlementQuotaService
                     return $receipt;
                 }
                 $this->idempotency->completeTenant(
+                    TenantScope::fromTrustedContext(
+                        $context->tenantContext->tenantId,
+                        'entitlement-quota-command',
+                    ),
                     $record->id,
                     200,
                     $receipt->toArray(),
@@ -542,7 +552,7 @@ final readonly class EntitlementQuotaService
         string $eventType,
         EntitlementQuotaReceipt $receipt,
     ): void {
-        $this->audit->appendTenantMember(
+        $this->audit->tenantMember(
             $context->tenantContext,
             $eventType,
             $context->resourceKey . '.' . $context->operation,
@@ -628,7 +638,6 @@ final readonly class EntitlementQuotaService
             'lifetime' => $snapshot->effectiveUntil,
             'utc_day' => $start->modify('+1 day'),
             'utc_month' => $start->modify('+1 month'),
-            default => throw EntitlementQuotaException::integrityFailure(),
         };
         if ($start < $snapshot->effectiveFrom) {
             $start = $snapshot->effectiveFrom;
@@ -660,7 +669,7 @@ final readonly class EntitlementQuotaService
         $this->assertIdentifier($meterKey);
         $this->assertIdentifier($targetType);
         $this->assertAscii($targetKey, 128);
-        $targets = array_values($context->targets);
+        $targets = $context->targets;
         $target = $targets[0] ?? null;
         if (count($targets) !== 1
             || $target === null
@@ -827,10 +836,6 @@ final readonly class EntitlementQuotaService
 
     private function mapRepositoryFailure(RuntimeException $exception): EntitlementQuotaException
     {
-        // Native PDO errors include SQLSTATE text; that transport detail is never a domain state conflict.
-        if ($exception instanceof PDOException) {
-            return EntitlementQuotaException::internal();
-        }
         $message = strtolower($exception->getMessage());
         if (str_contains($message, 'snapshot')
             || str_contains($message, 'digest')

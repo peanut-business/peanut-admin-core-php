@@ -104,19 +104,6 @@ final readonly class SignedDeliveryTokenService
         return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
     }
 
-    private function decode(string $value): string
-    {
-        if ($value === '' || preg_match('/^[A-Za-z0-9_-]+$/D', $value) !== 1) {
-            throw FileMediaException::deliveryDenied();
-        }
-        $decoded = base64_decode(strtr($value, '-_', '+/'), true);
-        if (!is_string($decoded)) {
-            throw FileMediaException::deliveryDenied();
-        }
-
-        return $decoded;
-    }
-
     /** @return array{v: mixed, tid: mixed, fk: mixed, vis: mixed, replay: mixed, iat: mixed, exp: mixed, jti: mixed} */
     private static function verifiedClaims(string $token, string $secret): array
     {
@@ -140,7 +127,16 @@ final readonly class SignedDeliveryTokenService
             throw FileMediaException::deliveryDenied();
         }
 
-        return $claims;
+        return [
+            'v' => $claims['v'],
+            'tid' => $claims['tid'],
+            'fk' => $claims['fk'],
+            'vis' => $claims['vis'],
+            'replay' => $claims['replay'],
+            'iat' => $claims['iat'],
+            'exp' => $claims['exp'],
+            'jti' => $claims['jti'],
+        ];
     }
 
     private static function encodeValue(string $value): string

@@ -11,7 +11,10 @@ interface DataProvider
     public function key(): string;
     public function schema(): SchemaDefinition;
 
-    /** @param array<string, string|null> $row @return list<RowIssue> */
+    /**
+     * @param array<string, string|null> $row
+     * @return list<RowIssue>
+     */
     public function validateImport(AuthorizedOperationContext $context, array $row): array;
 
     /** @param array<string, string|null> $row */

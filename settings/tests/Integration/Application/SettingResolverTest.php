@@ -16,7 +16,6 @@ use PeanutAdmin\Settings\Application\SettingResolver;
 use PeanutAdmin\Settings\Application\TargetSettingWriter;
 use PeanutAdmin\Settings\Cache\ArrayRevisionedSettingCache;
 use PeanutAdmin\Settings\Cache\RevisionedSettingCache;
-use PeanutAdmin\Settings\Persistence\SettingStore;
 use PeanutAdmin\Settings\Secret\SecretProtector;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
@@ -43,16 +42,15 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
             'operation' => 'updateProjectSetting',
             'target_cardinality' => 'one_required',
         ]]);
-        $repository = new SettingStore(
-            $this->settingsConnection,
+        $repository = $this->synchronize($registry);
+        $definition = $registry->require('example.module', 'display-mode');
+        $protector = $this->protector();
+        $admin = new SettingAdminService(
+            $protector,
             TenantPersistenceMode::InstanceScoped,
             $alpha['tenant_id'],
         );
-        $repository->synchronize($registry, new DateTimeImmutable(self::NOW . ' UTC'));
-        $definition = $registry->require('example.module', 'display-mode');
-        $protector = $this->protector();
-        $admin = new SettingAdminService($repository, $protector);
-        $writer = new TargetSettingWriter($repository, $protector);
+        $writer = new TargetSettingWriter($admin);
         $authorized = $this->authorized($alpha, 'project-1', $this->operation());
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
 
@@ -67,13 +65,23 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
             '*',
         );
         $writer->replace($authorized, $definition, 'compact', $now, null, null, '*');
-        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver(
+            $protector,
+            new ArrayRevisionedSettingCache(),
+            TenantPersistenceMode::InstanceScoped,
+            $alpha['tenant_id'],
+        );
         self::assertSame('compact', $resolver->resolveTarget($definition, $authorized, $now)->value);
         self::assertSame(
             'comfortable',
             $writer->unset($authorized, $definition, $now, '"rev-1"')->value,
         );
-        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver(
+            $protector,
+            new ArrayRevisionedSettingCache(),
+            TenantPersistenceMode::InstanceScoped,
+            $alpha['tenant_id'],
+        );
         self::assertSame('comfortable', $resolver->resolveTarget($definition, $authorized, $now)->value);
         self::assertSame(1, (int) $this->scalar('SELECT COUNT(*) FROM pa_setting_tenant_value'));
         self::assertSame(1, (int) $this->scalar('SELECT COUNT(*) FROM pa_setting_target_value'));
@@ -89,8 +97,8 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
         $definition = $registry->require('example.module', 'display-mode');
         $operatorId = $this->operator();
         $tenant = $this->tenant('alpha');
-        $admin = new SettingAdminService($repository, $protector);
-        $writer = new TargetSettingWriter($repository, $protector);
+        $admin = new SettingAdminService($protector);
+        $writer = new TargetSettingWriter($admin);
         $operation = $this->operation();
         $authorized = $this->authorized($tenant, 'project-1', $operation);
         $start = new DateTimeImmutable('2026-07-19T08:00:00Z');
@@ -116,7 +124,7 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
             null,
             '*',
         );
-        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver($protector, new ArrayRevisionedSettingCache());
 
         self::assertSame('target', $resolver->resolveTarget(
             $definition,
@@ -164,7 +172,7 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
         [$registry, $repository, $protector] = $this->runtime();
         $definition = $registry->require('example.module', 'display-mode');
         $tenant = $this->tenant('alpha');
-        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver($protector, new ArrayRevisionedSettingCache());
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
 
         $deployment = $resolver->resolveDeployment($definition, $now);
@@ -193,7 +201,7 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
         $definition = $registry->require('example.module', 'display-mode');
         $tenant = $this->tenant('alpha');
         $operatorId = $this->operator();
-        $admin = new SettingAdminService($repository, $protector);
+        $admin = new SettingAdminService($protector);
         $admin->replaceDeployment(
             $definition,
             'compact',
@@ -203,7 +211,7 @@ final class SettingResolverTest extends SettingsDatabaseTestCase
             null,
             '*',
         );
-        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver($protector, new ArrayRevisionedSettingCache());
 
         self::assertSame('default', $resolver->resolveTenant(
             $definition,
@@ -242,7 +250,7 @@ SQL);
         $registry = $this->registry([$definitionData]);
         $repository = $this->synchronize($registry);
         $tenant = $this->tenant('alpha');
-        $resolver = new SettingResolver($repository, $this->protector(), new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver($this->protector(), new ArrayRevisionedSettingCache());
 
         $this->expectSettingError('SETTING_REQUIRED_VALUE_MISSING', fn() => $resolver->resolveTenant(
             $registry->require('example.module', 'required-region'),
@@ -256,9 +264,9 @@ SQL);
         [$registry, $repository, $protector] = $this->runtime();
         $definition = $registry->require('example.module', 'display-mode');
         $tenant = $this->tenant('alpha');
-        $admin = new SettingAdminService($repository, $protector);
+        $admin = new SettingAdminService($protector);
         $cache = new ArrayRevisionedSettingCache();
-        $resolver = new SettingResolver($repository, $protector, $cache);
+        $resolver = new SettingResolver($protector, $cache);
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
 
         $admin->replaceTenant(
@@ -294,7 +302,7 @@ SQL);
         [$registry, $repository, $protector] = $this->runtime();
         $definition = $registry->require('example.module', 'display-mode');
         $tenant = $this->tenant('alpha');
-        (new SettingAdminService($repository, $protector))->replaceTenant(
+        (new SettingAdminService($protector))->replaceTenant(
             $definition,
             $tenant['tenant_id'],
             $tenant['member_id'],
@@ -305,7 +313,7 @@ SQL);
             '*',
         );
         $cache = new ArrayRevisionedSettingCache();
-        $resolver = new SettingResolver($repository, $protector, $cache);
+        $resolver = new SettingResolver($protector, $cache);
 
         self::assertSame('compact', $resolver->resolveTenant(
             $definition,
@@ -338,7 +346,7 @@ SQL);
         $definition = $registry->require('example.module', 'display-mode');
         $tenant = $this->tenant('alpha');
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
-        (new SettingAdminService($repository, $protector))->replaceTenant(
+        (new SettingAdminService($protector))->replaceTenant(
             $definition,
             $tenant['tenant_id'],
             $tenant['member_id'],
@@ -349,7 +357,7 @@ SQL);
             '*',
         );
         $cache = new ArrayRevisionedSettingCache();
-        $resolver = new SettingResolver($repository, $protector, $cache);
+        $resolver = new SettingResolver($protector, $cache);
         self::assertSame('compact', $resolver->resolveTenant($definition, $tenant['tenant_id'], $now)->value);
 
         $this->database->exec(<<<'SQL'
@@ -372,7 +380,7 @@ SQL);
         $protector = new SodiumSecretProtector(['runtime' => $key], 'runtime');
         $operatorId = $this->operator();
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
-        (new SettingAdminService($repository, $protector))->replaceDeployment(
+        (new SettingAdminService($protector))->replaceDeployment(
             $definition,
             'runtime-value',
             $operatorId,
@@ -382,11 +390,10 @@ SQL);
             '*',
         );
         $cache = new ArrayRevisionedSettingCache();
-        $resolver = new SettingResolver($repository, $protector, $cache);
+        $resolver = new SettingResolver($protector, $cache);
         self::assertSame('runtime-value', $resolver->resolveDeployment($definition, $now)->value);
 
         $missingKeyResolver = new SettingResolver(
-            $repository,
             new SodiumSecretProtector([
                 'replacement' => random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES),
             ], 'replacement'),
@@ -416,13 +423,13 @@ SQL);
         ])]);
         $repository = $this->synchronize($registry);
         $definition = $registry->require('example.module', 'display-mode');
-        $resolver = new SettingResolver($repository, $this->protector(), new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver($this->protector(), new ArrayRevisionedSettingCache());
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
 
         self::assertSame('comfortable', $resolver->resolveDeployment($definition, $now)->value);
         self::assertSame('default', $resolver->resolveDeployment($definition, $now)->source);
 
-        (new SettingAdminService($repository, $this->protector()))->replaceDeployment(
+        (new SettingAdminService($this->protector()))->replaceDeployment(
             $definition,
             'compact',
             $this->operator(),
@@ -443,7 +450,7 @@ SQL);
         $protector = $this->protector();
         $tenant = $this->tenant('alpha');
         $definition = $registry->require('example.module', 'runtime-secret');
-        (new SettingAdminService($repository, $protector))->replaceTenant(
+        (new SettingAdminService($protector))->replaceTenant(
             $definition,
             $tenant['tenant_id'],
             $tenant['member_id'],
@@ -455,7 +462,6 @@ SQL);
         );
 
         $resolved = (new SettingResolver(
-            $repository,
             $protector,
             new ArrayRevisionedSettingCache(),
         ))->resolveTenant($definition, $tenant['tenant_id'], new DateTimeImmutable('2026-07-19T08:00:00Z'));
@@ -471,7 +477,7 @@ SQL);
         $protector = $this->protector();
         $tenant = $this->tenant('alpha');
         $definition = $registry->require('example.module', 'runtime-secret');
-        (new SettingAdminService($repository, $protector))->replaceTenant(
+        (new SettingAdminService($protector))->replaceTenant(
             $definition,
             $tenant['tenant_id'],
             $tenant['member_id'],
@@ -497,7 +503,7 @@ SQL);
                 ++$this->writes;
             }
         };
-        $resolver = new SettingResolver($repository, $protector, $cache);
+        $resolver = new SettingResolver($protector, $cache);
 
         self::assertSame('runtime-value', $resolver->resolveTenant(
             $definition,
@@ -543,7 +549,7 @@ SQL);
                 return $this->delegate->reveal($ciphertext, $nonce, $keyId, $context);
             }
         };
-        $admin = new SettingAdminService($repository, $protector);
+        $admin = new SettingAdminService($protector);
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
         $admin->replaceDeployment(
             $definition,
@@ -565,7 +571,7 @@ SQL);
             '*',
         );
         $protector->revealCalls = 0;
-        $resolver = new SettingResolver($repository, $protector, new ArrayRevisionedSettingCache());
+        $resolver = new SettingResolver($protector, new ArrayRevisionedSettingCache());
 
         self::assertSame('tenant-secret', $resolver->resolveTenant(
             $definition,
@@ -587,7 +593,7 @@ SQL);
         self::assertSame(2, $protector->revealCalls);
     }
 
-    /** @return array{\PeanutAdmin\Settings\Definition\SettingDefinitionRegistry, \PeanutAdmin\Settings\Persistence\SettingStore, SodiumSecretProtector} */
+    /** @return array{\PeanutAdmin\Settings\Definition\SettingDefinitionRegistry, \PeanutAdmin\Settings\Definition\SettingDefinitionSynchronizer, SodiumSecretProtector} */
     private function runtime(): array
     {
         $targets = [[

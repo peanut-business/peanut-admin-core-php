@@ -7,56 +7,44 @@ namespace PeanutAdmin\Kernel\Platform\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
-use PDO;
-use PDOException;
-use PDOStatement;
+use JsonException;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
+use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
+use PeanutAdmin\Kernel\Persistence\Model\MemberRole;
+use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use Throwable;
+use think\facade\Db;
 
 final readonly class TenantOwnerAdminService
 {
     public function __construct(
-        private PDO $pdo,
+        private AuditService $audit,
         private PasswordHasher $passwords = new PasswordHasher(),
     ) {}
 
     /** @return array<string, mixed> */
     public function createCandidate(
-        int $operatorId,
-        int $operatorAccountId,
+        PlatformContext $actor,
         int $tenantId,
         string $email,
         string $displayName,
         ?string $initialPassword,
-        string $requestId,
     ): array {
         try {
-            $normalizedEmail = EmailAddress::fromString($email)->value();
+            $identifier = EmailAddress::fromString($email)->value();
         } catch (InvalidArgumentException) {
             throw AdminAccessException::invalid('EMAIL_INVALID', 'The email address is invalid.');
         }
-        $identifier = $normalizedEmail;
 
-        return $this->transaction(function () use (
-            $operatorId,
-            $operatorAccountId,
-            $tenantId,
-            $identifier,
-            $displayName,
-            $initialPassword,
-            $requestId,
-        ): array {
-            $this->requireOperator($operatorId, $operatorAccountId);
+        return $this->transaction(function () use ($actor, $tenantId, $identifier, $displayName, $initialPassword): array {
+            $this->requireOperator($actor);
             $this->requireProvisioningTenant($tenantId);
-            $ownerRole = $this->fetchOne(<<<'SQL'
-SELECT id FROM pa_role
-WHERE tenant_id = :tenant_id AND `key` = 'core.tenant-owner'
-  AND is_builtin = 1 AND status = 'active'
-FOR UPDATE
-SQL, ['tenant_id' => $tenantId]);
-            if ($ownerRole === null) {
+            $ownerRoleId = Db::name('role')->where('tenant_id', $tenantId)->where('key', 'core.tenant-owner')
+                ->where('is_builtin', 1)->where('status', 'active')->lock(true)->value('id');
+            if ($ownerRoleId === null) {
                 throw AdminAccessException::conflict(
                     'TENANT_OWNER_ROLE_MISSING',
                     'The provisioning tenant does not contain its built-in owner role.',
@@ -68,13 +56,8 @@ SQL, ['tenant_id' => $tenantId]);
                     'A pending or active owner candidate already exists.',
                 );
             }
-
-            $credential = $this->fetchOne(<<<'SQL'
-SELECT id, account_id, status
-FROM pa_credential
-WHERE identifier_type = 'email' AND identifier_normalized = :identifier
-FOR UPDATE
-SQL, ['identifier' => $identifier]);
+            $credential = Db::name('credential')->where('identifier_type', 'email')
+                ->where('identifier_normalized', $identifier)->lock(true)->field('id,account_id,status')->find();
             if ($credential === null) {
                 if ($initialPassword === null || $initialPassword === '') {
                     throw AdminAccessException::invalid(
@@ -94,60 +77,47 @@ SQL, ['identifier' => $identifier]);
                     throw AdminAccessException::conflict('CREDENTIAL_INACTIVE', 'The account credential is inactive.');
                 }
                 $accountId = (int) $credential['account_id'];
-                $account = $this->fetchOne('SELECT status FROM pa_account WHERE id = :id FOR UPDATE', ['id' => $accountId]);
-                if ($account === null || $account['status'] !== 'active') {
+                if (Db::name('account')->where('id', $accountId)->lock(true)->value('status') !== 'active') {
                     throw AdminAccessException::conflict('ACCOUNT_INACTIVE', 'The account is inactive.');
                 }
             }
-
-            if ($this->fetchOne(
-                'SELECT id FROM pa_tenant_member WHERE tenant_id = :tenant_id AND account_id = :account_id FOR UPDATE',
-                ['tenant_id' => $tenantId, 'account_id' => $accountId],
-            ) !== null) {
+            if (Db::name('tenant_member')->where('tenant_id', $tenantId)->where('account_id', $accountId)
+                ->lock(true)->value('id') !== null) {
                 throw AdminAccessException::conflict(
                     'TENANT_MEMBER_ALREADY_EXISTS',
                     'The account already has a member record in this tenant.',
                 );
             }
-
             $now = $this->now();
-            $this->execute(<<<'SQL'
-INSERT INTO pa_tenant_member (tenant_id, account_id, display_name, status, created_at, updated_at)
-VALUES (:tenant_id, :account_id, :display_name, 'pending', :created_at, :updated_at)
-SQL, [
+            $memberId = (int) Db::name('tenant_member')->insertGetId([
                 'tenant_id' => $tenantId,
                 'account_id' => $accountId,
                 'display_name' => $displayName,
+                'status' => 'pending',
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            $memberId = (int) $this->pdo->lastInsertId();
-            $this->execute(<<<'SQL'
-INSERT INTO pa_member_role (tenant_id, tenant_member_id, role_id, assigned_at)
-VALUES (:tenant_id, :member_id, :role_id, :assigned_at)
-SQL, [
+            Db::name('member_role')->insert([
                 'tenant_id' => $tenantId,
-                'member_id' => $memberId,
-                'role_id' => (int) $ownerRole['id'],
+                'tenant_member_id' => $memberId,
+                'role_id' => (int) $ownerRoleId,
                 'assigned_at' => $now,
             ]);
-            $this->execute(<<<'SQL'
-UPDATE pa_tenant_member
-SET authorization_revision = authorization_revision + 1, updated_at = :updated_at
-WHERE tenant_id = :tenant_id AND id = :member_id
-SQL, ['updated_at' => $now, 'tenant_id' => $tenantId, 'member_id' => $memberId]);
-            $this->execute(<<<'SQL'
-UPDATE pa_tenant SET authorization_revision = authorization_revision + 1, updated_at = :updated_at WHERE id = :tenant_id
-SQL, ['updated_at' => $now, 'tenant_id' => $tenantId]);
-            $this->platformAudit(
-                $operatorId,
-                $operatorAccountId,
+            Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId)->update([
+                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'updated_at' => $now,
+            ]);
+            Db::name('tenant')->where('id', $tenantId)->update([
+                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'updated_at' => $now,
+            ]);
+            $this->audit->platform(
+                $actor->operatorId,
+                $actor->accountId,
+                $actor->requestId,
                 'tenant.owner-candidate.created',
                 'platform.tenant.provision-owner',
-                $tenantId,
-                $memberId,
-                $requestId,
-                null,
+                ['tenant_id' => (string) $tenantId, 'member_id' => (string) $memberId],
             );
 
             return $this->candidate($tenantId, $memberId);
@@ -156,14 +126,12 @@ SQL, ['updated_at' => $now, 'tenant_id' => $tenantId]);
 
     /** @return array<string, mixed> */
     public function activateCandidate(
-        int $operatorId,
-        int $operatorAccountId,
+        PlatformContext $actor,
         int $tenantId,
         int $memberId,
         int $expectedRevision,
         string $idempotencyKey,
         string $changeReason,
-        string $requestId,
     ): array {
         if ($idempotencyKey === '') {
             throw new AdminAccessException('IDEMPOTENCY_KEY_REQUIRED', 428, 'Idempotency-Key is required.');
@@ -172,37 +140,23 @@ SQL, ['updated_at' => $now, 'tenant_id' => $tenantId]);
             throw AdminAccessException::invalid('CHANGE_REASON_REQUIRED', 'A change reason is required.');
         }
         $idempotencyHash = hash('sha256', implode('|', [
-            $idempotencyKey,
-            (string) $tenantId,
-            (string) $memberId,
-            (string) $expectedRevision,
-            $changeReason,
+            $idempotencyKey, (string) $tenantId, (string) $memberId, (string) $expectedRevision, $changeReason,
         ]));
 
         return $this->transaction(function () use (
-            $operatorId,
-            $operatorAccountId,
-            $tenantId,
-            $memberId,
-            $expectedRevision,
-            $idempotencyHash,
-            $changeReason,
-            $requestId,
+            $actor, $tenantId, $memberId, $expectedRevision, $idempotencyHash, $changeReason,
         ): array {
-            $this->requireOperator($operatorId, $operatorAccountId);
+            $this->requireOperator($actor);
             $this->requireProvisioningTenant($tenantId);
-            $member = $this->fetchOne(<<<'SQL'
-SELECT tm.*, a.status AS account_status
-FROM pa_tenant_member tm
-JOIN pa_account a ON a.id = tm.account_id
-WHERE tm.tenant_id = :tenant_id AND tm.id = :member_id
-FOR UPDATE
-SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]);
+            $member = TenantMember::alias('member')
+                ->join('account account', 'account.id = member.account_id')
+                ->where('member.tenant_id', $tenantId)->where('member.id', $memberId)
+                ->field(['member.*', 'account.status' => 'account_status'])->lock(true)->find();
             if ($member === null) {
                 throw AdminAccessException::notFound();
             }
             if ($member['status'] === 'active') {
-                if ($this->activationWasApplied($operatorId, $tenantId, $memberId, $idempotencyHash)) {
+                if ($this->activationWasApplied($actor->operatorId, $tenantId, $memberId, $idempotencyHash)) {
                     return $this->candidate($tenantId, $memberId);
                 }
                 throw AdminAccessException::conflict('OWNER_ALREADY_ACTIVE', 'The owner candidate is already active.');
@@ -219,45 +173,44 @@ SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]);
             if (!$this->memberHasOwnerRole($tenantId, $memberId)) {
                 throw AdminAccessException::conflict('TENANT_OWNER_ROLE_MISSING', 'The candidate does not hold the owner role.');
             }
-
             $now = $this->now();
-            if ($this->execute(<<<'SQL'
-UPDATE pa_tenant_member
-SET status = 'active', joined_at = :joined_at,
-    security_revision = security_revision + 1,
-    authorization_revision = authorization_revision + 1,
-    updated_at = :updated_at
-WHERE tenant_id = :tenant_id AND id = :member_id
-  AND status = 'pending' AND authorization_revision = :expected_revision
-SQL, [
-                'joined_at' => $now,
-                'updated_at' => $now,
-                'tenant_id' => $tenantId,
-                'member_id' => $memberId,
-                'expected_revision' => $expectedRevision,
-            ]) !== 1) {
+            if (Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId)
+                ->where('status', 'pending')->where('authorization_revision', $expectedRevision)->update([
+                    'status' => 'active',
+                    'joined_at' => $now,
+                    'security_revision' => Db::raw('security_revision + 1'),
+                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'updated_at' => $now,
+                ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
-            $this->execute(<<<'SQL'
-UPDATE pa_tenant SET authorization_revision = authorization_revision + 1, updated_at = :updated_at WHERE id = :tenant_id
-SQL, ['updated_at' => $now, 'tenant_id' => $tenantId]);
+            Db::name('tenant')->where('id', $tenantId)->update([
+                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'updated_at' => $now,
+            ]);
             $metadata = [
                 'tenant_id' => (string) $tenantId,
                 'member_id' => (string) $memberId,
                 'idempotency_hash' => $idempotencyHash,
                 'change_reason' => $changeReason,
             ];
-            $this->platformAudit(
-                $operatorId,
-                $operatorAccountId,
+            $this->audit->platform(
+                $actor->operatorId,
+                $actor->accountId,
+                $actor->requestId,
                 'tenant.owner-candidate.activated',
                 'platform.tenant.provision-owner',
-                $tenantId,
-                $memberId,
-                $requestId,
                 $metadata,
             );
-            $this->tenantAudit($operatorId, $operatorAccountId, $tenantId, $memberId, $requestId, $metadata);
+            $this->audit->tenantPlatformOperator(
+                $tenantId,
+                $actor->operatorId,
+                $actor->accountId,
+                'tenant.owner-candidate.activated',
+                'platform.tenant.provision-owner',
+                $actor->requestId,
+                $metadata,
+            );
 
             return $this->candidate($tenantId, $memberId);
         });
@@ -266,16 +219,26 @@ SQL, ['updated_at' => $now, 'tenant_id' => $tenantId]);
     /** @return array<string, mixed> */
     private function candidate(int $tenantId, int $memberId): array
     {
-        $row = $this->fetchOne(<<<'SQL'
-SELECT id, account_id, display_name, status, security_revision, authorization_revision
-FROM pa_tenant_member WHERE tenant_id = :tenant_id AND id = :member_id
-SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]) ?? throw AdminAccessException::notFound();
+        $row = Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $memberId)
+            ->field('id,account_id,display_name,status,security_revision,authorization_revision')->find();
+        if ($row === null) {
+            throw AdminAccessException::notFound();
+        }
+
+        $roleId = MemberRole::alias('membership')
+            ->join('role role', "role.tenant_id=membership.tenant_id AND role.id=membership.role_id AND role.`key`='core.tenant-owner' AND role.is_builtin=1")
+            ->where('membership.tenant_id', $tenantId)->where('membership.tenant_member_id', $memberId)
+            ->value('membership.role_id');
+        if ($roleId === null) {
+            throw AdminAccessException::conflict('TENANT_OWNER_ROLE_MISSING', 'The candidate does not hold the owner role.');
+        }
 
         return [
             'tenant_id' => (string) $tenantId,
             'member' => [
                 'id' => (string) $row['id'],
                 'account_id' => (string) $row['account_id'],
+                'role_id' => (string) $roleId,
                 'display_name' => $row['display_name'],
                 'status' => $row['status'],
                 'security_revision' => (string) $row['security_revision'],
@@ -285,23 +248,17 @@ SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]) ?? throw AdminAccessE
         ];
     }
 
-    private function requireOperator(int $operatorId, int $accountId): void
+    private function requireOperator(PlatformContext $actor): void
     {
-        if ($this->fetchOne(<<<'SQL'
-SELECT id FROM pa_platform_operator
-WHERE id = :operator_id AND account_id = :account_id AND status = 'active'
-FOR UPDATE
-SQL, ['operator_id' => $operatorId, 'account_id' => $accountId]) === null) {
+        if (Db::name('platform_operator')->where('id', $actor->operatorId)->where('account_id', $actor->accountId)
+            ->where('status', 'active')->lock(true)->value('id') === null) {
             throw new AdminAccessException('PLATFORM_OPERATOR_INVALID', 403, 'An active platform operator is required.');
         }
     }
 
     private function requireProvisioningTenant(int $tenantId): void
     {
-        if ($this->fetchOne(
-            "SELECT id FROM pa_tenant WHERE id = :tenant_id AND status = 'provisioning' FOR UPDATE",
-            ['tenant_id' => $tenantId],
-        ) === null) {
+        if (Db::name('tenant')->where('id', $tenantId)->where('status', 'provisioning')->lock(true)->value('id') === null) {
             throw AdminAccessException::conflict(
                 'TENANT_NOT_PROVISIONING',
                 'Owner provisioning is only available while the tenant is provisioning.',
@@ -311,40 +268,26 @@ SQL, ['operator_id' => $operatorId, 'account_id' => $accountId]) === null) {
 
     private function ownerCandidateCount(int $tenantId): int
     {
-        return $this->scalar(<<<'SQL'
-SELECT COUNT(DISTINCT tm.id)
-FROM pa_tenant_member tm
-JOIN pa_member_role mr ON mr.tenant_id = tm.tenant_id AND mr.tenant_member_id = tm.id
-JOIN pa_role r ON r.tenant_id = mr.tenant_id AND r.id = mr.role_id
-WHERE tm.tenant_id = :tenant_id AND tm.status IN ('pending', 'active')
-  AND r.`key` = 'core.tenant-owner' AND r.is_builtin = 1 AND r.status = 'active'
-SQL, ['tenant_id' => $tenantId]);
+        return (int) TenantMember::alias('member')
+            ->join(
+                'member_role member_role',
+                'member_role.tenant_id = member.tenant_id AND member_role.tenant_member_id = member.id',
+            )->join('role role', 'role.tenant_id = member_role.tenant_id AND role.id = member_role.role_id')
+            ->where('member.tenant_id', $tenantId)->whereIn('member.status', ['pending', 'active'])
+            ->where('role.key', 'core.tenant-owner')->where('role.is_builtin', 1)->where('role.status', 'active')
+            ->distinct(true)->count('member.id');
     }
 
     private function createAccountAndCredential(string $identifier, string $displayName, string $password): int
     {
         $now = $this->now();
-        $this->execute(
-            'INSERT INTO pa_account (display_name, created_at, updated_at) VALUES (:name, :created_at, :updated_at)',
-            ['name' => $displayName, 'created_at' => $now, 'updated_at' => $now],
-        );
-        $accountId = (int) $this->pdo->lastInsertId();
-        $this->execute(<<<'SQL'
-INSERT INTO pa_credential (
-    account_id, kind, identifier_type, identifier_normalized, secret_hash,
-    verified_at, secret_changed_at, created_at, updated_at
-) VALUES (
-    :account_id, 'email_password', 'email', :identifier, :secret_hash,
-    :verified_at, :secret_changed_at, :created_at, :updated_at
-)
-SQL, [
-            'account_id' => $accountId,
-            'identifier' => $identifier,
-            'secret_hash' => $this->passwords->hash($password),
-            'verified_at' => $now,
-            'secret_changed_at' => $now,
-            'created_at' => $now,
-            'updated_at' => $now,
+        $accountId = (int) Db::name('account')->insertGetId([
+            'display_name' => $displayName, 'created_at' => $now, 'updated_at' => $now,
+        ]);
+        Db::name('credential')->insert([
+            'account_id' => $accountId, 'kind' => 'email_password', 'identifier_type' => 'email',
+            'identifier_normalized' => $identifier, 'secret_hash' => $this->passwords->hash($password),
+            'verified_at' => $now, 'secret_changed_at' => $now, 'created_at' => $now, 'updated_at' => $now,
         ]);
 
         return $accountId;
@@ -352,24 +295,19 @@ SQL, [
 
     private function memberHasOwnerRole(int $tenantId, int $memberId): bool
     {
-        return $this->fetchOne(<<<'SQL'
-SELECT mr.id
-FROM pa_member_role mr
-JOIN pa_role r ON r.tenant_id = mr.tenant_id AND r.id = mr.role_id
-WHERE mr.tenant_id = :tenant_id AND mr.tenant_member_id = :member_id
-  AND r.`key` = 'core.tenant-owner' AND r.is_builtin = 1 AND r.status = 'active'
-LIMIT 1
-SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]) !== null;
+        return MemberRole::alias('member_role')
+            ->join('role role', 'role.tenant_id = member_role.tenant_id AND role.id = member_role.role_id')
+            ->where('member_role.tenant_id', $tenantId)->where('member_role.tenant_member_id', $memberId)
+            ->where('role.key', 'core.tenant-owner')->where('role.is_builtin', 1)->where('role.status', 'active')
+            ->value('member_role.id') !== null;
     }
 
     private function activeCredentialExists(int $accountId): bool
     {
-        return $this->fetchOne(<<<'SQL'
-SELECT id FROM pa_credential
-WHERE account_id = :account_id AND status = 'active'
-  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP(3))
-LIMIT 1
-SQL, ['account_id' => $accountId]) !== null;
+        return Db::name('credential')->where('account_id', $accountId)->where('status', 'active')
+            ->where(function ($query): void {
+                $query->whereNull('expires_at')->whereOr('expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+            })->value('id') !== null;
     }
 
     private function activationWasApplied(
@@ -378,155 +316,47 @@ SQL, ['account_id' => $accountId]) !== null;
         int $memberId,
         string $idempotencyHash,
     ): bool {
-        return $this->fetchOne(<<<'SQL'
-SELECT id FROM pa_platform_audit_event
-WHERE operator_id = :operator_id
-  AND event_type = 'tenant.owner-candidate.activated'
-  AND target_type = 'tenant-owner-candidate'
-  AND target_id = :member_id
-  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.tenant_id')) = :tenant_id
-  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.idempotency_hash')) = :idempotency_hash
-LIMIT 1
-SQL, [
-            'operator_id' => $operatorId,
-            'member_id' => (string) $memberId,
-            'tenant_id' => (string) $tenantId,
-            'idempotency_hash' => $idempotencyHash,
-        ]) !== null;
-    }
-
-    /** @param array<string, string>|null $metadata */
-    private function platformAudit(
-        int $operatorId,
-        int $operatorAccountId,
-        string $eventType,
-        string $action,
-        int $tenantId,
-        int $memberId,
-        string $requestId,
-        ?array $metadata,
-    ): void {
-        $this->execute(<<<'SQL'
-INSERT INTO pa_platform_audit_event (
-    event_type, action, outcome, operator_id, account_id,
-    target_type, target_id, request_id, metadata_json, occurred_at
-) VALUES (
-    :event_type, :action, 'success', :operator_id, :account_id,
-    'tenant-owner-candidate', :target_id, :request_id, :metadata_json, :occurred_at
-)
-SQL, [
-            'event_type' => $eventType,
-            'action' => $action,
-            'operator_id' => $operatorId,
-            'account_id' => $operatorAccountId,
-            'target_id' => (string) $memberId,
-            'request_id' => $requestId,
-            'metadata_json' => json_encode($metadata ?? ['tenant_id' => (string) $tenantId], JSON_THROW_ON_ERROR),
-            'occurred_at' => $this->now(),
-        ]);
-    }
-
-    /** @param array<string, string> $metadata */
-    private function tenantAudit(
-        int $operatorId,
-        int $operatorAccountId,
-        int $tenantId,
-        int $memberId,
-        string $requestId,
-        array $metadata,
-    ): void {
-        $this->execute(<<<'SQL'
-INSERT INTO pa_tenant_audit_event (
-    tenant_id, event_type, action, outcome, actor_account_id,
-    actor_platform_operator_id, actor_type, target_resource_type,
-    target_resource_id, target_count, request_id, metadata_json, occurred_at
-) VALUES (
-    :tenant_id, 'tenant.owner-candidate.activated', 'platform.tenant.provision-owner',
-    'success', :actor_account_id, :operator_id, 'platform_operator',
-    'member', :member_id, 1, :request_id, :metadata_json, :occurred_at
-)
-SQL, [
-            'tenant_id' => $tenantId,
-            'actor_account_id' => $operatorAccountId,
-            'operator_id' => $operatorId,
-            'member_id' => (string) $memberId,
-            'request_id' => $requestId,
-            'metadata_json' => json_encode($metadata, JSON_THROW_ON_ERROR),
-            'occurred_at' => $this->now(),
-        ]);
-    }
-
-    /** @param array<string, int|string|null> $parameters */
-    private function execute(string $sql, array $parameters = []): int
-    {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-
-        return $statement->rowCount();
-    }
-
-    /**
-     * @param array<string, int|string|null> $parameters
-     * @return array<string, mixed>|null
-     */
-    private function fetchOne(string $sql, array $parameters = []): ?array
-    {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-
-        return is_array($row) ? $row : null;
-    }
-
-    /** @param array<string, int|string|null> $parameters */
-    private function scalar(string $sql, array $parameters = []): int
-    {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-
-        return (int) $statement->fetchColumn();
-    }
-
-    private function statement(string $sql): PDOStatement
-    {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new AdminAccessException('DATABASE_ERROR', 500, 'Could not prepare the database operation.');
+        $rows = Db::name('platform_audit_event')->where('operator_id', $operatorId)
+            ->where('event_type', 'tenant.owner-candidate.activated')
+            ->where('target_type', 'tenant-owner-candidate')->where('target_id', (string) $memberId)
+            ->column('metadata_json');
+        foreach ($rows as $json) {
+            try {
+                $metadata = json_decode((string) $json, true, 32, JSON_THROW_ON_ERROR);
+            } catch (JsonException) {
+                continue;
+            }
+            if (is_array($metadata)
+                && ($metadata['tenant_id'] ?? null) === (string) $tenantId
+                && ($metadata['idempotency_hash'] ?? null) === $idempotencyHash) {
+                return true;
+            }
         }
 
-        return $statement;
+        return false;
     }
 
-    private function now(): string
-    {
-        return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
-    }
-
-    /**
-     * @template T
+    /** @template T
      * @param callable(): T $operation
      * @return T
      */
     private function transaction(callable $operation): mixed
     {
-        $this->pdo->beginTransaction();
         try {
-            $result = $operation();
-            $this->pdo->commit();
-
-            return $result;
+            return Db::transaction($operation);
         } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-            if ($exception instanceof PDOException && $exception->getCode() === '23000') {
+            if ((string) $exception->getCode() === '23000') {
                 throw AdminAccessException::conflict(
                     'TENANT_OWNER_CANDIDATE_CONFLICT',
                     'The owner candidate conflicts with an existing relation.',
                 );
             }
-
             throw $exception;
         }
+    }
+
+    private function now(): string
+    {
+        return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
     }
 }

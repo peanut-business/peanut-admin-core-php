@@ -7,7 +7,7 @@ namespace PeanutAdmin\TaskJob\Submission;
 use JsonException;
 use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\TaskJob\Application\JobRecord;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Persistence\TaskJobStore;
@@ -16,7 +16,6 @@ final readonly class TrustedJobPublisher
 {
     public function __construct(
         private TaskJobStore $repository,
-        private TransactionManager $transactions,
         private TaskSubmissionRegistry $submissions,
         private TrustedEnvelopeCodec $envelopes,
     ) {}
@@ -56,7 +55,7 @@ final readonly class TrustedJobPublisher
             'max_attempts' => $submission->maxAttempts,
             'initial_delay_seconds' => $submission->initialDelaySeconds,
         ]));
-        $job = $this->transactions->run(
+        $job = Db::transaction(
             fn(): JobRecord => $this->repository->enqueue(
                 $context->tenantContext->tenantId,
                 $context->tenantContext->memberId,

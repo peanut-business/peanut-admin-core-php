@@ -14,6 +14,7 @@ final readonly class IntegrationSecurityPage implements \JsonSerializable
         public int $total,
     ) {}
 
+    /** @return array{items: list<object>, page: int, page_size: int, total: int} */
     public function jsonSerialize(): array
     {
         return ['items' => $this->items, 'page' => $this->page, 'page_size' => $this->pageSize, 'total' => $this->total];

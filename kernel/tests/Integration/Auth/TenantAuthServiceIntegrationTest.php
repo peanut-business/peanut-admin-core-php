@@ -7,8 +7,10 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Auth;
 use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\AuthException;
-use PeanutAdmin\Kernel\Auth\Persistence\PdoTenantAuthRepository;
+use PeanutAdmin\Kernel\Auth\Persistence\ThinkPhpTenantAuthRepository;
 use PeanutAdmin\Kernel\Auth\TenantAuthentication;
 use PeanutAdmin\Kernel\Auth\TenantAuthService;
 use PeanutAdmin\Kernel\Auth\TenantClientRegistry;
@@ -16,19 +18,9 @@ use PeanutAdmin\Kernel\Auth\TenantSelectionRequired;
 use PeanutAdmin\Kernel\Auth\TokenIssuer;
 use PeanutAdmin\Kernel\Http\TenantAuthEndpoint;
 use PeanutAdmin\Kernel\Http\TenantRefreshCookie;
-use PeanutAdmin\Kernel\Identity\AccountStatus;
-use PeanutAdmin\Kernel\Identity\CredentialStatus;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use PeanutAdmin\Kernel\Identity\SelfService\AccountSelfService;
-use PeanutAdmin\Kernel\Membership\TenantMemberStatus;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoIdentityRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoMembershipRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoPlatformRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTenantRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
 use PeanutAdmin\Kernel\Platform\Bootstrap\BootstrapService;
-use PeanutAdmin\Kernel\Tenancy\TenantStatus;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
@@ -41,9 +33,6 @@ final class TenantAuthServiceIntegrationTest extends DatabaseTestCase
 
     private MutableClock $clock;
     private TenantAuthService $auth;
-    private PdoIdentityRepository $identity;
-    private PdoTenantRepository $tenants;
-    private PdoMembershipRepository $memberships;
     private int $accountId;
     private int $alphaTenantId;
     private int $alphaMemberId;
@@ -58,21 +47,8 @@ final class TenantAuthServiceIntegrationTest extends DatabaseTestCase
             '2026-07-16 02:00:00.000',
             new DateTimeZone('UTC'),
         ));
-        $transactions = new PdoTransactionManager($this->database);
-        $this->identity = new PdoIdentityRepository($this->database);
-        $this->tenants = new PdoTenantRepository($this->database);
-        $this->memberships = new PdoMembershipRepository($this->database);
-        $platformRepository = new PdoPlatformRepository($this->database);
         $passwords = new PasswordHasher();
-        $bootstrap = new BootstrapService(
-            $transactions,
-            $this->identity,
-            $this->tenants,
-            $this->memberships,
-            $platformRepository,
-            new PdoAuditRepository($this->database),
-            $passwords,
-        );
+        $bootstrap = new BootstrapService(passwords: $passwords);
         $platform = $bootstrap->bootstrapPlatformOwner(
             self::EMAIL,
             self::PASSWORD,
@@ -125,8 +101,7 @@ final class TenantAuthServiceIntegrationTest extends DatabaseTestCase
         $this->alphaMemberId = $alpha->memberId;
         $this->betaTenantId = $beta->tenantId;
         $this->auth = new TenantAuthService(
-            $transactions,
-            new PdoTenantAuthRepository($this->database),
+            new ThinkPhpTenantAuthRepository(),
             $passwords,
             $this->clock,
             new TokenIssuer(),
@@ -216,7 +191,7 @@ SQL)->fetch();
 
     public function testIpWindowIsRateLimitedAcrossDifferentIdentifiers(): void
     {
-        $repository = new PdoTenantAuthRepository($this->database);
+        $repository = new ThinkPhpTenantAuthRepository();
         for ($attempt = 1; $attempt <= 20; ++$attempt) {
             $repository->recordSecurityEvent(
                 'login_failed',
@@ -247,7 +222,7 @@ SQL)->fetch();
 
     public function testIdentifierWindowIsRateLimitedAcrossDifferentIpAddresses(): void
     {
-        $repository = new PdoTenantAuthRepository($this->database);
+        $repository = new ThinkPhpTenantAuthRepository();
         $identifierHmac = hash_hmac(
             'sha256',
             self::EMAIL,
@@ -598,11 +573,7 @@ SQL);
             $this->auth->context($access, 'request-authz-revision')->authorizationRevision,
         );
 
-        $this->memberships->transition(
-            $this->alphaTenantId,
-            $this->alphaMemberId,
-            TenantMemberStatus::Suspended,
-        );
+        $this->database->exec("UPDATE pa_tenant_member SET status = 'suspended', security_revision = security_revision + 1, authorization_revision = authorization_revision + 1 WHERE tenant_id = {$this->alphaTenantId} AND id = {$this->alphaMemberId}");
         self::assertSame(
             'AUTH_MEMBER_UNAVAILABLE',
             $this->captureAuthError(
@@ -624,7 +595,7 @@ SQL);
         );
         self::assertInstanceOf(TenantAuthentication::class, $beta);
 
-        $this->tenants->transition($this->alphaTenantId, TenantStatus::Suspended);
+        $this->database->exec("UPDATE pa_tenant SET status = 'suspended', security_revision = security_revision + 1, revision = revision + 1 WHERE id = {$this->alphaTenantId}");
         self::assertSame(
             'AUTH_TENANT_UNAVAILABLE',
             $this->captureAuthError(fn() => $this->auth->context(
@@ -637,7 +608,7 @@ SQL);
             $this->auth->context($beta->tokens->access->expose(), 'request-beta-valid')->tenantId,
         );
 
-        $this->identity->transitionAccount($this->accountId, AccountStatus::Disabled);
+        $this->disableAccount();
         self::assertSame(
             'AUTH_ACCOUNT_UNAVAILABLE',
             $this->captureAuthError(fn() => $this->auth->context(
@@ -650,10 +621,12 @@ SQL);
     public function testCredentialChangeInvalidatesExistingSessionThroughAccountRevision(): void
     {
         $authentication = $this->selectAlpha($this->login());
-        $credential = $this->identity->activeCredentialForAccount($this->accountId);
-        self::assertNotNull($credential);
-
-        $this->identity->transitionCredential($credential->id, CredentialStatus::Revoked);
+        $credentialId = (int) $this->query(
+            "SELECT id FROM pa_credential WHERE account_id = {$this->accountId} AND status = 'active' ORDER BY id LIMIT 1",
+        )->fetchColumn();
+        self::assertGreaterThan(0, $credentialId);
+        $this->database->exec("UPDATE pa_credential SET status = 'revoked', revision = revision + 1 WHERE id = {$credentialId}");
+        $this->database->exec("UPDATE pa_account SET security_revision = security_revision + 1 WHERE id = {$this->accountId}");
         self::assertSame(
             'AUTH_ACCOUNT_UNAVAILABLE',
             $this->captureAuthError(fn() => $this->auth->context(
@@ -667,7 +640,7 @@ SQL);
     {
         $authentication = $this->selectAlpha($this->login());
         $context = $authentication->context;
-        $this->identity->transitionAccount($this->accountId, AccountStatus::Disabled);
+        $this->disableAccount();
 
         self::assertSame(
             'AUTH_ACCOUNT_UNAVAILABLE',
@@ -805,17 +778,14 @@ SQL);
                     $connectionId = $connectionIdStatement->fetchColumn();
                     $this->writeSocketLine($passwordSockets[1], (string) $connectionId, $deadline);
                     $this->readSocketLine($passwordSockets[1], $deadline);
-                    $passwords = new AccountSelfService($passwordConnection, new PasswordHasher());
+                    ThinkPhpTestConnection::fromPdo($passwordConnection);
+                    $passwords = new AccountSelfService(new AuditService(), new PasswordHasher());
                     $passwords->changePassword(
-                        $context->tenantId,
-                        $context->memberId,
-                        $context->accountId,
-                        $context->sessionKey,
+                        $context,
                         self::PASSWORD,
                         'Replacement-password-456!',
                         '127.0.0.1',
                         'Test Agent',
-                        'request-password-switch-race',
                     );
                     $outcome = 'success';
                 } catch (\Throwable $throwable) {
@@ -1035,10 +1005,10 @@ SQL);
     private function authServiceForNewConnection(): TenantAuthService
     {
         $pdo = $this->newConnection(self::DATABASE);
+        ThinkPhpTestConnection::fromPdo($pdo);
 
         return new TenantAuthService(
-            new PdoTransactionManager($pdo),
-            new PdoTenantAuthRepository($pdo),
+            new ThinkPhpTenantAuthRepository(),
             new PasswordHasher(),
             new MutableClock($this->clock->now()),
             new TokenIssuer(),
@@ -1049,8 +1019,7 @@ SQL);
     private function authServiceForClient(TenantClientRegistry $registry, string $clientKey): TenantAuthService
     {
         return new TenantAuthService(
-            new PdoTransactionManager($this->database),
-            new PdoTenantAuthRepository($this->database),
+            new ThinkPhpTenantAuthRepository(),
             new PasswordHasher(),
             $this->clock,
             new TokenIssuer(),
@@ -1275,6 +1244,13 @@ SQL);
             $pdo->exec('KILL CONNECTION ' . (int) $owner);
             usleep(10_000);
         } while (microtime(true) < $deadline);
+    }
+
+    private function disableAccount(): void
+    {
+        $this->database->exec(
+            "UPDATE pa_account SET status = 'disabled', security_revision = security_revision + 1 WHERE id = {$this->accountId}",
+        );
     }
 
     private function refreshOutcome(

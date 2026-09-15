@@ -7,17 +7,32 @@ namespace PeanutAdmin\Settings\Application;
 use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
+use PeanutAdmin\Kernel\Persistence\Model\EditionTenantModel;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
+use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
+use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Settings\Cache\ArrayRevisionedSettingCache;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
-use PeanutAdmin\Settings\Persistence\SettingStore;
+use PeanutAdmin\Settings\Model\DeploymentSettingValue;
+use PeanutAdmin\Settings\Model\SettingDefinitionRecord;
+use PeanutAdmin\Settings\Model\TargetSettingValue;
+use PeanutAdmin\Settings\Model\TenantSettingValue;
 use PeanutAdmin\Settings\Secret\SecretProtector;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
+use think\db\BaseQuery;
+use think\db\exception\PDOException;
+use think\facade\Db;
+use think\Model;
 
 final readonly class SettingAdminService
 {
     public function __construct(
-        private SettingStore $repository,
         private SecretProtector $protector,
+        private TenantPersistenceMode $persistenceMode = TenantPersistenceMode::TenantScoped,
+        private ?int $instanceTenantId = null,
     ) {}
 
     public function replaceDeployment(
@@ -37,7 +52,7 @@ final readonly class SettingAdminService
             SecretStorageContext::deployment($definition->qualifiedKey()),
         );
 
-        return $this->repository->atomically(function () use (
+        return Db::transaction(function () use (
             $definition,
             $storage,
             $operatorId,
@@ -47,7 +62,7 @@ final readonly class SettingAdminService
             $ifNoneMatch,
             $asOf,
         ): EffectiveSetting {
-            $this->repository->writeDeployment(
+            $this->writeDeployment(
                 $definition,
                 'set',
                 $storage,
@@ -71,14 +86,14 @@ final readonly class SettingAdminService
     ): EffectiveSetting {
         self::assertValidInterval($effectiveAt, null);
 
-        return $this->repository->atomically(function () use (
+        return Db::transaction(function () use (
             $definition,
             $operatorId,
             $effectiveAt,
             $ifMatch,
             $asOf,
         ): EffectiveSetting {
-            $this->repository->writeDeployment(
+            $this->writeDeployment(
                 $definition,
                 'unset',
                 $this->emptyStorage(),
@@ -113,7 +128,7 @@ final readonly class SettingAdminService
                 : null,
         );
 
-        return $this->repository->atomically(function () use (
+        return Db::transaction(function () use (
             $definition,
             $storage,
             $tenantId,
@@ -124,7 +139,7 @@ final readonly class SettingAdminService
             $ifNoneMatch,
             $asOf,
         ): EffectiveSetting {
-            $this->repository->writeTenant(
+            $this->writeTenant(
                 $definition,
                 'set',
                 $storage,
@@ -150,7 +165,7 @@ final readonly class SettingAdminService
     ): EffectiveSetting {
         self::assertValidInterval($effectiveAt, null);
 
-        return $this->repository->atomically(function () use (
+        return Db::transaction(function () use (
             $definition,
             $tenantId,
             $memberId,
@@ -158,7 +173,7 @@ final readonly class SettingAdminService
             $ifMatch,
             $asOf,
         ): EffectiveSetting {
-            $this->repository->writeTenant(
+            $this->writeTenant(
                 $definition,
                 'unset',
                 $this->emptyStorage(),
@@ -174,6 +189,106 @@ final readonly class SettingAdminService
         });
     }
 
+    public function replaceTarget(
+        AuthorizedExternalOperation $authorized,
+        SettingDefinition $definition,
+        mixed $value,
+        DateTimeImmutable $effectiveAt,
+        ?DateTimeImmutable $expiresAt,
+        ?string $ifMatch,
+        ?string $ifNoneMatch,
+        ?DateTimeImmutable $asOf = null,
+    ): EffectiveSetting {
+        [$tenantId, $memberId, $targetResourceKey, $targetId] = $this->target($authorized, $definition);
+        self::assertValidInterval($effectiveAt, $expiresAt);
+        $storage = $this->storage(
+            $definition,
+            $value,
+            SecretStorageContext::target(
+                $definition->qualifiedKey(),
+                $tenantId,
+                $targetResourceKey,
+                $targetId,
+            ),
+        );
+
+        return Db::transaction(function () use (
+            $authorized,
+            $definition,
+            $storage,
+            $tenantId,
+            $memberId,
+            $targetResourceKey,
+            $targetId,
+            $effectiveAt,
+            $expiresAt,
+            $ifMatch,
+            $ifNoneMatch,
+            $asOf,
+        ): EffectiveSetting {
+            $this->writeTarget(
+                $definition,
+                'set',
+                $storage,
+                $tenantId,
+                $memberId,
+                $targetResourceKey,
+                $targetId,
+                $effectiveAt,
+                $expiresAt,
+                $ifMatch,
+                $ifNoneMatch,
+            );
+
+            return $this->redactSecret(
+                $definition,
+                $this->resolver()->resolveTarget($definition, $authorized, $this->asOf($asOf)),
+            );
+        });
+    }
+
+    public function unsetTarget(
+        AuthorizedExternalOperation $authorized,
+        SettingDefinition $definition,
+        DateTimeImmutable $effectiveAt,
+        ?string $ifMatch,
+        ?DateTimeImmutable $asOf = null,
+    ): EffectiveSetting {
+        [$tenantId, $memberId, $targetResourceKey, $targetId] = $this->target($authorized, $definition);
+        self::assertValidInterval($effectiveAt, null);
+
+        return Db::transaction(function () use (
+            $authorized,
+            $definition,
+            $tenantId,
+            $memberId,
+            $targetResourceKey,
+            $targetId,
+            $effectiveAt,
+            $ifMatch,
+            $asOf,
+        ): EffectiveSetting {
+            $this->writeTarget(
+                $definition,
+                'unset',
+                self::emptyStorage(),
+                $tenantId,
+                $memberId,
+                $targetResourceKey,
+                $targetId,
+                $effectiveAt,
+                null,
+                $ifMatch,
+                null,
+            );
+
+            return $this->redactSecret(
+                $definition,
+                $this->resolver()->resolveTarget($definition, $authorized, $this->asOf($asOf)),
+            );
+        });
+    }
+
     /** @return array{value_json: ?string, ciphertext: ?string, nonce: ?string, key_id: ?string} */
     public function prepareStorage(
         SettingDefinition $definition,
@@ -181,30 +296,6 @@ final readonly class SettingAdminService
         SecretStorageContext $context,
     ): array {
         return $this->storage($definition, $value, $context);
-    }
-
-    /** @param array<string, mixed> $row */
-    public function effective(
-        SettingDefinition $definition,
-        array $row,
-        string $source,
-        mixed $value,
-    ): EffectiveSetting {
-        $configured = (string) $row['value_state'] === 'set';
-        $revision = (int) $row['revision'];
-
-        return new EffectiveSetting(
-            $definition->moduleKey,
-            $definition->key,
-            $configured ? $value : null,
-            $source,
-            $configured,
-            $revision,
-            self::etag($revision),
-            $this->apiDate((string) $row['effective_at']),
-            $row['expires_at'] === null ? null : $this->apiDate((string) $row['expires_at']),
-            $definition->secret,
-        );
     }
 
     public static function assertValidInterval(
@@ -259,9 +350,10 @@ final readonly class SettingAdminService
     private function resolver(): SettingResolver
     {
         return new SettingResolver(
-            $this->repository,
             $this->protector,
             new ArrayRevisionedSettingCache(),
+            $this->persistenceMode,
+            $this->instanceTenantId,
         );
     }
 
@@ -331,9 +423,368 @@ final readonly class SettingAdminService
         return ['value_json' => $encoded, 'ciphertext' => null, 'nonce' => null, 'key_id' => null];
     }
 
-    private static function etag(int $revision): string
+    /**
+     * @param array{value_json:?string,ciphertext:?string,nonce:?string,key_id:?string} $storage
+     * @return array<string, mixed>
+     */
+    private function writeDeployment(
+        SettingDefinition $definition,
+        string $state,
+        array $storage,
+        int $operatorId,
+        DateTimeImmutable $effectiveAt,
+        ?DateTimeImmutable $expiresAt,
+        ?string $ifMatch,
+        ?string $ifNoneMatch,
+    ): array {
+        return $this->writeValue(
+            $definition,
+            'deployment',
+            $state,
+            $storage,
+            null,
+            $operatorId,
+            null,
+            null,
+            $effectiveAt,
+            $expiresAt,
+            $ifMatch,
+            $ifNoneMatch,
+        );
+    }
+
+    /**
+     * @param array{value_json:?string,ciphertext:?string,nonce:?string,key_id:?string} $storage
+     * @return array<string, mixed>
+     */
+    private function writeTenant(
+        SettingDefinition $definition,
+        string $state,
+        array $storage,
+        int $tenantId,
+        int $memberId,
+        DateTimeImmutable $effectiveAt,
+        ?DateTimeImmutable $expiresAt,
+        ?string $ifMatch,
+        ?string $ifNoneMatch,
+    ): array {
+        return $this->writeValue(
+            $definition,
+            'tenant',
+            $state,
+            $storage,
+            $tenantId,
+            $memberId,
+            null,
+            null,
+            $effectiveAt,
+            $expiresAt,
+            $ifMatch,
+            $ifNoneMatch,
+        );
+    }
+
+    /**
+     * @param array{value_json:?string,ciphertext:?string,nonce:?string,key_id:?string} $storage
+     * @return array<string, mixed>
+     */
+    private function writeTarget(
+        SettingDefinition $definition,
+        string $state,
+        array $storage,
+        int $tenantId,
+        int $memberId,
+        string $targetResourceKey,
+        string $targetId,
+        DateTimeImmutable $effectiveAt,
+        ?DateTimeImmutable $expiresAt,
+        ?string $ifMatch,
+        ?string $ifNoneMatch,
+    ): array {
+        return $this->writeValue(
+            $definition,
+            'target',
+            $state,
+            $storage,
+            $tenantId,
+            $memberId,
+            $targetResourceKey,
+            $targetId,
+            $effectiveAt,
+            $expiresAt,
+            $ifMatch,
+            $ifNoneMatch,
+        );
+    }
+
+    /**
+     * @param array{value_json:?string,ciphertext:?string,nonce:?string,key_id:?string} $storage
+     * @return array<string,mixed>
+     */
+    private function writeValue(
+        SettingDefinition $definition,
+        string $scopeName,
+        string $state,
+        array $storage,
+        ?int $tenantId,
+        int $actorId,
+        ?string $targetResourceKey,
+        ?string $targetId,
+        DateTimeImmutable $effectiveAt,
+        ?DateTimeImmutable $expiresAt,
+        ?string $ifMatch,
+        ?string $ifNoneMatch,
+    ): array {
+        if (!$definition->allows($scopeName) || !in_array($state, ['set', 'unset'], true)) {
+            throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting does not allow the requested scope.');
+        }
+        self::assertValidInterval($effectiveAt, $expiresAt);
+        $tenantScope = $scopeName === 'deployment'
+            ? null
+            : $this->tenantScope($tenantId, 'settings-write');
+        $this->assertActor($scopeName, $tenantScope, $actorId);
+        $definitionRow = $this->definitionRow($definition, true);
+
+        try {
+            $existing = $this->currentValue(
+                $scopeName,
+                (int) $definitionRow['id'],
+                $tenantScope,
+                $targetResourceKey,
+                $targetId,
+                true,
+            );
+            $revision = $this->precondition(
+                $existing instanceof Model ? $existing->getData() : null,
+                $ifMatch,
+                $ifNoneMatch,
+            );
+            $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+            $row = [
+                'definition_id' => (int) $definitionRow['id'],
+                'value_state' => $state,
+                ...$storage,
+                'revision' => $revision,
+                'effective_at' => self::databaseDate($effectiveAt),
+                'expires_at' => $expiresAt === null ? null : self::databaseDate($expiresAt),
+                'updated_at' => self::databaseDate($now),
+            ];
+            if ($scopeName === 'deployment') {
+                $row['updated_by_operator_id'] = $actorId;
+            } else {
+                if (!$tenantScope instanceof TenantScope) {
+                    throw SettingException::notFound('SETTING_TARGET_UNAUTHORIZED');
+                }
+                $row = EditionTenantModel::tenantAttributes(
+                    $tenantScope,
+                    $this->persistenceMode,
+                    $this->instanceTenantId,
+                    $row,
+                );
+                $row['updated_by_member_id'] = $actorId;
+            }
+            if ($scopeName === 'target') {
+                $row['target_resource_key'] = $targetResourceKey;
+                $row['target_id'] = $targetId;
+            }
+
+            if (!$existing instanceof Model) {
+                $row['created_at'] = self::databaseDate($now);
+                $record = $this->newValue($scopeName);
+                if (!$record->save($row)) {
+                    throw SettingException::conflict();
+                }
+                $row['id'] = (int) $record->getAttr('id');
+            } else {
+                $affected = $this->valueQuery($scopeName, $tenantScope)
+                    ->where('id', (int) $existing->getAttr('id'))
+                    ->where('revision', $revision - 1)
+                    ->update(array_diff_key($row, array_flip([
+                        'definition_id', 'tenant_id', 'target_resource_key', 'target_id', 'created_at',
+                    ])));
+                if ($affected !== 1) {
+                    throw SettingException::revisionMismatch();
+                }
+                $row['id'] = (int) $existing->getAttr('id');
+                $row['created_at'] = $existing->getAttr('created_at');
+            }
+
+            return $row;
+        } catch (PDOException $exception) {
+            $error = $exception->getData()['PDO Error Info'] ?? [];
+            $sqlState = (string) ($error['SQLSTATE'] ?? $exception->getCode());
+            $driverCode = (int) ($error['Driver Error Code'] ?? 0);
+            if (($sqlState === '23000' && $driverCode === 1062)
+                || ($sqlState === '40001' && $driverCode === 1213)
+                || ($sqlState === 'HY000' && $driverCode === 1205)) {
+                throw SettingException::conflict();
+            }
+
+            throw $exception;
+        }
+    }
+
+    private function assertActor(string $scopeName, ?TenantScope $scope, int $actorId): void
     {
-        return '"rev-' . $revision . '"';
+        if ($scopeName === 'deployment') {
+            $operator = PlatformOperator::where('id', $actorId)->find();
+            if (!$operator instanceof PlatformOperator) {
+                throw SettingException::notFound('SETTING_ACTOR_UNAUTHORIZED');
+            }
+
+            return;
+        }
+        if (!$scope instanceof TenantScope
+            || !TenantMember::scope('tenant', $scope)->where('id', $actorId)->find() instanceof TenantMember) {
+            throw SettingException::notFound('SETTING_TARGET_UNAUTHORIZED');
+        }
+    }
+
+    /** @return array<string,mixed> */
+    private function definitionRow(SettingDefinition $definition, bool $lock): array
+    {
+        $record = SettingDefinitionRecord::where('module_key', $definition->moduleKey)
+            ->where('setting_key', $definition->key)
+            ->where('status', 'active')
+            ->lock($lock ? 'FOR SHARE' : false)
+            ->find();
+        if (!$record instanceof SettingDefinitionRecord
+            || !hash_equals((string) $record->getAttr('definition_digest'), $definition->digest)) {
+            throw SettingException::notFound();
+        }
+
+        return $record->getData();
+    }
+
+    private function currentValue(
+        string $scopeName,
+        int $definitionId,
+        ?TenantScope $scope,
+        ?string $targetResourceKey,
+        ?string $targetId,
+        bool $lock,
+    ): ?Model {
+        $query = $this->valueQuery($scopeName, $scope)->where('definition_id', $definitionId);
+        if ($scopeName === 'target') {
+            $query->where('target_resource_key', $targetResourceKey)->where('target_id', $targetId);
+        }
+        $record = $query->lock($lock)->find();
+
+        return $record instanceof Model ? $record : null;
+    }
+
+    private function valueQuery(string $scopeName, ?TenantScope $scope): BaseQuery
+    {
+        return match ($scopeName) {
+            'deployment' => (new DeploymentSettingValue())->db(),
+            'tenant' => TenantSettingValue::scope(
+                'tenant',
+                $scope ?? throw SettingException::notFound(),
+                $this->persistenceMode,
+                $this->instanceTenantId,
+            ),
+            'target' => TargetSettingValue::scope(
+                'tenant',
+                $scope ?? throw SettingException::notFound(),
+                $this->persistenceMode,
+                $this->instanceTenantId,
+            ),
+            default => throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting scope is invalid.'),
+        };
+    }
+
+    private function newValue(string $scopeName): Model
+    {
+        return match ($scopeName) {
+            'deployment' => new DeploymentSettingValue(),
+            'tenant' => new TenantSettingValue(),
+            'target' => new TargetSettingValue(),
+            default => throw SettingException::invalid('SETTING_SCOPE_INVALID', 'The setting scope is invalid.'),
+        };
+    }
+
+    /** @param ?array<string,mixed> $existing */
+    private function precondition(?array $existing, ?string $ifMatch, ?string $ifNoneMatch): int
+    {
+        if ($existing === null) {
+            if ($ifMatch === null && $ifNoneMatch === null) {
+                throw SettingException::preconditionRequired();
+            }
+            if ($ifMatch !== null || $ifNoneMatch !== '*') {
+                throw SettingException::revisionMismatch();
+            }
+
+            return 1;
+        }
+        if ($ifMatch === null && $ifNoneMatch === null) {
+            throw SettingException::preconditionRequired();
+        }
+        $revision = (int) $existing['revision'];
+        if ($ifNoneMatch !== null || $ifMatch !== '"rev-' . $revision . '"') {
+            throw SettingException::revisionMismatch();
+        }
+
+        return $revision + 1;
+    }
+
+    private function tenantScope(?int $tenantId, string $identity): TenantScope
+    {
+        if (!is_int($tenantId) || $tenantId < 1) {
+            throw SettingException::notFound();
+        }
+
+        try {
+            $scope = TenantScope::fromTrustedContext($tenantId, $identity);
+            EditionTenantModel::tenantAttributes(
+                $scope,
+                $this->persistenceMode,
+                $this->instanceTenantId,
+                [],
+            );
+
+            return $scope;
+        } catch (\RuntimeException) {
+            throw SettingException::notFound();
+        }
+    }
+
+    private static function databaseDate(DateTimeImmutable $date): string
+    {
+        return $date->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.v');
+    }
+
+    /** @return array{positive-int,positive-int,non-empty-string,non-empty-string} */
+    private function target(AuthorizedExternalOperation $authorized, SettingDefinition $definition): array
+    {
+        $context = $authorized->context;
+        $operation = $authorized->operation;
+        if (!$context instanceof TenantContext
+            || $context->tenantId < 1
+            || $context->memberId < 1
+            || !$definition->allows('target')
+            || $definition->targetResourceKey === null
+            || $definition->targetResourceKey === ''
+            || $definition->targetOperation === null
+            || $operation->audience !== 'tenant'
+            || $operation->moduleKey !== $definition->moduleKey
+            || $operation->operationId !== $definition->targetOperation
+            || $operation->resourceKey !== $definition->targetResourceKey
+            || $operation->dataAuthorization !== 'targets'
+            || !in_array($operation->targetCardinality, ['one_required', 'zero_or_one'], true)
+            || !$operation->atomicCommand
+            || !$operation->idempotencyRequired
+            || count($authorized->targets) !== 1) {
+            throw SettingException::notFound('SETTING_TARGET_UNAUTHORIZED');
+        }
+        $target = $authorized->targets[0];
+        if ($target->targetResourceKey !== $definition->targetResourceKey
+            || count($target->targetIds) !== 1
+            || $target->targetIds[0] === ''
+            || strlen($target->targetIds[0]) > 128) {
+            throw SettingException::notFound('SETTING_TARGET_UNAUTHORIZED');
+        }
+
+        return [$context->tenantId, $context->memberId, $target->targetResourceKey, $target->targetIds[0]];
     }
 
     private static function hasExactMillisecondPrecision(DateTimeImmutable $timestamp): bool
@@ -341,10 +792,4 @@ final readonly class SettingAdminService
         return ((int) $timestamp->format('u')) % 1000 === 0;
     }
 
-    private function apiDate(string $databaseDate): string
-    {
-        return (new DateTimeImmutable($databaseDate, new DateTimeZone('UTC')))
-            ->setTimezone(new DateTimeZone('UTC'))
-            ->format('Y-m-d\TH:i:s.v\Z');
-    }
 }

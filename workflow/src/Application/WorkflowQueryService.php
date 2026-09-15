@@ -13,13 +13,13 @@ use PeanutAdmin\Workflow\Definition\WorkflowDefinitionVersion;
 use PeanutAdmin\Workflow\Instance\WorkflowEvent;
 use PeanutAdmin\Workflow\Instance\WorkflowInstance;
 use PeanutAdmin\Workflow\Package;
-use PeanutAdmin\Workflow\Persistence\WorkflowRepository;
+use PeanutAdmin\Workflow\Persistence\ThinkPhpWorkflowRepository;
 use Throwable;
 
 final readonly class WorkflowQueryService
 {
     public function __construct(
-        private WorkflowRepository $repository,
+        private ThinkPhpWorkflowRepository $repository,
         private WorkflowAuthorizationResolver $authorization,
     ) {}
 
@@ -144,7 +144,11 @@ final readonly class WorkflowQueryService
         });
     }
 
-    /** @template T @param callable(): T $query @return T */
+    /**
+     * @template T
+     * @param callable(): T $query
+     * @return T
+     */
     private function guard(callable $query): mixed
     {
         try {
@@ -193,8 +197,7 @@ final readonly class WorkflowQueryService
             throw WorkflowException::subjectNotFound();
         }
         $target = $authorized->targets[0];
-        if (!$target instanceof RequestedTargetSet
-            || !hash_equals($target->targetResourceKey, $graph->subjectResourceKey)
+        if (!hash_equals($target->targetResourceKey, $graph->subjectResourceKey)
             || !hash_equals($target->targetRole, 'primary')
             || $target->targetIds !== [$instance->subjectKey]) {
             throw WorkflowException::subjectNotFound();

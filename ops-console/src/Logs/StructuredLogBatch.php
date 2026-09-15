@@ -15,11 +15,6 @@ final readonly class StructuredLogBatch
         if (count($records) > 100) {
             throw new InvalidArgumentException('Too many log records.');
         }
-        foreach ($records as $record) {
-            if (!$record instanceof StructuredLogRecord) {
-                throw new InvalidArgumentException('Invalid log record list.');
-            }
-        }
         if ($nextCursor !== null) {
             Contract::opaqueKey($nextCursor, 'cursor_');
         }

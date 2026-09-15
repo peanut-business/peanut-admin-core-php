@@ -62,7 +62,7 @@ final readonly class LocalStorageDriver implements StorageDriver
     }
 
     /** @inheritDoc */
-    public function localPath(string $objectKey): ?string
+    public function localPath(string $objectKey): string
     {
         $path = $this->objectPath($objectKey, false);
         if (file_exists($path) || is_link($path)) {

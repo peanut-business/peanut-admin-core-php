@@ -9,7 +9,7 @@ use PeanutAdmin\DataPermission\Catalog\ResourceOperation;
 use PeanutAdmin\DataPermission\Catalog\ResourceOperationCatalog;
 use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
 use PeanutAdmin\DataPermission\Policy\PolicyRepository;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\Clock;
 use PeanutAdmin\Kernel\Auth\SystemClock;
 use PeanutAdmin\Kernel\Auth\TenantContext;
@@ -17,17 +17,16 @@ use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\EffectivePermissionSet;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationRepository;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use RuntimeException;
 
 final readonly class EffectiveAccessPreviewService
 {
     public function __construct(
-        private TransactionManager $transactions,
         private TenantAuthorizationRepository $authorization,
         private ResourceOperationCatalog $catalog,
         private PolicyRepository $policies,
-        private AuditRepository $audit,
+        private AuditService $audit,
         private Clock $clock = new SystemClock(),
     ) {}
 
@@ -39,19 +38,15 @@ final readonly class EffectiveAccessPreviewService
      */
     public function preview(TenantContext $actor, int $memberId, PageRequest $page): array
     {
-        return $this->transactions->run(function () use ($actor, $memberId, $page): array {
+        return Db::transaction(function () use ($actor, $memberId, $page): array {
             $result = $this->buildPreview($actor, $memberId, $page);
-            $this->audit->appendTenantMember(
+            $this->audit->tenantMember(
                 $actor,
                 'tenant.member.effective-access.viewed',
                 'core.member.effective-access.read',
                 'member',
                 (string) $memberId,
-                null,
-                null,
-                1,
-                null,
-                [
+                metadata: [
                     'snapshot_revision' => $result['data']['snapshot_revision'],
                     'role_count' => count($result['data']['roles']),
                     'permission_count' => count($result['data']['permission_keys']),
@@ -59,6 +54,7 @@ final readonly class EffectiveAccessPreviewService
                     'page' => $page->page,
                     'page_size' => $page->pageSize,
                 ],
+                targetCount: 1,
             );
             return $result;
         });

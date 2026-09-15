@@ -9,11 +9,10 @@ use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Workflow\Application\WorkflowException;
 use PeanutAdmin\Workflow\Database\Schema;
 use PeanutAdmin\Workflow\Definition\WorkflowGraph;
-use PeanutAdmin\Workflow\Persistence\WorkflowStore;
+use PeanutAdmin\Workflow\Persistence\ThinkPhpWorkflowRepository;
 use PeanutAdmin\Workflow\Tests\Unit\Definition\WorkflowGraphTest;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
-use think\db\PDOConnection;
 
 final class WorkflowStoreTest extends TestCase
 {
@@ -21,7 +20,6 @@ final class WorkflowStoreTest extends TestCase
 
     private PDO $admin;
     private PDO $pdo;
-    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -47,8 +45,7 @@ final class WorkflowStoreTest extends TestCase
             $password,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
         );
-        $this->connection = ThinkPhpTestConnection::fromPdo($this->pdo);
-        $this->pdo = $this->connection->connect();
+        ThinkPhpTestConnection::fromPdo($this->pdo);
         $this->pdo->exec('CREATE TABLE pa_tenant (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, PRIMARY KEY (id)) ENGINE=InnoDB');
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
@@ -167,7 +164,7 @@ final class WorkflowStoreTest extends TestCase
     {
         $this->pdo->exec('INSERT INTO pa_tenant VALUES ()');
         $tenantId = (int) $this->pdo->lastInsertId();
-        $repository = new WorkflowStore($this->connection);
+        $repository = new ThinkPhpWorkflowRepository();
         $graph = WorkflowGraph::fromArray(WorkflowGraphTest::validGraph());
         $now = '2026-08-11 00:00:00.000';
         $draft = $repository->saveDraft($tenantId, 11, 'module.sample', 'approval', $graph, null, $now);
@@ -197,7 +194,7 @@ final class WorkflowStoreTest extends TestCase
     {
         $this->pdo->exec('INSERT INTO pa_tenant VALUES ()');
         $tenantId = (int) $this->pdo->lastInsertId();
-        $repository = new WorkflowStore($this->connection);
+        $repository = new ThinkPhpWorkflowRepository();
         $graph = WorkflowGraph::fromArray(WorkflowGraphTest::validGraph());
         $now = '2026-08-11 00:00:00.000';
 

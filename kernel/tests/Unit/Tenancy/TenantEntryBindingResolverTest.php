@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Tests\Unit\Tenancy;
 
 use DomainException;
-use PDO;
 use PeanutAdmin\Kernel\Context\TenantSystemContext;
 use PeanutAdmin\Kernel\Tenancy\TenantEntryBindingResolver;
 use PHPUnit\Framework\TestCase;
@@ -14,7 +13,6 @@ final class TenantEntryBindingResolverTest extends TestCase
 {
     public function testDisabledBindingsUseStandaloneFallbackWithoutBindingSchema(): void
     {
-        $pdo = new PDO('sqlite::memory:');
         $request = new class {
             public function host(): string
             {
@@ -22,7 +20,6 @@ final class TenantEntryBindingResolverTest extends TestCase
             }
         };
         $resolver = new TenantEntryBindingResolver(
-            $pdo,
             static fn(string $actor, string $operation, string $operationId): TenantSystemContext =>
                 new TenantSystemContext(7, $actor, $operation, $operationId),
             false,
@@ -48,7 +45,7 @@ final class TenantEntryBindingResolverTest extends TestCase
 
     public function testEnabledBindingsStillFailClosedWithoutBindingSchema(): void
     {
-        $resolver = new TenantEntryBindingResolver(new PDO('sqlite::memory:'));
+        $resolver = new TenantEntryBindingResolver();
         $request = new class {
             public function host(): string
             {

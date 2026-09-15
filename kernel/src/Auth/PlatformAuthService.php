@@ -10,7 +10,7 @@ use PeanutAdmin\Kernel\Identity\AccountStatus;
 use PeanutAdmin\Kernel\Identity\CredentialStatus;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\Kernel\Platform\PlatformOperatorStatus;
 use SensitiveParameter;
 
@@ -22,7 +22,6 @@ final class PlatformAuthService
     private readonly string $dummyPasswordHash;
 
     public function __construct(
-        private readonly TransactionManager $transactions,
         private readonly PlatformAuthRepository $repository,
         private readonly PasswordHasher $passwords,
         private readonly Clock $clock,
@@ -70,7 +69,7 @@ final class PlatformAuthService
             );
             throw new AuthException('AUTH_RATE_LIMITED', 429);
         }
-        $result = $this->transactions->run(function () use (
+        $result = Db::transaction(function () use (
             $normalizedEmail,
             $plainPassword,
             $identifierHmac,
@@ -173,7 +172,7 @@ final class PlatformAuthService
     ): PlatformAuthentication {
         $this->assertPlatformPrefix($refreshToken, 'pa_prt_');
         $now = $this->clock->now();
-        $result = $this->transactions->run(function () use (
+        $result = Db::transaction(function () use (
             $refreshToken,
             $ipAddress,
             $userAgent,
@@ -234,7 +233,7 @@ final class PlatformAuthService
     {
         $session = $this->validatedAccessSession($accessToken);
         $now = $this->clock->now();
-        $this->transactions->run(function () use ($session, $now): void {
+        Db::transaction(function () use ($session, $now): void {
             $this->repository->revokeSession($session->sessionId, 'logout', $now);
         });
     }
@@ -243,7 +242,7 @@ final class PlatformAuthService
     {
         $this->assertPlatformPrefix($accessToken, 'pa_pat_');
         $now = $this->clock->now();
-        $result = $this->transactions->run(function () use ($accessToken, $now): ValidatedPlatformSession|AuthException {
+        $result = Db::transaction(function () use ($accessToken, $now): ValidatedPlatformSession|AuthException {
             $record = $this->repository->sessionByTokenHash(
                 hash('sha256', $accessToken),
                 'access',

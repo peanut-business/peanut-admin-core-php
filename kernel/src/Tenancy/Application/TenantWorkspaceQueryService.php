@@ -5,29 +5,26 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Tenancy\Application;
 
 use JsonException;
-use PDO;
-use PDOStatement;
 use PeanutAdmin\Kernel\Audit\GovernanceAuditFilter;
 use PeanutAdmin\Kernel\Audit\GovernanceAuditMetadata;
+use PeanutAdmin\Kernel\Audit\Model\TenantAuditEventRecord;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
+use PeanutAdmin\Kernel\Module\Model\ModuleInstallation;
+use PeanutAdmin\Kernel\Module\Model\TenantModule;
 use RuntimeException;
+use think\db\Query;
+use think\facade\Db;
 
 final readonly class TenantWorkspaceQueryService
 {
-    public function __construct(private PDO $pdo) {}
-
     /** @return array<string, mixed> */
     public function tenant(int $tenantId): array
     {
-        $statement = $this->statement(<<<'SQL'
-SELECT id, code, name, display_name, status, locale, timezone,
-       security_revision, authorization_revision, revision, created_at, updated_at
-FROM pa_tenant WHERE id = :tenant_id
-SQL);
-        $statement->execute(['tenant_id' => $tenantId]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+        $row = Db::name('tenant')->where('id', $tenantId)->field(
+            'id,code,name,display_name,status,locale,timezone,security_revision,authorization_revision,revision,created_at,updated_at',
+        )->find();
+        if ($row === null) {
             throw AdminAccessException::notFound();
         }
 
@@ -37,79 +34,81 @@ SQL);
     /** @return list<array<string, mixed>> */
     public function permissions(int $tenantId): array
     {
-        $statement = $this->statement(<<<'SQL'
-SELECT p.id, p.`key`, p.module_key, p.type, p.name, p.description, p.risk_level
-FROM pa_permission p
-WHERE p.status = 'active' AND p.`key` NOT LIKE 'platform.%'
-  AND (
-    p.module_key = 'core'
-    OR EXISTS (
-      SELECT 1 FROM pa_tenant_module tm
-      JOIN pa_module_installation mi ON mi.module_key = tm.module_key AND mi.status = 'active'
-      WHERE tm.tenant_id = :tenant_id AND tm.module_key = p.module_key
-        AND tm.status = 'enabled'
-        AND (tm.effective_at IS NULL OR tm.effective_at <= CURRENT_TIMESTAMP(3))
-        AND (tm.expires_at IS NULL OR tm.expires_at > CURRENT_TIMESTAMP(3))
-    )
-  )
-ORDER BY p.module_key, p.`key`
-SQL);
-        $statement->execute(['tenant_id' => $tenantId]);
+        $modules = TenantModule::alias('tenant_module')
+            ->join(
+                'module_installation installation',
+                "installation.module_key = tenant_module.module_key AND installation.status = 'active'",
+            )
+            ->where('tenant_module.tenant_id', $tenantId)
+            ->where('tenant_module.status', 'enabled')
+            ->where(function ($query): void {
+                $query->whereNull('tenant_module.effective_at')
+                    ->whereOr('tenant_module.effective_at', '<=', Db::raw('UTC_TIMESTAMP(3)'));
+            })
+            ->where(function ($query): void {
+                $query->whereNull('tenant_module.expires_at')
+                    ->whereOr('tenant_module.expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+            })
+            ->column('tenant_module.module_key');
+        $rows = Db::name('permission')
+            ->where('status', 'active')
+            ->whereNotLike('key', 'platform.%')
+            ->whereIn('module_key', array_values(array_unique(['core', ...$modules])))
+            ->field('id,key,module_key,type,name,description,risk_level')
+            ->order('module_key')
+            ->order('key')
+            ->select()
+            ->toArray();
 
-        return $this->rows($statement);
+        return array_values(array_map($this->normalize(...), $rows));
     }
 
     /** @return list<array<string, mixed>> */
     public function modules(int $tenantId): array
     {
-        $statement = $this->statement(<<<'SQL'
-SELECT mi.module_key, mi.module_key AS name, mi.installed_version AS version,
-       mi.status AS deployment_status, COALESCE(tm.status, 'disabled') AS status,
-       tm.source, tm.config_json, tm.config_revision AS revision,
-       tm.effective_at, tm.expires_at, tm.enabled_at, tm.disabled_at
-FROM pa_module_installation mi
-LEFT JOIN pa_tenant_module tm
-  ON tm.module_key = mi.module_key AND tm.tenant_id = :tenant_id
-ORDER BY mi.module_key
-SQL);
-        $statement->execute(['tenant_id' => $tenantId]);
-        $rows = $this->rows($statement);
+        $rows = ModuleInstallation::alias('installation')
+            ->leftJoin(
+                'tenant_module tenant_module',
+                'tenant_module.module_key = installation.module_key AND tenant_module.tenant_id = ' . $tenantId,
+            )
+            ->field([
+                'installation.module_key', 'installation.module_key' => 'name',
+                'installation.installed_version' => 'version', 'installation.status' => 'deployment_status',
+                'status' => Db::raw("COALESCE(tenant_module.status, 'disabled')"),
+                'tenant_module.source', 'tenant_module.config_json', 'tenant_module.config_revision' => 'revision',
+                'tenant_module.effective_at', 'tenant_module.expires_at',
+                'tenant_module.enabled_at', 'tenant_module.disabled_at',
+            ])
+            ->order('installation.module_key')
+            ->select()
+            ->toArray();
         foreach ($rows as &$row) {
+            $row = $this->normalize($row);
             $row['config'] = $this->decodeJson($row['config_json'] ?? null);
             unset($row['config_json']);
         }
         unset($row);
 
-        return $rows;
+        return array_values($rows);
     }
 
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function auditEvents(int $tenantId, PageRequest $page, ?GovernanceAuditFilter $filter = null): array
     {
-        [$where, $parameters] = $this->auditWhere($tenantId, $filter ?? new GovernanceAuditFilter());
-        $count = $this->statement('SELECT COUNT(*) FROM pa_tenant_audit_event WHERE ' . $where);
-        $count->execute($parameters);
-        $total = (int) $count->fetchColumn();
-        $statement = $this->statement(<<<SQL
-SELECT id, event_type, action, outcome, reason_code, actor_type,
-       actor_tenant_member_id, actor_platform_operator_id,
-       COALESCE(actor_tenant_member_id, actor_platform_operator_id) AS actor_id,
-       actor_type AS actor_label, target_resource_type, target_resource_id,
-       boundary_target_type, boundary_target_id, target_count, target_set_digest,
-       request_id, operation_id, occurred_at AS created_at
-FROM pa_tenant_audit_event
-WHERE {$where}
-ORDER BY occurred_at DESC, id DESC
-LIMIT :limit OFFSET :offset
-SQL);
-        foreach ($parameters as $key => $value) {
-            $statement->bindValue(':' . $key, $value, $key === 'tenant_id' ? PDO::PARAM_INT : PDO::PARAM_STR);
-        }
-        $statement->bindValue(':limit', $page->pageSize, PDO::PARAM_INT);
-        $statement->bindValue(':offset', $page->offset(), PDO::PARAM_INT);
-        $statement->execute();
+        $query = TenantAuditEventRecord::where('tenant_id', $tenantId);
+        $this->applyAuditFilter($query, $filter ?? new GovernanceAuditFilter());
+        $total = (int) (clone $query)->count();
+        $rows = $query->field([
+            'id', 'event_type', 'action', 'outcome', 'reason_code', 'actor_type',
+            'actor_tenant_member_id', 'actor_platform_operator_id',
+            'actor_id' => Db::raw('COALESCE(actor_tenant_member_id, actor_platform_operator_id)'),
+            'actor_type' => 'actor_label', 'target_resource_type', 'target_resource_id',
+            'boundary_target_type', 'boundary_target_id', 'target_count', 'target_set_digest',
+            'request_id', 'operation_id', 'occurred_at' => 'created_at',
+        ])->order('occurred_at', 'desc')->order('id', 'desc')
+            ->limit($page->offset(), $page->pageSize)->select()->toArray();
 
-        return ['items' => $this->rows($statement), 'total' => $total];
+        return ['items' => array_values(array_map($this->normalize(...), $rows)), 'total' => $total];
     }
 
     /** @return array<string, mixed> */
@@ -118,19 +117,17 @@ SQL);
         if (preg_match('/^[1-9][0-9]*$/D', $eventId) !== 1) {
             throw AdminAccessException::notFound();
         }
-        $statement = $this->statement(<<<'SQL'
-SELECT id, event_type, action, outcome, reason_code, actor_type,
-       actor_tenant_member_id, actor_platform_operator_id,
-       COALESCE(actor_tenant_member_id, actor_platform_operator_id) AS actor_id,
-       actor_type AS actor_label, target_resource_type, target_resource_id,
-       boundary_target_type, boundary_target_id, target_count, target_set_digest,
-       request_id, operation_id, metadata_json, occurred_at AS created_at
-FROM pa_tenant_audit_event
-WHERE tenant_id = :tenant_id AND id = :event_id
-SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'event_id' => $eventId]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+        $row = TenantAuditEventRecord::where('tenant_id', $tenantId)
+            ->where('id', $eventId)
+            ->field([
+                'id', 'event_type', 'action', 'outcome', 'reason_code', 'actor_type',
+                'actor_tenant_member_id', 'actor_platform_operator_id',
+                'actor_id' => Db::raw('COALESCE(actor_tenant_member_id, actor_platform_operator_id)'),
+                'actor_type' => 'actor_label', 'target_resource_type', 'target_resource_id',
+                'boundary_target_type', 'boundary_target_id', 'target_count', 'target_set_digest',
+                'request_id', 'operation_id', 'metadata_json', 'occurred_at' => 'created_at',
+            ])->find();
+        if ($row === null) {
             throw AdminAccessException::notFound();
         }
         $row['metadata'] = $this->auditMetadata($row['metadata_json'] ?? null);
@@ -139,11 +136,8 @@ SQL);
         return $this->normalize($row);
     }
 
-    /** @return array{string, array<string, int|string>} */
-    private function auditWhere(int $tenantId, GovernanceAuditFilter $filter): array
+    private function applyAuditFilter(Query $query, GovernanceAuditFilter $filter): void
     {
-        $conditions = ['tenant_id = :tenant_id'];
-        $parameters = ['tenant_id' => $tenantId];
         foreach ([
             'event_type' => $filter->eventType,
             'action' => $filter->action,
@@ -153,12 +147,9 @@ SQL);
             'target_resource_id' => $filter->targetId,
         ] as $column => $value) {
             if ($value !== null) {
-                $conditions[] = "{$column} = :{$column}";
-                $parameters[$column] = $value;
+                $query->where($column, $value);
             }
         }
-
-        return [implode(' AND ', $conditions), $parameters];
     }
 
     /** @return array<string, bool|int|string|null> */
@@ -177,25 +168,14 @@ SQL);
         ]))->project(is_array($decoded) ? $decoded : []);
     }
 
-    /** @return list<array<string, mixed>> */
-    private function rows(PDOStatement $statement): array
-    {
-        $rows = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $rows[] = $this->normalize($row);
-        }
-
-        return $rows;
-    }
-
-    /**
-     * @param array<string, mixed> $row
+    /** @param array<string, mixed> $row
      * @return array<string, mixed>
      */
     private function normalize(array $row): array
     {
         foreach ($row as $key => $value) {
-            if ($value !== null && ($key === 'id' || str_ends_with($key, '_id') || str_ends_with($key, '_revision') || $key === 'revision')) {
+            if ($value !== null && ($key === 'id' || str_ends_with($key, '_id')
+                || str_ends_with($key, '_revision') || $key === 'revision')) {
                 $row[$key] = (string) $value;
             }
         }
@@ -216,15 +196,5 @@ SQL);
         }
 
         return is_array($decoded) ? $decoded : [];
-    }
-
-    private function statement(string $sql): PDOStatement
-    {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new RuntimeException('Could not prepare workspace query.');
-        }
-
-        return $statement;
     }
 }

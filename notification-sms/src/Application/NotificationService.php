@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\NotificationSms\Application;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\NotificationSms\Package;
 use PeanutAdmin\NotificationSms\Persistence\NotificationRepository;
 
@@ -13,7 +13,6 @@ final readonly class NotificationService
 {
     public function __construct(
         private NotificationRepository $repository,
-        private TransactionManager $transactions,
         private RecipientResolver $recipients,
         private AttachmentResolver $attachments,
         private TemplateRenderer $renderer,
@@ -37,7 +36,7 @@ final readonly class NotificationService
         $this->assertOperation($context, 'manage');
         $this->assertTemplateInput($templateKey, $name, $subjectTemplate, $bodyTemplate, $channels, $variables);
 
-        return $this->transactions->run(fn(): array => $this->repository->putTemplate(
+        return Db::transaction(fn(): array => $this->repository->putTemplate(
             $context->tenantContext,
             $templateKey,
             trim($name),
@@ -69,13 +68,13 @@ final readonly class NotificationService
         }
         $seenFiles = [];
         foreach ($fileKeys as $fileKey) {
-            if (!is_string($fileKey) || isset($seenFiles[$fileKey])) {
+            if (isset($seenFiles[$fileKey])) {
                 throw NotificationException::attachmentUnavailable();
             }
             $seenFiles[$fileKey] = true;
         }
 
-        return $this->transactions->run(function () use ($context, $templateKey, $recipientInputs, $fileKeys): array {
+        return Db::transaction(function () use ($context, $templateKey, $recipientInputs, $fileKeys): array {
             $template = $this->repository->activeTemplate($context->tenantContext->tenantId, $templateKey);
             $channels = $template['channels'];
             $requiresSms = in_array('sms', $channels, true);
@@ -88,11 +87,7 @@ final readonly class NotificationService
             $outbox = [];
             $seenMembers = [];
             foreach ($recipientInputs as $input) {
-                if (!is_array($input) || count($input) !== 2
-                    || !array_key_exists('member_id', $input) || !array_key_exists('variables', $input)
-                    || !is_int($input['member_id']) || !is_array($input['variables'])
-                    || isset($seenMembers[$input['member_id']])
-                ) {
+                if (isset($seenMembers[$input['member_id']])) {
                     throw NotificationException::invalid();
                 }
                 $seenMembers[$input['member_id']] = true;
@@ -150,7 +145,7 @@ final readonly class NotificationService
         $this->assertOperation($context, 'read');
         $this->assertMessageKey($messageKey);
 
-        return $this->transactions->run(
+        return Db::transaction(
             fn(): NotificationMessage => $this->repository->changeInbox(
                 $context->tenantContext,
                 $messageKey,
@@ -171,14 +166,14 @@ final readonly class NotificationService
         }
         $seenMessages = [];
         foreach ($messageKeys as $messageKey) {
-            if (!is_string($messageKey) || isset($seenMessages[$messageKey])) {
+            if (isset($seenMessages[$messageKey])) {
                 throw NotificationException::invalid();
             }
             $seenMessages[$messageKey] = true;
             $this->assertMessageKey($messageKey);
         }
 
-        return $this->transactions->run(
+        return Db::transaction(
             fn(): int => $this->repository->bulkChangeInbox($context->tenantContext, $messageKeys, $action),
         );
     }
@@ -190,7 +185,10 @@ final readonly class NotificationService
         }
     }
 
-    /** @param list<string> $channels @param list<string> $variables */
+    /**
+     * @param list<string> $channels
+     * @param list<string> $variables
+     */
     private function assertTemplateInput(
         string $key,
         string $name,
@@ -209,14 +207,14 @@ final readonly class NotificationService
         }
         $seenChannels = [];
         foreach ($channels as $channel) {
-            if (!is_string($channel) || !in_array($channel, ['inbox', 'sms'], true) || isset($seenChannels[$channel])) {
+            if (!in_array($channel, ['inbox', 'sms'], true) || isset($seenChannels[$channel])) {
                 throw NotificationException::invalid('NOTIFICATION_TEMPLATE_INVALID');
             }
             $seenChannels[$channel] = true;
         }
         $seenVariables = [];
         foreach ($variables as $variable) {
-            if (!is_string($variable) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $variable) !== 1
+            if (preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $variable) !== 1
                 || isset($seenVariables[$variable])
             ) {
                 throw NotificationException::invalid('NOTIFICATION_TEMPLATE_INVALID');

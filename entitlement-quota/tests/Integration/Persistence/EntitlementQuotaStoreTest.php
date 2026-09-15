@@ -9,7 +9,7 @@ use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\EntitlementQuota\Database\Schema;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementPolicyRevision;
 use PeanutAdmin\EntitlementQuota\Model\EntitlementUsageWindow;
-use PeanutAdmin\EntitlementQuota\Persistence\EntitlementQuotaStore;
+use PeanutAdmin\EntitlementQuota\Persistence\ThinkPhpEntitlementQuotaRepository;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use think\db\PDOConnection;
@@ -23,7 +23,7 @@ final class EntitlementQuotaStoreTest extends TestCase
     private PDO $admin;
     private PDO $pdo;
     private PDOConnection $connection;
-    private EntitlementQuotaStore $repository;
+    private ThinkPhpEntitlementQuotaRepository $repository;
 
     protected function setUp(): void
     {
@@ -58,7 +58,7 @@ final class EntitlementQuotaStoreTest extends TestCase
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
         }
-        $this->repository = new EntitlementQuotaStore($this->connection);
+        $this->repository = new ThinkPhpEntitlementQuotaRepository();
     }
 
     protected function tearDown(): void

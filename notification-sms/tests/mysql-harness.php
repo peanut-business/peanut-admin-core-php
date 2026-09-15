@@ -25,7 +25,7 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
+use think\facade\Db;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
 use PeanutAdmin\NotificationSms\Application\AttachmentResolver;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
@@ -84,7 +84,6 @@ $pdo = new PDO($dsn, $user, $password, [
     PDO::ATTR_EMULATE_PREPARES => false,
 ]);
 $connection = ThinkPhpTestConnection::fromPdo($pdo);
-$transactions = new ThinkPhpTransactionManager($connection);
 
 $drop = array_reverse(Schema::tableNames());
 $taskDrop = array_reverse(TaskJobSchema::tableNames());
@@ -123,11 +122,10 @@ SQL);
         $pdo->exec(Schema::createSql($table));
     }
 
-    $repository = new NotificationStore($connection);
+    $repository = new NotificationStore();
     $digestKey = str_repeat('k', 32);
     $service = new NotificationService(
         $repository,
-        $transactions,
         new class ($digestKey) implements RecipientResolver {
             public function __construct(private readonly string $digestKey) {}
             public function snapshot(TenantContext $context, int $memberId, bool $requiresSms): RecipientSnapshot
@@ -191,20 +189,19 @@ SQL);
     same(1, (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message WHERE template_revision = 1')->fetchColumn(), 'message row');
 
     $publisher = new TrustedJobPublisher(
-        new TaskJobStore($connection),
-        $transactions,
+        new TaskJobStore(),
         new TaskSubmissionRegistry([
             new OutboxTaskSubmissionProvider('inbox'),
             new OutboxTaskSubmissionProvider('sms'),
         ]),
         new TrustedEnvelopeCodec(str_repeat('e', 32)),
     );
-    $dispatcher = new NotificationOutboxDispatcher($repository, $transactions, $publisher);
+    $dispatcher = new NotificationOutboxDispatcher($repository, $publisher);
     $messageCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn();
     $outboxCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_outbox')->fetchColumn();
     $notificationEventCount = (int) $pdo->query('SELECT COUNT(*) FROM pa_notification_event')->fetchColumn();
     try {
-        $transactions->run(function () use ($service, $manage101, $dispatcher, $pdo): never {
+        Db::transaction(function () use ($service, $manage101, $dispatcher, $pdo): never {
             $transactional = $service->publish($manage101, 'security.alert', [[
                 'member_id' => 501,
                 'variables' => ['code' => 'ROLLBACK'],

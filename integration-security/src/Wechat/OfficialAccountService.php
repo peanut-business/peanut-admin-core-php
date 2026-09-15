@@ -4,18 +4,20 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\IntegrationSecurity\Wechat;
 
+use Closure;
+
 /** Standard HTTP boundary for the public WeChat Official Account API. */
 class OfficialAccountService
 {
     private const TOKEN_URL = 'https://api.weixin.qq.com/cgi-bin/token';
     private const MENU_URL = 'https://api.weixin.qq.com/cgi-bin/menu/create';
 
-    /** @var null|callable(string,string,array,string):array{0:int,1:string} */
-    private $transport;
+    /** @var Closure(string, string, list<string>, string): array{0: int, 1: string}|null */
+    private ?Closure $transport;
 
     public function __construct(?callable $transport = null)
     {
-        $this->transport = $transport;
+        $this->transport = $transport === null ? null : Closure::fromCallable($transport);
     }
 
     /** @param array<int, array<string, mixed>> $menu */
@@ -93,11 +95,11 @@ class OfficialAccountService
     /** @return array{0: int, 1: string} */
     private function request(string $method, string $url, string $body): array
     {
+        if (!in_array($method, ['GET', 'POST'], true)) {
+            throw new \RuntimeException('微信公众号请求方法无效');
+        }
         if ($this->transport !== null) {
             $result = ($this->transport)($method, $url, ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: PeanutAdmin/1.0'], $body);
-            if (!is_array($result) || count($result) !== 2) {
-                throw new \RuntimeException('微信公众号传输器返回格式无效');
-            }
             return [(int) $result[0], (string) $result[1]];
         }
         if (!function_exists('curl_init')) {
@@ -107,7 +109,19 @@ class OfficialAccountService
         if ($curl === false) {
             throw new \RuntimeException('微信接口请求初始化失败');
         }
-        curl_setopt_array($curl, [CURLOPT_CUSTOMREQUEST => $method, CURLOPT_POSTFIELDS => $method === 'POST' ? $body : null, CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: PeanutAdmin/1.0'], CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2]);
+        $options = [
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: PeanutAdmin/1.0'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+        ];
+        if ($method === 'POST') {
+            $options[CURLOPT_POSTFIELDS] = $body;
+        }
+        curl_setopt_array($curl, $options);
         $response = curl_exec($curl);
         if ($response === false) {
             $error = curl_error($curl);
@@ -119,7 +133,10 @@ class OfficialAccountService
         return [$status, (string) $response];
     }
 
-    /** @param array<int, array<string, mixed>> $menu @return array<int, array<string, mixed>> */
+    /**
+     * @param array<int, array<string, mixed>> $menu
+     * @return array<int, array<string, mixed>>
+     */
     private function wechatButtons(array $menu): array
     {
         return array_map(function (array $item): array {

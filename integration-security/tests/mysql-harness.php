@@ -28,7 +28,7 @@ use PeanutAdmin\IntegrationSecurity\Application\WebhookService;
 use PeanutAdmin\IntegrationSecurity\Crypto\AesGcmWebhookSecretProtector;
 use PeanutAdmin\IntegrationSecurity\Database\Schema;
 use PeanutAdmin\IntegrationSecurity\Package;
-use PeanutAdmin\IntegrationSecurity\Persistence\PdoIntegrationSecurityRepository;
+use PeanutAdmin\IntegrationSecurity\Persistence\ThinkPhpIntegrationSecurityRepository;
 use PeanutAdmin\IntegrationSecurity\Webhook\HostAddressResolver;
 use PeanutAdmin\IntegrationSecurity\Webhook\TrustedWebhookEvent;
 use PeanutAdmin\IntegrationSecurity\Webhook\TrustedWebhookPublisher;
@@ -132,7 +132,7 @@ SQL);
         $pdo->prepare("INSERT INTO pa_tenant_session_token(session_id,token_type,token_hash,status) VALUES (:id,'refresh',:hash,'active')")->execute(['id' => (int) $pdo->lastInsertId(),'hash' => hash('sha256', 'token-' . $key)]);
     }
 
-    $repository = new PdoIntegrationSecurityRepository($pdo);
+    $repository = new ThinkPhpIntegrationSecurityRepository();
     $scopeCatalog = new MachineScopeCatalog(['data.export.read', 'data.export.write']);
     $scopeResolver = new class implements MachineScopeGrantResolver {
         public function grantableScopes(AuthorizedOperationContext $context): array

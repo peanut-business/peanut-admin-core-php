@@ -4,23 +4,21 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Integration\Persistence;
 
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 use RuntimeException;
+use think\facade\Db;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 
-final class PdoTransactionManagerTest extends DatabaseTestCase
+final class ThinkPhpTransactionTest extends DatabaseTestCase
 {
     public function testCaughtNestedFailureRollsBackOnlyItsSavepoint(): void
     {
         $this->fixtureTable();
-        $transactions = new PdoTransactionManager($this->database);
-
-        $transactions->run(function () use ($transactions): void {
+        Db::transaction(function (): void {
             $this->write('outer-before');
             try {
-                $transactions->run(function (): void {
+                Db::transaction(function (): void {
                     $this->write('nested-rolled-back');
                     throw new RuntimeException('nested failure');
                 });
@@ -39,13 +37,11 @@ final class PdoTransactionManagerTest extends DatabaseTestCase
     public function testUncaughtNestedFailureRollsBackTheOuterTransaction(): void
     {
         $this->fixtureTable();
-        $transactions = new PdoTransactionManager($this->database);
-
         $caught = null;
         try {
-            $transactions->run(function () use ($transactions): void {
+            Db::transaction(function (): void {
                 $this->write('outer');
-                $transactions->run(function (): void {
+                Db::transaction(function (): void {
                     $this->write('nested');
                     throw new RuntimeException('uncaught');
                 });
@@ -62,16 +58,15 @@ final class PdoTransactionManagerTest extends DatabaseTestCase
     public function testNestedSuccessDoesNotCommitAnExternallyOwnedTransaction(): void
     {
         $this->fixtureTable();
-        $transactions = new PdoTransactionManager($this->database);
-        $this->database->beginTransaction();
+        $connection = Db::connect();
+        $connection->startTrans();
 
-        $transactions->run(function () use ($transactions): void {
+        Db::transaction(function (): void {
             $this->write('outer-owned');
-            $transactions->run(fn() => $this->write('nested-success'));
+            Db::transaction(fn() => $this->write('nested-success'));
         });
 
-        self::assertTrue($this->database->inTransaction());
-        $this->database->rollBack();
+        $connection->rollback();
         self::assertSame(0, (int) $this->query('SELECT COUNT(*) FROM fixture_transaction')->fetchColumn());
     }
 
@@ -87,7 +82,6 @@ SQL);
 
     private function write(string $label): void
     {
-        $statement = $this->database->prepare('INSERT INTO fixture_transaction (label) VALUES (:label)');
-        $statement->execute(['label' => $label]);
+        Db::table('fixture_transaction')->insert(['label' => $label]);
     }
 }

@@ -6,6 +6,7 @@ namespace PeanutAdmin\IntegrationSecurity\Webhook;
 
 use DateTimeImmutable;
 use PeanutAdmin\IntegrationSecurity\Persistence\IntegrationSecurityRepository;
+use think\facade\Db;
 
 final readonly class TrustedWebhookPublisher
 {
@@ -18,7 +19,7 @@ final readonly class TrustedWebhookPublisher
             throw \PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityException::invalid();
         }
         $now ??= new DateTimeImmutable('now');
-        return $this->repository->transaction(function () use ($tenantId, $event, $now): array {
+        return Db::transaction(function () use ($tenantId, $event, $now): array {
             $keys = [];
             foreach ($this->repository->activeEndpointKeysForEvent($tenantId, $event->eventType) as $endpoint) {
                 $keys[] = $this->repository->enqueueDelivery($tenantId, $endpoint['endpoint_key'], $event, $now);

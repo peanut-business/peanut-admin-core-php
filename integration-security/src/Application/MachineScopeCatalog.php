@@ -14,7 +14,7 @@ final readonly class MachineScopeCatalog
     {
         $known = [];
         foreach ($scopes as $scope) {
-            if (!is_string($scope) || preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $scope) !== 1 || strlen($scope) > 96) {
+            if (preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $scope) !== 1 || strlen($scope) > 96) {
                 throw IntegrationSecurityException::invalid();
             }
             $known[$scope] = true;

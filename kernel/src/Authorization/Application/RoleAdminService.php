@@ -6,163 +6,99 @@ namespace PeanutAdmin\Kernel\Authorization\Application;
 
 use DateTimeImmutable;
 use DateTimeZone;
-use PDO;
-use PDOException;
-use PDOStatement;
+use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Persistence\Model\RolePermission;
 use Throwable;
+use think\facade\Db;
 
 final readonly class RoleAdminService
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(private AuditService $audit) {}
 
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function list(int $tenantId, PageRequest $page): array
     {
-        $total = $this->scalar('SELECT COUNT(*) FROM pa_role WHERE tenant_id = :tenant_id', ['tenant_id' => $tenantId]);
-        $statement = $this->statement(<<<'SQL'
-SELECT r.id, r.`key`, r.name, r.description, r.is_builtin, r.status,
-       r.authorization_revision, GROUP_CONCAT(p.`key` ORDER BY p.`key` SEPARATOR ',') AS permission_keys
-FROM pa_role r
-LEFT JOIN pa_role_permission rp ON rp.tenant_id = r.tenant_id AND rp.role_id = r.id
-LEFT JOIN pa_permission p ON p.id = rp.permission_id
-WHERE r.tenant_id = :tenant_id
-GROUP BY r.id
-ORDER BY r.id
-LIMIT :limit OFFSET :offset
-SQL);
-        $statement->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
-        $statement->bindValue(':limit', $page->pageSize, PDO::PARAM_INT);
-        $statement->bindValue(':offset', $page->offset(), PDO::PARAM_INT);
-        $statement->execute();
+        $query = Db::name('role')->where('tenant_id', $tenantId);
+        $total = (int) (clone $query)->count();
+        $rows = $query->field('id,key,name,description,is_builtin,status,authorization_revision')
+            ->order('id')->limit($page->offset(), $page->pageSize)->select()->toArray();
 
-        return ['items' => $this->rows($statement), 'total' => $total];
+        return ['items' => $this->hydratePermissions($tenantId, array_values($rows)), 'total' => $total];
     }
 
     /** @return array<string, mixed> */
     public function get(int $tenantId, int $roleId): array
     {
-        $statement = $this->statement(<<<'SQL'
-SELECT r.id, r.`key`, r.name, r.description, r.is_builtin, r.status,
-       r.authorization_revision, GROUP_CONCAT(p.`key` ORDER BY p.`key` SEPARATOR ',') AS permission_keys
-FROM pa_role r
-LEFT JOIN pa_role_permission rp ON rp.tenant_id = r.tenant_id AND rp.role_id = r.id
-LEFT JOIN pa_permission p ON p.id = rp.permission_id
-WHERE r.tenant_id = :tenant_id AND r.id = :role_id
-GROUP BY r.id
-SQL);
-        $statement->execute(['tenant_id' => $tenantId, 'role_id' => $roleId]);
+        $row = Db::name('role')->where('tenant_id', $tenantId)->where('id', $roleId)
+            ->field('id,key,name,description,is_builtin,status,authorization_revision')->find();
+        if ($row === null) {
+            throw AdminAccessException::notFound();
+        }
 
-        return $this->rows($statement)[0] ?? throw AdminAccessException::notFound();
+        return $this->hydratePermissions($tenantId, [$row])[0];
     }
 
     /** @return array<string, mixed> */
-    public function create(
-        int $tenantId,
-        string $key,
-        string $name,
-        ?string $description,
-        int $actorMemberId,
-        int $actorAccountId,
-        string $requestId,
-    ): array {
+    public function create(TenantContext $actor, string $key, string $name, ?string $description): array
+    {
         if (str_starts_with($key, 'core.') || str_starts_with($key, 'platform.')) {
             throw AdminAccessException::invalid('ROLE_KEY_RESERVED', 'The role key uses a reserved namespace.');
         }
 
-        return $this->transaction(function () use (
-            $tenantId,
-            $key,
-            $name,
-            $description,
-            $actorMemberId,
-            $actorAccountId,
-            $requestId,
-        ): array {
-            $this->lockTenant($tenantId);
+        return $this->transaction(function () use ($actor, $key, $name, $description): array {
+            $this->lockTenant($actor->tenantId);
             $now = $this->now();
-            $this->execute(<<<'SQL'
-INSERT INTO pa_role (tenant_id, `key`, name, description, is_builtin, status, created_at, updated_at)
-VALUES (:tenant_id, :role_key, :name, :description, 0, 'active', :created_at, :updated_at)
-SQL, [
-                'tenant_id' => $tenantId,
-                'role_key' => $key,
+            $roleId = (int) Db::name('role')->insertGetId([
+                'tenant_id' => $actor->tenantId,
+                'key' => $key,
                 'name' => $name,
                 'description' => $description,
+                'is_builtin' => 0,
+                'status' => 'active',
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            $roleId = (int) $this->pdo->lastInsertId();
-            $this->bumpTenant($tenantId, $now);
-            $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.role.created', 'core.role.create', $roleId, $requestId);
+            $this->bumpTenant($actor->tenantId, $now);
+            $this->recordAudit($actor, 'tenant.role.created', 'core.role.create', $roleId);
 
-            return $this->get($tenantId, $roleId);
+            return $this->get($actor->tenantId, $roleId);
         });
     }
 
     /** @return array<string, mixed> */
     public function update(
-        int $tenantId,
+        TenantContext $actor,
         int $roleId,
         string $name,
         ?string $description,
         int $expectedRevision,
-        int $actorMemberId,
-        int $actorAccountId,
-        string $requestId,
     ): array {
-        return $this->transaction(function () use (
-            $tenantId,
-            $roleId,
-            $name,
-            $description,
-            $expectedRevision,
-            $actorMemberId,
-            $actorAccountId,
-            $requestId,
-        ): array {
-            $role = $this->requireRole($tenantId, $roleId, true);
+        return $this->transaction(function () use ($actor, $roleId, $name, $description, $expectedRevision): array {
+            $role = $this->requireRole($actor->tenantId, $roleId, true);
             $this->assertRevision($role, $expectedRevision);
             $now = $this->now();
-            if ($this->execute(<<<'SQL'
-UPDATE pa_role
-SET name = :name, description = :description,
-    authorization_revision = authorization_revision + 1, updated_at = :updated_at
-WHERE tenant_id = :tenant_id AND id = :role_id AND authorization_revision = :expected_revision
-SQL, [
-                'name' => $name,
-                'description' => $description,
-                'updated_at' => $now,
-                'tenant_id' => $tenantId,
-                'role_id' => $roleId,
-                'expected_revision' => $expectedRevision,
-            ]) !== 1) {
+            if (Db::name('role')->where('tenant_id', $actor->tenantId)->where('id', $roleId)
+                ->where('authorization_revision', $expectedRevision)->update([
+                    'name' => $name,
+                    'description' => $description,
+                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'updated_at' => $now,
+                ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
             }
-            $this->bumpTenant($tenantId, $now);
-            $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.role.updated', 'core.role.update', $roleId, $requestId);
+            $this->bumpTenant($actor->tenantId, $now);
+            $this->recordAudit($actor, 'tenant.role.updated', 'core.role.update', $roleId);
 
-            return $this->get($tenantId, $roleId);
+            return $this->get($actor->tenantId, $roleId);
         });
     }
 
     /** @return array<string, mixed> */
-    public function archive(
-        int $tenantId,
-        int $roleId,
-        int $expectedRevision,
-        int $actorMemberId,
-        int $actorAccountId,
-        string $requestId,
-    ): array {
-        return $this->transaction(function () use (
-            $tenantId,
-            $roleId,
-            $expectedRevision,
-            $actorMemberId,
-            $actorAccountId,
-            $requestId,
-        ): array {
-            $role = $this->requireRole($tenantId, $roleId, true);
+    public function archive(TenantContext $actor, int $roleId, int $expectedRevision): array
+    {
+        return $this->transaction(function () use ($actor, $roleId, $expectedRevision): array {
+            $role = $this->requireRole($actor->tenantId, $roleId, true);
             $this->assertRevision($role, $expectedRevision);
             if ((int) $role['is_builtin'] === 1) {
                 throw AdminAccessException::conflict('BUILTIN_ROLE_IMMUTABLE', 'Built-in roles cannot be archived.');
@@ -171,50 +107,35 @@ SQL, [
                 throw AdminAccessException::conflict('ROLE_ALREADY_ARCHIVED', 'The role is already archived.');
             }
             $now = $this->now();
-            $this->execute(<<<'SQL'
-UPDATE pa_role
-SET status = 'archived', archived_at = :archived_at,
-    authorization_revision = authorization_revision + 1, updated_at = :updated_at
-WHERE tenant_id = :tenant_id AND id = :role_id AND authorization_revision = :expected_revision
-SQL, [
-                'archived_at' => $now,
-                'updated_at' => $now,
-                'tenant_id' => $tenantId,
-                'role_id' => $roleId,
-                'expected_revision' => $expectedRevision,
-            ]);
-            $this->bumpTenant($tenantId, $now);
-            $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.role.archived', 'core.role.archive', $roleId, $requestId);
+            if (Db::name('role')->where('tenant_id', $actor->tenantId)->where('id', $roleId)
+                ->where('authorization_revision', $expectedRevision)->update([
+                    'status' => 'archived',
+                    'archived_at' => $now,
+                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'updated_at' => $now,
+                ]) !== 1) {
+                throw AdminAccessException::revisionMismatch();
+            }
+            $this->bumpTenant($actor->tenantId, $now);
+            $this->recordAudit($actor, 'tenant.role.archived', 'core.role.archive', $roleId);
 
-            return $this->get($tenantId, $roleId);
+            return $this->get($actor->tenantId, $roleId);
         });
     }
 
-    /**
-     * @param list<string> $permissionKeys
+    /** @param list<string> $permissionKeys
      * @return array<string, mixed>
      */
     public function replacePermissions(
-        int $tenantId,
+        TenantContext $actor,
         int $roleId,
         array $permissionKeys,
         int $expectedRevision,
-        int $actorMemberId,
-        int $actorAccountId,
-        string $requestId,
     ): array {
         $permissionKeys = array_values(array_unique($permissionKeys));
 
-        return $this->transaction(function () use (
-            $tenantId,
-            $roleId,
-            $permissionKeys,
-            $expectedRevision,
-            $actorMemberId,
-            $actorAccountId,
-            $requestId,
-        ): array {
-            $role = $this->requireRole($tenantId, $roleId, true);
+        return $this->transaction(function () use ($actor, $roleId, $permissionKeys, $expectedRevision): array {
+            $role = $this->requireRole($actor->tenantId, $roleId, true);
             $this->assertRevision($role, $expectedRevision);
             if ((int) $role['is_builtin'] === 1 && $role['key'] === 'core.tenant-owner') {
                 throw AdminAccessException::conflict(
@@ -222,56 +143,55 @@ SQL, [
                     'Tenant owner core permissions are fixed by the release catalog.',
                 );
             }
-            $permissions = $this->assignablePermissions($tenantId, $permissionKeys);
+            $permissions = $this->assignablePermissions($actor->tenantId, $permissionKeys);
             if (count($permissions) !== count($permissionKeys)) {
                 throw AdminAccessException::invalid(
                     'PERMISSION_NOT_ASSIGNABLE',
                     'A permission is retired, belongs to the platform, or its module is unavailable.',
                 );
             }
-
-            $this->execute(
-                'DELETE FROM pa_role_permission WHERE tenant_id = :tenant_id AND role_id = :role_id',
-                ['tenant_id' => $tenantId, 'role_id' => $roleId],
-            );
+            Db::name('role_permission')->where('tenant_id', $actor->tenantId)->where('role_id', $roleId)->delete();
             $now = $this->now();
-            foreach ($permissions as $permission) {
-                $this->execute(<<<'SQL'
-INSERT INTO pa_role_permission (tenant_id, role_id, permission_id, granted_by_member_id, granted_at)
-VALUES (:tenant_id, :role_id, :permission_id, :granter_id, :granted_at)
-SQL, [
-                    'tenant_id' => $tenantId,
-                    'role_id' => $roleId,
-                    'permission_id' => (int) $permission['id'],
-                    'granter_id' => $actorMemberId,
-                    'granted_at' => $now,
-                ]);
+            if ($permissions !== []) {
+                Db::name('role_permission')->insertAll(array_map(
+                    static fn(array $permission): array => [
+                        'tenant_id' => $actor->tenantId,
+                        'role_id' => $roleId,
+                        'permission_id' => (int) $permission['id'],
+                        'granted_by_member_id' => $actor->memberId,
+                        'granted_at' => $now,
+                    ],
+                    $permissions,
+                ));
             }
-            $this->execute(<<<'SQL'
-UPDATE pa_role
-SET authorization_revision = authorization_revision + 1, updated_at = :updated_at
-WHERE tenant_id = :tenant_id AND id = :role_id AND authorization_revision = :expected_revision
-SQL, [
-                'updated_at' => $now,
-                'tenant_id' => $tenantId,
-                'role_id' => $roleId,
-                'expected_revision' => $expectedRevision,
-            ]);
-            $this->bumpTenant($tenantId, $now);
-            $this->audit($tenantId, $actorMemberId, $actorAccountId, 'tenant.role.permissions-replaced', 'core.role.permission.assign', $roleId, $requestId);
+            if (Db::name('role')->where('tenant_id', $actor->tenantId)->where('id', $roleId)
+                ->where('authorization_revision', $expectedRevision)->update([
+                    'authorization_revision' => Db::raw('authorization_revision + 1'),
+                    'updated_at' => $now,
+                ]) !== 1) {
+                throw AdminAccessException::revisionMismatch();
+            }
+            $this->bumpTenant($actor->tenantId, $now);
+            $this->recordAudit(
+                $actor,
+                'tenant.role.permissions-replaced',
+                'core.role.permission.assign',
+                $roleId,
+            );
 
-            return $this->get($tenantId, $roleId);
+            return $this->get($actor->tenantId, $roleId);
         });
     }
 
     /** @return array<string, mixed> */
     private function requireRole(int $tenantId, int $roleId, bool $forUpdate): array
     {
-        return $this->fetchOne(
-            'SELECT * FROM pa_role WHERE tenant_id = :tenant_id AND id = :role_id'
-            . ($forUpdate ? ' FOR UPDATE' : ''),
-            ['tenant_id' => $tenantId, 'role_id' => $roleId],
-        ) ?? throw AdminAccessException::notFound();
+        $query = Db::name('role')->where('tenant_id', $tenantId)->where('id', $roleId);
+        if ($forUpdate) {
+            $query->lock(true);
+        }
+
+        return $query->find() ?? throw AdminAccessException::notFound();
     }
 
     /** @param array<string, mixed> $role */
@@ -282,8 +202,7 @@ SQL, [
         }
     }
 
-    /**
-     * @param list<string> $permissionKeys
+    /** @param list<string> $permissionKeys
      * @return list<array{id: int, key: string}>
      */
     private function assignablePermissions(int $tenantId, array $permissionKeys): array
@@ -291,41 +210,39 @@ SQL, [
         if ($permissionKeys === []) {
             return [];
         }
-        $placeholders = implode(', ', array_fill(0, count($permissionKeys), '?'));
-        $statement = $this->statement(<<<SQL
-SELECT p.id, p.`key`
-FROM pa_permission p
-WHERE p.`key` IN ({$placeholders})
-  AND p.status = 'active'
-  AND p.`key` NOT LIKE 'platform.%'
-  AND (
-      p.module_key = 'core'
-      OR EXISTS (
-          SELECT 1 FROM pa_tenant_module tm
-          WHERE tm.tenant_id = ? AND tm.module_key = p.module_key AND tm.status = 'enabled'
-            AND (tm.effective_at IS NULL OR tm.effective_at <= CURRENT_TIMESTAMP(3))
-            AND (tm.expires_at IS NULL OR tm.expires_at > CURRENT_TIMESTAMP(3))
-      )
-  )
-ORDER BY p.`key`
-SQL);
-        $statement->execute([...$permissionKeys, $tenantId]);
+        $modules = Db::name('tenant_module')->where('tenant_id', $tenantId)->where('status', 'enabled')
+            ->where(function ($query): void {
+                $query->whereNull('effective_at')->whereOr('effective_at', '<=', Db::raw('UTC_TIMESTAMP(3)'));
+            })->where(function ($query): void {
+                $query->whereNull('expires_at')->whereOr('expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'));
+            })->column('module_key');
 
         /** @var list<array{id: int, key: string}> $permissions */
-        $permissions = $statement->fetchAll(PDO::FETCH_ASSOC);
+        $permissions = Db::name('permission')->whereIn('key', $permissionKeys)->where('status', 'active')
+            ->whereNotLike('key', 'platform.%')->whereIn('module_key', array_values(array_unique(['core', ...$modules])))
+            ->field('id,key')->order('key')->select()->toArray();
 
         return $permissions;
     }
 
-    /** @return list<array<string, mixed>> */
-    private function rows(PDOStatement $statement): array
+    /** @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function hydratePermissions(int $tenantId, array $rows): array
     {
-        $items = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $permissionKeys = is_string($row['permission_keys']) && $row['permission_keys'] !== ''
-                ? explode(',', $row['permission_keys'])
-                : [];
-            $items[] = [
+        if ($rows === []) {
+            return [];
+        }
+        $roleIds = array_map('intval', array_column($rows, 'id'));
+        $permissionKeys = [];
+        foreach (RolePermission::alias('role_permission')
+            ->join('permission permission', 'permission.id = role_permission.permission_id')
+            ->where('role_permission.tenant_id', $tenantId)->whereIn('role_permission.role_id', $roleIds)
+            ->field(['role_permission.role_id', 'permission.key'])->order('permission.key')->select()->toArray() as $permission) {
+            $permissionKeys[(int) $permission['role_id']][] = (string) $permission['key'];
+        }
+        foreach ($rows as &$row) {
+            $row = [
                 'id' => (string) $row['id'],
                 'key' => $row['key'],
                 'name' => $row['name'],
@@ -333,132 +250,50 @@ SQL);
                 'is_builtin' => (int) $row['is_builtin'] === 1,
                 'status' => $row['status'],
                 'revision' => (string) $row['authorization_revision'],
-                'permission_keys' => $permissionKeys,
+                'permission_keys' => array_values(array_unique($permissionKeys[(int) $row['id']] ?? [])),
             ];
         }
+        unset($row);
 
-        return $items;
+        return $rows;
     }
 
     private function lockTenant(int $tenantId): void
     {
-        if ($this->fetchOne(
-            "SELECT id FROM pa_tenant WHERE id = :tenant_id AND status = 'active' FOR UPDATE",
-            ['tenant_id' => $tenantId],
-        ) === null) {
+        if (Db::name('tenant')->where('id', $tenantId)->where('status', 'active')->lock(true)->value('id') === null) {
             throw new AdminAccessException('TENANT_STATUS_INVALID', 403, 'The tenant is not active.');
         }
     }
 
     private function bumpTenant(int $tenantId, string $now): void
     {
-        $this->execute(<<<'SQL'
-UPDATE pa_tenant SET authorization_revision = authorization_revision + 1, updated_at = :updated_at WHERE id = :tenant_id
-SQL, ['updated_at' => $now, 'tenant_id' => $tenantId]);
-    }
-
-    private function audit(
-        int $tenantId,
-        int $actorMemberId,
-        int $actorAccountId,
-        string $eventType,
-        string $action,
-        int $roleId,
-        string $requestId,
-    ): void {
-        $this->execute(<<<'SQL'
-INSERT INTO pa_tenant_audit_event (
-    tenant_id, event_type, action, outcome, actor_tenant_id, actor_tenant_member_id,
-    actor_account_id, actor_type, target_resource_type, target_resource_id,
-    target_count, request_id, occurred_at
-) VALUES (
-    :tenant_id, :event_type, :action, 'success', :actor_tenant_id, :actor_member_id,
-    :actor_account_id, 'member', 'role', :target_id, 1, :request_id, :occurred_at
-)
-SQL, [
-            'tenant_id' => $tenantId,
-            'actor_tenant_id' => $tenantId,
-            'event_type' => $eventType,
-            'action' => $action,
-            'actor_member_id' => $actorMemberId,
-            'actor_account_id' => $actorAccountId,
-            'target_id' => (string) $roleId,
-            'request_id' => $requestId,
-            'occurred_at' => $this->now(),
+        Db::name('tenant')->where('id', $tenantId)->update([
+            'authorization_revision' => Db::raw('authorization_revision + 1'),
+            'updated_at' => $now,
         ]);
     }
 
-    /** @param array<string, int|string|null> $parameters */
-    private function execute(string $sql, array $parameters = []): int
+    private function recordAudit(TenantContext $actor, string $eventType, string $action, int $roleId): void
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-
-        return $statement->rowCount();
+        $this->audit->tenantMember(
+            context: $actor,
+            eventType: $eventType,
+            action: $action,
+            targetResourceType: 'role',
+            targetResourceId: (string) $roleId,
+        );
     }
 
-    /**
-     * @param array<string, int|string|null> $parameters
-     * @return array<string, mixed>|null
-     */
-    private function fetchOne(string $sql, array $parameters = []): ?array
-    {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-
-        return is_array($row) ? $row : null;
-    }
-
-    /** @param array<string, int|string|null> $parameters */
-    private function scalar(string $sql, array $parameters = []): int
-    {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-
-        return (int) $statement->fetchColumn();
-    }
-
-    private function statement(string $sql): PDOStatement
-    {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new AdminAccessException('DATABASE_ERROR', 500, 'Could not prepare the database operation.');
-        }
-
-        return $statement;
-    }
-
-    private function now(): string
-    {
-        return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
-    }
-
-    /**
-     * @template T
+    /** @template T
      * @param callable(): T $operation
      * @return T
      */
     private function transaction(callable $operation): mixed
     {
-        $ownsTransaction = false;
-        if (!$this->transactionActive()) {
-            $this->pdo->beginTransaction();
-            $ownsTransaction = true;
-        }
-
         try {
-            $result = $operation();
-            if ($ownsTransaction) {
-                $this->pdo->commit();
-            }
-
-            return $result;
+            return Db::transaction($operation);
         } catch (Throwable $exception) {
-            if ($ownsTransaction && $this->transactionActive()) {
-                $this->pdo->rollBack();
-            }
-            if ($exception instanceof PDOException && $exception->getCode() === '23000') {
+            if ((string) $exception->getCode() === '23000') {
                 throw AdminAccessException::conflict('ROLE_CONFLICT', 'Role key or relation conflicts.');
             }
 
@@ -466,9 +301,8 @@ SQL, [
         }
     }
 
-    /** @phpstan-impure */
-    private function transactionActive(): bool
+    private function now(): string
     {
-        return $this->pdo->inTransaction();
+        return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
     }
 }

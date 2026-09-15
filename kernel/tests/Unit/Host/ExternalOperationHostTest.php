@@ -6,6 +6,7 @@ namespace PeanutAdmin\Kernel\Tests\Unit\Host;
 
 use DateTimeImmutable;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Api\RequestId;
 use PeanutAdmin\Kernel\Auth\TenantContext;
@@ -18,7 +19,7 @@ use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationRepository;
 use PeanutAdmin\Kernel\Context\PlatformContext;
-use PeanutAdmin\Kernel\Host\AtomicOperationAdapter;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Kernel\Host\ExternalHostConfiguration;
 use PeanutAdmin\Kernel\Host\ExternalOperationDefinition;
@@ -31,18 +32,18 @@ use PeanutAdmin\Kernel\Host\ProblemDetailsAdapter;
 use PeanutAdmin\Kernel\Host\TrustedContextAdapter;
 use PeanutAdmin\Kernel\Host\TypedTargetAdapter;
 use PeanutAdmin\Kernel\Http\PermissionMiddleware;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Module\CompiledModuleRegistry;
 use PeanutAdmin\Kernel\Module\ManifestDocument;
-use PeanutAdmin\Kernel\Module\ModuleGuard;
 use PeanutAdmin\Kernel\Module\ModuleHostLayout;
-use PeanutAdmin\Kernel\Module\ModuleInstallationRecord;
-use PeanutAdmin\Kernel\Module\ModuleRuntimeRepository;
-use PeanutAdmin\Kernel\Module\TenantModuleRecord;
+use PeanutAdmin\Kernel\Module\ModuleAvailabilityService;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationRepository;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use stdClass;
+use think\facade\Db;
+use think\db\PDOConnection;
 
 final class ExternalOperationHostTest extends TestCase
 {
@@ -259,12 +260,15 @@ final class ExternalOperationHostTest extends TestCase
             guard: static function (
                 AuthorizedExternalOperation $authorized,
                 ExternalOperationRequest $guardedRequest,
-                PDO $transaction,
             ) use (&$guardCalls, $operation, $request): never {
                 ++$guardCalls;
                 self::assertSame($operation, $authorized->operation);
                 self::assertSame($request, $guardedRequest);
-                self::assertTrue($transaction->inTransaction());
+                $connection = Db::connect();
+                self::assertInstanceOf(PDOConnection::class, $connection);
+                $pdo = $connection->getPdo();
+                self::assertInstanceOf(PDO::class, $pdo);
+                self::assertTrue($pdo->inTransaction());
                 throw new ApiException('FIXTURE_UNAVAILABLE', 404, 'The fixture is unavailable.');
             },
         );
@@ -293,22 +297,6 @@ final class ExternalOperationHostTest extends TestCase
         $registry = new CompiledModuleRegistry([
             ManifestDocument::fromArray('backend/app/Modules/Fixture/Record', ['key' => 'fixture.record']),
         ], [], [], [], 'fixture-revision');
-        $moduleRepository = new class implements ModuleRuntimeRepository {
-            public function installation(string $moduleKey): ModuleInstallationRecord
-            {
-                return new ModuleInstallationRecord($moduleKey, '1.0.0', 'active', 1, 'digest');
-            }
-
-            public function tenantModule(int $tenantId, string $moduleKey): TenantModuleRecord
-            {
-                return new TenantModuleRecord($tenantId, $moduleKey, 'enabled', null, null, 1);
-            }
-
-            public function enabledDependents(int $tenantId, string $moduleKey): array
-            {
-                return [];
-            }
-        };
         $tenantRepository = new class ($permissionKeys) implements TenantAuthorizationRepository {
             /** @param list<string> $permissionKeys */
             public function __construct(private array $permissionKeys) {}
@@ -354,17 +342,29 @@ final class ExternalOperationHostTest extends TestCase
         );
 
         $pdo = new PDO('sqlite::memory:');
+        $pdo->exec(<<<'SQL'
+CREATE TABLE pa_module_installation (module_key TEXT PRIMARY KEY, status TEXT NOT NULL);
+CREATE TABLE pa_tenant_module (
+    tenant_id INTEGER NOT NULL,
+    module_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    effective_at TEXT NULL,
+    expires_at TEXT NULL,
+    PRIMARY KEY (tenant_id, module_key)
+);
+INSERT INTO pa_module_installation (module_key, status) VALUES ('fixture.record', 'active');
+INSERT INTO pa_tenant_module (tenant_id, module_key, status) VALUES (10, 'fixture.record', 'enabled');
+SQL);
+        ThinkPhpTestConnection::fromPdo($pdo);
 
         return new ExternalOperationHost(
             $configuration,
             new TrustedContextAdapter($configuration),
-            new ModuleAvailabilityAdapter($registry, new ModuleGuard($moduleRepository)),
+            new ModuleAvailabilityAdapter($registry, new ModuleAvailabilityService()),
             new PermissionAdapter($permissionMiddleware),
             new TypedTargetAdapter($dataPermission),
-            new AtomicOperationAdapter(
-                $pdo,
-                new \PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager($pdo),
-            ),
+            new IdempotencyService(),
+            new AuditService(),
             new ProblemDetailsAdapter(),
         );
     }

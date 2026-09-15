@@ -56,8 +56,6 @@ final readonly class OpsStatusSnapshot
             sort($checkKeys);
             if ($checkKeys !== ['critical', 'key', 'latency_ms', 'status']
                 || !in_array($check['status'], ['up', 'down'], true)
-                || !is_bool($check['critical'])
-                || (!is_int($check['latency_ms']) && !is_float($check['latency_ms']))
                 || !is_finite((float) $check['latency_ms']) || $check['latency_ms'] < 0 || $check['latency_ms'] > 60000
             ) {
                 throw new InvalidArgumentException('Invalid health check.');

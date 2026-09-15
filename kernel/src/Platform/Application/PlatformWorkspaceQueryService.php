@@ -5,185 +5,126 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Platform\Application;
 
 use JsonException;
-use PDO;
-use PDOStatement;
 use PeanutAdmin\Kernel\Audit\GovernanceAuditFilter;
 use PeanutAdmin\Kernel\Audit\GovernanceAuditMetadata;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
-use RuntimeException;
+use PeanutAdmin\Kernel\Audit\Model\PlatformAuditEventRecord;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformOperatorRole;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformRolePermission;
+use think\db\Query;
+use think\facade\Db;
 
 final readonly class PlatformWorkspaceQueryService
 {
-    public function __construct(private PDO $pdo) {}
-
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function tenants(PageRequest $page): array
     {
-        return $this->page(
-            'SELECT COUNT(*) FROM pa_tenant',
-            <<<'SQL'
-SELECT id, code, name, display_name, status, locale, timezone,
-       security_revision, authorization_revision, revision,
-       activated_at, suspended_at, closed_at, created_at, updated_at
-FROM pa_tenant
-ORDER BY id
-LIMIT :limit OFFSET :offset
-SQL,
-            $page,
-        );
+        $query = Db::name('tenant');
+        $total = (int) (clone $query)->count();
+        $rows = $query->field(
+            'id,code,name,display_name,status,locale,timezone,security_revision,authorization_revision,revision,activated_at,suspended_at,closed_at,created_at,updated_at',
+        )->order('id')->limit($page->offset(), $page->pageSize)->select()->toArray();
+
+        return ['items' => array_values(array_map($this->normalize(...), $rows)), 'total' => $total];
     }
 
     /** @return array<string, mixed> */
     public function tenant(int $tenantId): array
     {
-        return $this->one(
-            <<<'SQL'
-SELECT id, code, name, display_name, status, locale, timezone,
-       security_revision, authorization_revision, revision,
-       activated_at, suspended_at, closed_at, created_at, updated_at
-FROM pa_tenant
-WHERE id = :tenant_id
-SQL,
-            ['tenant_id' => $tenantId],
-        );
+        $row = Db::name('tenant')->where('id', $tenantId)->field(
+            'id,code,name,display_name,status,locale,timezone,security_revision,authorization_revision,revision,activated_at,suspended_at,closed_at,created_at,updated_at',
+        )->find();
+
+        return $this->requireRow($row);
     }
 
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function operators(PageRequest $page): array
     {
-        return $this->page(
-            'SELECT COUNT(*) FROM pa_platform_operator',
-            <<<'SQL'
-SELECT po.id, po.account_id, COALESCE(po.display_name, a.display_name) AS display_name,
-       MAX(CASE WHEN c.identifier_type = 'email' AND c.status = 'active'
-           THEN c.identifier_normalized END) AS email,
-       po.status, po.security_revision, po.suspended_at, po.closed_at,
-       po.created_at, po.updated_at,
-       GROUP_CONCAT(DISTINCT pr.`key` ORDER BY pr.`key` SEPARATOR ',') AS role_keys_csv
-FROM pa_platform_operator po
-JOIN pa_account a ON a.id = po.account_id
-LEFT JOIN pa_credential c ON c.account_id = a.id
-LEFT JOIN pa_platform_operator_role por ON por.platform_operator_id = po.id
-LEFT JOIN pa_platform_role pr ON pr.id = por.platform_role_id AND pr.status = 'active'
-GROUP BY po.id, po.account_id, po.display_name, a.display_name, po.status,
-         po.security_revision, po.suspended_at, po.closed_at, po.created_at, po.updated_at
-ORDER BY po.id
-LIMIT :limit OFFSET :offset
-SQL,
-            $page,
-            ['role_keys_csv' => 'role_keys'],
-        );
+        $query = PlatformOperator::alias('operator')
+            ->join('account account', 'account.id = operator.account_id');
+        $total = (int) (clone $query)->count();
+        $rows = $query->field([
+            'operator.id', 'operator.account_id',
+            'display_name' => Db::raw('COALESCE(operator.display_name, account.display_name)'),
+            'operator.status', 'operator.security_revision', 'operator.suspended_at', 'operator.closed_at',
+            'operator.created_at', 'operator.updated_at',
+        ])->order('operator.id')->limit($page->offset(), $page->pageSize)->select()->toArray();
+
+        return ['items' => $this->hydrateOperators(array_values($rows)), 'total' => $total];
     }
 
     /** @return array<string, mixed> */
     public function operator(int $operatorId): array
     {
-        return $this->one(
-            <<<'SQL'
-SELECT po.id, po.account_id, COALESCE(po.display_name, a.display_name) AS display_name,
-       MAX(CASE WHEN c.identifier_type = 'email' AND c.status = 'active'
-           THEN c.identifier_normalized END) AS email,
-       po.status, po.security_revision, po.suspended_at, po.closed_at,
-       po.created_at, po.updated_at,
-       GROUP_CONCAT(DISTINCT pr.`key` ORDER BY pr.`key` SEPARATOR ',') AS role_keys_csv
-FROM pa_platform_operator po
-JOIN pa_account a ON a.id = po.account_id
-LEFT JOIN pa_credential c ON c.account_id = a.id
-LEFT JOIN pa_platform_operator_role por ON por.platform_operator_id = po.id
-LEFT JOIN pa_platform_role pr ON pr.id = por.platform_role_id AND pr.status = 'active'
-WHERE po.id = :operator_id
-GROUP BY po.id, po.account_id, po.display_name, a.display_name, po.status,
-         po.security_revision, po.suspended_at, po.closed_at, po.created_at, po.updated_at
-SQL,
-            ['operator_id' => $operatorId],
-            ['role_keys_csv' => 'role_keys'],
-        );
+        $row = PlatformOperator::alias('operator')
+            ->join('account account', 'account.id = operator.account_id')
+            ->where('operator.id', $operatorId)
+            ->field([
+                'operator.id', 'operator.account_id',
+                'display_name' => Db::raw('COALESCE(operator.display_name, account.display_name)'),
+                'operator.status', 'operator.security_revision', 'operator.suspended_at', 'operator.closed_at',
+                'operator.created_at', 'operator.updated_at',
+            ])->find();
+        if ($row === null) {
+            throw AdminAccessException::notFound();
+        }
+
+        return $this->hydrateOperators([$row])[0];
     }
 
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function roles(PageRequest $page): array
     {
-        return $this->page(
-            'SELECT COUNT(*) FROM pa_platform_role',
-            <<<'SQL'
-SELECT pr.id, pr.`key`, pr.name, pr.description, pr.is_builtin, pr.status,
-       pr.revision, pr.archived_at, pr.created_at, pr.updated_at,
-       COUNT(DISTINCT CASE WHEN p.status = 'active' AND p.`key` LIKE 'platform.%'
-           THEN p.id END) AS permission_count
-FROM pa_platform_role pr
-LEFT JOIN pa_platform_role_permission prp ON prp.platform_role_id = pr.id
-LEFT JOIN pa_permission p ON p.id = prp.permission_id
-GROUP BY pr.id, pr.`key`, pr.name, pr.description, pr.is_builtin, pr.status,
-         pr.revision, pr.archived_at, pr.created_at, pr.updated_at
-ORDER BY pr.id
-LIMIT :limit OFFSET :offset
-SQL,
-            $page,
-        );
+        $query = Db::name('platform_role');
+        $total = (int) (clone $query)->count();
+        $rows = $query->field(
+            'id,key,name,description,is_builtin,status,revision,archived_at,created_at,updated_at',
+        )->order('id')->limit($page->offset(), $page->pageSize)->select()->toArray();
+
+        return ['items' => $this->hydrateRoles(array_values($rows), false), 'total' => $total];
     }
 
     /** @return array<string, mixed> */
     public function role(int $roleId): array
     {
-        return $this->one(
-            <<<'SQL'
-SELECT pr.id, pr.`key`, pr.name, pr.description, pr.is_builtin, pr.status,
-       pr.revision, pr.archived_at, pr.created_at, pr.updated_at,
-       COUNT(DISTINCT CASE WHEN p.status = 'active' AND p.`key` LIKE 'platform.%'
-           THEN p.id END) AS permission_count,
-       GROUP_CONCAT(DISTINCT CASE WHEN p.status = 'active' AND p.`key` LIKE 'platform.%'
-           THEN p.`key` END ORDER BY p.`key` SEPARATOR ',') AS permission_keys_csv
-FROM pa_platform_role pr
-LEFT JOIN pa_platform_role_permission prp ON prp.platform_role_id = pr.id
-LEFT JOIN pa_permission p ON p.id = prp.permission_id
-WHERE pr.id = :role_id
-GROUP BY pr.id, pr.`key`, pr.name, pr.description, pr.is_builtin, pr.status,
-         pr.revision, pr.archived_at, pr.created_at, pr.updated_at
-SQL,
-            ['role_id' => $roleId],
-            ['permission_keys_csv' => 'permission_keys'],
-        );
+        $row = Db::name('platform_role')->where('id', $roleId)->field(
+            'id,key,name,description,is_builtin,status,revision,archived_at,created_at,updated_at',
+        )->find();
+        if ($row === null) {
+            throw AdminAccessException::notFound();
+        }
+
+        return $this->hydrateRoles([$row], true)[0];
     }
 
     /** @return list<array<string, mixed>> */
     public function permissions(): array
     {
-        $statement = $this->statement(<<<'SQL'
-SELECT id, `key`, module_key, type, name, description, risk_level
-FROM pa_permission
-WHERE status = 'active' AND `key` LIKE 'platform.%'
-ORDER BY `key`
-SQL);
-        $statement->execute();
+        $rows = Db::name('permission')
+            ->where('status', 'active')
+            ->whereLike('key', 'platform.%')
+            ->field('id,key,module_key,type,name,description,risk_level')
+            ->order('key')->select()->toArray();
 
-        return $this->rows($statement);
+        return array_values(array_map($this->normalize(...), $rows));
     }
 
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function auditEvents(PageRequest $page, ?GovernanceAuditFilter $filter = null): array
     {
-        [$where, $parameters] = $this->auditWhere($filter ?? new GovernanceAuditFilter());
-        return $this->page(
-            'SELECT COUNT(*) FROM pa_platform_audit_event pae WHERE ' . $where,
-            <<<SQL
-SELECT pae.id, pae.event_type, pae.action, pae.outcome, pae.reason_code,
-       pae.operator_id, pae.account_id,
-       COALESCE(po.display_name, a.display_name, 'platform_system') AS operator_label,
-       pae.target_type, pae.target_id,
-       CASE WHEN pae.target_type = 'tenant' THEN pae.target_id ELSE NULL END AS target_tenant_id,
-       pae.request_id, pae.operation_id, pae.occurred_at AS created_at
-FROM pa_platform_audit_event pae
-LEFT JOIN pa_platform_operator po ON po.id = pae.operator_id
-LEFT JOIN pa_account a ON a.id = pae.account_id
-WHERE {$where}
-ORDER BY pae.occurred_at DESC, pae.id DESC
-LIMIT :limit OFFSET :offset
-SQL,
-            $page,
-            [],
-            $parameters,
-        );
+        $query = PlatformAuditEventRecord::alias('audit')
+            ->leftJoin('platform_operator operator', 'operator.id = audit.operator_id')
+            ->leftJoin('account account', 'account.id = audit.account_id');
+        $this->applyAuditFilter($query, $filter ?? new GovernanceAuditFilter());
+        $total = (int) (clone $query)->count();
+        $rows = $query->field($this->auditFields(false))
+            ->order('audit.occurred_at', 'desc')->order('audit.id', 'desc')
+            ->limit($page->offset(), $page->pageSize)->select()->toArray();
+
+        return ['items' => array_values(array_map($this->normalize(...), $rows)), 'total' => $total];
     }
 
     /** @return array<string, mixed> */
@@ -192,57 +133,90 @@ SQL,
         if (preg_match('/^[1-9][0-9]*$/D', $eventId) !== 1) {
             throw AdminAccessException::notFound();
         }
-        $row = $this->one(<<<'SQL'
-SELECT pae.id, pae.event_type, pae.action, pae.outcome, pae.reason_code,
-       pae.operator_id, pae.account_id,
-       COALESCE(po.display_name, a.display_name, 'platform_system') AS operator_label,
-       pae.target_type, pae.target_id,
-       CASE WHEN pae.target_type = 'tenant' THEN pae.target_id ELSE NULL END AS target_tenant_id,
-       pae.request_id, pae.operation_id, pae.metadata_json, pae.occurred_at AS created_at
-FROM pa_platform_audit_event pae
-LEFT JOIN pa_platform_operator po ON po.id = pae.operator_id
-LEFT JOIN pa_account a ON a.id = pae.account_id
-WHERE pae.id = :event_id
-SQL, ['event_id' => $eventId]);
+        $row = PlatformAuditEventRecord::alias('audit')
+            ->leftJoin('platform_operator operator', 'operator.id = audit.operator_id')
+            ->leftJoin('account account', 'account.id = audit.account_id')
+            ->where('audit.id', $eventId)
+            ->field($this->auditFields(true))->find();
+        if ($row === null) {
+            throw AdminAccessException::notFound();
+        }
         $row['metadata'] = $this->auditMetadata($row['metadata_json'] ?? null);
         unset($row['metadata_json']);
 
-        return $row;
+        return $this->normalize($row);
     }
 
-    /**
-     * @param array<string, string> $csvFields source field => result field
-     * @param array<string, string> $parameters
-     * @return array{items: list<array<string, mixed>>, total: int}
+    /** @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
      */
-    private function page(
-        string $countSql,
-        string $querySql,
-        PageRequest $page,
-        array $csvFields = [],
-        array $parameters = [],
-    ): array {
-        $count = $this->statement($countSql);
-        $count->execute($parameters);
-        $statement = $this->statement($querySql);
-        foreach ($parameters as $key => $value) {
-            $statement->bindValue(':' . $key, $value, PDO::PARAM_STR);
+    private function hydrateOperators(array $rows): array
+    {
+        if ($rows === []) {
+            return [];
         }
-        $statement->bindValue(':limit', $page->pageSize, PDO::PARAM_INT);
-        $statement->bindValue(':offset', $page->offset(), PDO::PARAM_INT);
-        $statement->execute();
+        $accountIds = array_map('intval', array_column($rows, 'account_id'));
+        $operatorIds = array_map('intval', array_column($rows, 'id'));
+        $emails = [];
+        foreach (Db::name('credential')->whereIn('account_id', $accountIds)
+            ->where('identifier_type', 'email')->where('status', 'active')
+            ->field('account_id,identifier_normalized')->order('id')->select()->toArray() as $credential) {
+            $emails[(int) $credential['account_id']] ??= (string) $credential['identifier_normalized'];
+        }
+        $roleKeys = [];
+        foreach (PlatformOperatorRole::alias('operator_role')
+            ->join(
+                'platform_role role',
+                "role.id = operator_role.platform_role_id AND role.status = 'active'",
+            )->whereIn('operator_role.platform_operator_id', $operatorIds)
+            ->field(['operator_role.platform_operator_id', 'role.key'])->order('role.key')->select()->toArray() as $role) {
+            $roleKeys[(int) $role['platform_operator_id']][] = (string) $role['key'];
+        }
+        foreach ($rows as &$row) {
+            $operatorId = (int) $row['id'];
+            $row['email'] = $emails[(int) $row['account_id']] ?? null;
+            $row['role_keys'] = array_values(array_unique($roleKeys[$operatorId] ?? []));
+            $row = $this->normalize($row);
+        }
+        unset($row);
 
-        return [
-            'items' => $this->rows($statement, $csvFields),
-            'total' => (int) $count->fetchColumn(),
-        ];
+        return $rows;
     }
 
-    /** @return array{string, array<string, string>} */
-    private function auditWhere(GovernanceAuditFilter $filter): array
+    /** @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function hydrateRoles(array $rows, bool $includeKeys): array
     {
-        $conditions = ['1 = 1'];
-        $parameters = [];
+        if ($rows === []) {
+            return [];
+        }
+        $roleIds = array_map('intval', array_column($rows, 'id'));
+        $permissions = [];
+        foreach (PlatformRolePermission::alias('role_permission')
+            ->join(
+                'permission permission',
+                "permission.id = role_permission.permission_id AND permission.status = 'active' AND permission.key LIKE 'platform.%'",
+            )->whereIn('role_permission.platform_role_id', $roleIds)
+            ->field(['role_permission.platform_role_id', 'permission.key'])
+            ->order('permission.key')->select()->toArray() as $permission) {
+            $permissions[(int) $permission['platform_role_id']][] = (string) $permission['key'];
+        }
+        foreach ($rows as &$row) {
+            $keys = array_values(array_unique($permissions[(int) $row['id']] ?? []));
+            $row['permission_count'] = count($keys);
+            if ($includeKeys) {
+                $row['permission_keys'] = $keys;
+            }
+            $row = $this->normalize($row);
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    private function applyAuditFilter(Query $query, GovernanceAuditFilter $filter): void
+    {
         foreach ([
             'event_type' => $filter->eventType,
             'action' => $filter->action,
@@ -252,12 +226,27 @@ SQL, ['event_id' => $eventId]);
             'target_id' => $filter->targetId,
         ] as $column => $value) {
             if ($value !== null) {
-                $conditions[] = "pae.{$column} = :{$column}";
-                $parameters[$column] = $value;
+                $query->where('audit.' . $column, $value);
             }
         }
+    }
 
-        return [implode(' AND ', $conditions), $parameters];
+    /** @return array<int|string, mixed> */
+    private function auditFields(bool $withMetadata): array
+    {
+        $fields = [
+            'audit.id', 'audit.event_type', 'audit.action', 'audit.outcome', 'audit.reason_code',
+            'audit.operator_id', 'audit.account_id',
+            'operator_label' => Db::raw("COALESCE(operator.display_name, account.display_name, 'platform_system')"),
+            'audit.target_type', 'audit.target_id',
+            'target_tenant_id' => Db::raw("CASE WHEN audit.target_type = 'tenant' THEN audit.target_id ELSE NULL END"),
+            'audit.request_id', 'audit.operation_id', 'audit.occurred_at' => 'created_at',
+        ];
+        if ($withMetadata) {
+            $fields[] = 'audit.metadata_json';
+        }
+
+        return $fields;
     }
 
     /** @return array<string, bool|int|string|null> */
@@ -276,51 +265,26 @@ SQL, ['event_id' => $eventId]);
         ]))->project(is_array($decoded) ? $decoded : []);
     }
 
-    /**
-     * @param array<string, int|string> $parameters
-     * @param array<string, string> $csvFields source field => result field
+    /** @param array<string, mixed>|null $row
      * @return array<string, mixed>
      */
-    private function one(string $sql, array $parameters, array $csvFields = []): array
+    private function requireRow(?array $row): array
     {
-        $statement = $this->statement($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+        if ($row === null) {
             throw AdminAccessException::notFound();
         }
 
-        return $this->normalize($row, $csvFields);
+        return $this->normalize($row);
     }
 
-    /**
-     * @param array<string, string> $csvFields source field => result field
-     * @return list<array<string, mixed>>
-     */
-    private function rows(PDOStatement $statement, array $csvFields = []): array
-    {
-        $rows = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $rows[] = $this->normalize($row, $csvFields);
-        }
-
-        return $rows;
-    }
-
-    /**
-     * @param array<string, mixed> $row
-     * @param array<string, string> $csvFields source field => result field
+    /** @param array<string, mixed> $row
      * @return array<string, mixed>
      */
-    private function normalize(array $row, array $csvFields = []): array
+    private function normalize(array $row): array
     {
-        foreach ($csvFields as $source => $target) {
-            $value = $row[$source] ?? null;
-            $row[$target] = is_string($value) && $value !== '' ? explode(',', $value) : [];
-            unset($row[$source]);
-        }
         foreach ($row as $key => $value) {
-            if ($value !== null && ($key === 'id' || str_ends_with($key, '_id') || str_ends_with($key, '_revision') || $key === 'revision')) {
+            if ($value !== null && ($key === 'id' || str_ends_with($key, '_id')
+                || str_ends_with($key, '_revision') || $key === 'revision')) {
                 $row[$key] = (string) $value;
             }
         }
@@ -332,15 +296,5 @@ SQL, ['event_id' => $eventId]);
         }
 
         return $row;
-    }
-
-    private function statement(string $sql): PDOStatement
-    {
-        $statement = $this->pdo->prepare($sql);
-        if ($statement === false) {
-            throw new RuntimeException('Could not prepare platform workspace query.');
-        }
-
-        return $statement;
     }
 }

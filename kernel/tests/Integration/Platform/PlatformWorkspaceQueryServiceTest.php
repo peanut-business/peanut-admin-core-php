@@ -9,7 +9,7 @@ use PeanutAdmin\Kernel\Audit\GovernanceAuditFilter;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
 use PeanutAdmin\Kernel\Platform\Application\PlatformWorkspaceQueryService;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 
@@ -26,9 +26,9 @@ final class PlatformWorkspaceQueryServiceTest extends DatabaseTestCase
         parent::setUp();
         $this->runner->migrate();
         (new CorePermissionCatalogSynchronizer(
-            new PdoAuthorizationCatalogRepository($this->database),
+            new ThinkPhpAuthorizationCatalogRepository(),
         ))->synchronize();
-        $this->service = new PlatformWorkspaceQueryService($this->database);
+        $this->service = new PlatformWorkspaceQueryService();
     }
 
     public function testListsPlatformResourcesWithPaginationAndStableApiShapes(): void

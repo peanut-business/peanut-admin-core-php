@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\TaskJob\Application;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\TaskJob\Persistence\TaskJobStore;
 
 final readonly class TaskJobService
@@ -14,7 +14,6 @@ final readonly class TaskJobService
 
     public function __construct(
         private TaskJobStore $repository,
-        private TransactionManager $transactions,
     ) {}
 
     /** @return array{items: list<JobRecord>, page: int, page_size: int, total: int} */
@@ -42,7 +41,7 @@ final readonly class TaskJobService
         if ($revision < 1) {
             throw TaskJobException::invalid();
         }
-        return $this->transactions->run(
+        return Db::transaction(
             fn(): JobRecord => $this->repository->cancel($context->tenantContext->tenantId, $context->tenantContext->memberId, $jobKey, $revision),
         );
     }
@@ -54,7 +53,7 @@ final readonly class TaskJobService
         if ($revision < 1) {
             throw TaskJobException::invalid();
         }
-        return $this->transactions->run(
+        return Db::transaction(
             fn(): JobRecord => $this->repository->retryDead($context->tenantContext->tenantId, $context->tenantContext->memberId, $jobKey, $revision),
         );
     }

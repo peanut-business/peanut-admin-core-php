@@ -11,22 +11,20 @@ use PeanutAdmin\ArtifactRevision\Application\ArtifactRevisionException;
 use PeanutAdmin\ArtifactRevision\Application\ArtifactRevisionReceipt;
 use PeanutAdmin\ArtifactRevision\Application\ArtifactRevisionService;
 use PeanutAdmin\ArtifactRevision\Database\Schema;
-use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionStore;
+use PeanutAdmin\ArtifactRevision\Persistence\ThinkPhpArtifactRevisionRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Persistence\Schema\KernelSchema;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ReflectionMethod;
 use RuntimeException;
-use think\db\PDOConnection;
 
 final class ArtifactRevisionServiceTest extends TestCase
 {
@@ -34,7 +32,6 @@ final class ArtifactRevisionServiceTest extends TestCase
 
     private PDO $admin;
     private PDO $pdo;
-    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -63,8 +60,7 @@ final class ArtifactRevisionServiceTest extends TestCase
             $password,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
         );
-        $this->connection = ThinkPhpTestConnection::fromPdo($this->pdo);
-        $this->pdo = $this->connection->connect();
+        ThinkPhpTestConnection::fromPdo($this->pdo);
         $this->createKernelFixtures();
         foreach (Schema::createSql() as $statement) {
             $this->pdo->exec($statement);
@@ -334,10 +330,9 @@ SQL);
     private function service(): ArtifactRevisionService
     {
         return new ArtifactRevisionService(
-            new ArtifactRevisionStore($this->connection),
-            new ThinkPhpTransactionManager($this->connection),
-            new PdoIdempotencyRepository($this->pdo),
-            new PdoAuditRepository($this->pdo),
+            new ThinkPhpArtifactRevisionRepository(),
+            new IdempotencyService(),
+            new AuditService(),
         );
     }
 

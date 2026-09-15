@@ -9,7 +9,7 @@ use PDOException;
 use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\ArtifactRevision\Database\Schema;
 use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
-use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionStore;
+use PeanutAdmin\ArtifactRevision\Persistence\ThinkPhpArtifactRevisionRepository;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use think\db\PDOConnection;
@@ -68,7 +68,7 @@ final class ArtifactRevisionStoreTest extends TestCase
     public function testSchemaCanReenterWithoutChangingKernelOrArtifactRows(): void
     {
         [$tenantId] = $this->seedTenant(11, 101);
-        $repository = new ArtifactRevisionStore($this->connection);
+        $repository = new ThinkPhpArtifactRevisionRepository();
         $repository->lockOrCreateArtifact($tenantId, 'document.article', 'article-1', 11, null, $this->now());
 
         foreach (Schema::createSql() as $statement) {
@@ -84,7 +84,7 @@ final class ArtifactRevisionStoreTest extends TestCase
     {
         [$tenantId] = $this->seedTenant(11, 101);
         [$otherTenantId] = $this->seedTenant(21, 201);
-        $repository = new ArtifactRevisionStore($this->connection);
+        $repository = new ThinkPhpArtifactRevisionRepository();
         $artifact = $repository->lockOrCreateArtifact(
             $tenantId,
             'document.article',
@@ -204,7 +204,7 @@ SQL)->execute([$parentId, $parentNumber, $revisionId]);
     public function testOptimisticAndImmutableGuardsRejectStaleWrites(): void
     {
         [$tenantId] = $this->seedTenant(11, 101);
-        $repository = new ArtifactRevisionStore($this->connection);
+        $repository = new ThinkPhpArtifactRevisionRepository();
         $artifact = $repository->lockOrCreateArtifact(
             $tenantId,
             'document.article',
@@ -265,7 +265,7 @@ SQL)->execute([$parentId, $parentNumber, $revisionId]);
     public function testFinalizedEnvelopeTamperingFailsClosed(): void
     {
         [$tenantId] = $this->seedTenant(11, 101);
-        $repository = new ArtifactRevisionStore($this->connection);
+        $repository = new ThinkPhpArtifactRevisionRepository();
         $artifact = $repository->lockOrCreateArtifact(
             $tenantId,
             'document.article',

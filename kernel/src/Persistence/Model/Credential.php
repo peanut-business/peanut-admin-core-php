@@ -1,0 +1,18 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PeanutAdmin\Kernel\Persistence\Model;
+
+use think\Model;
+
+final class Credential extends Model
+{
+    /** @var string */ protected $name = 'credential';
+    /** @var bool */ protected $autoWriteTimestamp = false;
+    /** @var array<string, string> */ protected $type = [
+        'id' => 'integer',
+        'account_id' => 'integer',
+        'failed_attempts' => 'integer',
+    ];
+}

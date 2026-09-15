@@ -7,14 +7,15 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Operation;
 use DateTimeImmutable;
 use DateTimeZone;
 use PeanutAdmin\Kernel\Audit\AuditOutcome;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 use RuntimeException;
+use think\facade\Db;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 
@@ -63,17 +64,16 @@ final class OperationAtomicityPrimitivesTest extends DatabaseTestCase
     public function testAuditOutcomesAreTypedAndRollbackWithTheirTransaction(): void
     {
         [$context] = $this->fixture();
-        $transactions = new PdoTransactionManager($this->database);
-        $audit = new PdoAuditRepository($this->database);
+        $audit = new AuditService();
 
-        $transactions->run(fn() => $audit->appendTenantMember(
+        Db::transaction(fn() => $audit->tenantMember(
             $context,
             'fixture.command.denied',
             'fixture.command.execute',
             metadata: ['reason_code' => 'FIXTURE_DENIED'],
             outcome: AuditOutcome::Denied,
         ));
-        $transactions->run(fn() => $audit->appendTenantMember(
+        Db::transaction(fn() => $audit->tenantMember(
             $context,
             'fixture.command.error',
             'fixture.command.execute',
@@ -82,8 +82,8 @@ final class OperationAtomicityPrimitivesTest extends DatabaseTestCase
         ));
 
         try {
-            $transactions->run(function () use ($audit, $context): void {
-                $audit->appendTenantMember(
+            Db::transaction(function () use ($audit, $context): void {
+                $audit->tenantMember(
                     $context,
                     'fixture.command.rolled-back',
                     'fixture.command.execute',
@@ -113,14 +113,14 @@ final class OperationAtomicityPrimitivesTest extends DatabaseTestCase
         int $memberId,
         callable $checkpoint,
     ): void {
-        $transactions = new PdoTransactionManager($this->database);
-        $idempotency = new PdoIdempotencyRepository($this->database);
-        $audit = new PdoAuditRepository($this->database);
+        $idempotency = new IdempotencyService();
+        $audit = new AuditService();
+        $scope = TenantScope::fromTrustedContext($tenantId, 'operation-atomicity-test');
         $now = new DateTimeImmutable('2026-07-19T00:00:00Z');
 
-        $transactions->run(function () use ($context, $tenantId, $memberId, $checkpoint, $idempotency, $audit, $now): void {
+        Db::transaction(function () use ($context, $scope, $memberId, $checkpoint, $idempotency, $audit, $now): void {
             $record = $idempotency->beginTenant(
-                $tenantId,
+                $scope,
                 $memberId,
                 'fixture.command.execute',
                 IdempotencyKey::fromString('01KPEANUTADMIN-ATOMIC-0001'),
@@ -134,7 +134,7 @@ final class OperationAtomicityPrimitivesTest extends DatabaseTestCase
             $this->database->exec("INSERT INTO fixture_atomic_domain (value) VALUES ('domain')");
             $checkpoint('domain_written');
 
-            $audit->appendTenantMember(
+            $audit->tenantMember(
                 $context,
                 'fixture.command.succeeded',
                 'fixture.command.execute',
@@ -148,7 +148,7 @@ final class OperationAtomicityPrimitivesTest extends DatabaseTestCase
             $this->database->exec("INSERT INTO fixture_atomic_outbox (event_key) VALUES ('fixture.command.succeeded')");
             $checkpoint('outbox_written');
 
-            $idempotency->completeTenant($record->id, 201, ['data' => ['id' => '1']], 'fixture.record', '1');
+            $idempotency->completeTenant($scope, $record->id, 201, ['data' => ['id' => '1']], 'fixture.record', '1');
             $checkpoint('idempotency_completed');
         });
     }

@@ -4,13 +4,11 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tenancy;
 
-use PDO;
 use PeanutAdmin\Kernel\Context\TenantSystemContext;
+use think\facade\Db;
 
-final readonly class DefaultTenantContextResolver
+final class DefaultTenantContextResolver
 {
-    public function __construct(private PDO $pdo) {}
-
     public function system(string $actor, string $operation, string $operationId): TenantSystemContext
     {
         $actor = trim($actor);
@@ -19,9 +17,8 @@ final readonly class DefaultTenantContextResolver
         if ($actor === '' || $operation === '' || $operationId === '') {
             throw new \DomainException('DEFAULT_TENANT_CONTEXT_UNAVAILABLE');
         }
-        $statement = $this->pdo->prepare("SELECT id FROM pa_tenant WHERE code = 'default' AND status = 'active' LIMIT 2");
-        $statement->execute();
-        $ids = $statement->fetchAll(PDO::FETCH_COLUMN);
+        $ids = Db::name('tenant')->where('code', 'default')->where('status', 'active')
+            ->limit(2)->column('id');
         if (count($ids) !== 1 || (int) $ids[0] < 1) {
             throw new \DomainException('DEFAULT_TENANT_CONTEXT_UNAVAILABLE');
         }

@@ -11,15 +11,15 @@ use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\AuthorizationException;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalog;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\PdoTenantAuthorizationRepository;
+use PeanutAdmin\Kernel\Authorization\ThinkPhpTenantAuthorizationRepository;
 use PeanutAdmin\Kernel\Authorization\PermissionRequirement;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Http\PermissionMiddleware;
-use PeanutAdmin\Kernel\Platform\Authorization\PdoPlatformAuthorizationRepository;
+use PeanutAdmin\Kernel\Platform\Authorization\ThinkPhpPlatformAuthorizationRepository;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 
@@ -29,13 +29,13 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
 {
     private const NOW = '2026-07-16 06:00:00.000';
 
-    private PdoAuthorizationCatalogRepository $catalog;
+    private ThinkPhpAuthorizationCatalogRepository $catalog;
 
     protected function setUp(): void
     {
         parent::setUp();
         $this->runner->migrate();
-        $this->catalog = new PdoAuthorizationCatalogRepository($this->database);
+        $this->catalog = new ThinkPhpAuthorizationCatalogRepository();
         (new CorePermissionCatalogSynchronizer($this->catalog))->synchronize();
     }
 
@@ -81,7 +81,7 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
             "UPDATE pa_role SET status = 'disabled' WHERE id = {$roleB}",
         );
 
-        $repository = new PdoTenantAuthorizationRepository($this->database);
+        $repository = new ThinkPhpTenantAuthorizationRepository();
         $member = $repository->member($tenantId, $memberId);
 
         self::assertSame($memberId, $member['id'] ?? null);
@@ -405,7 +405,7 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
     private function tenantEvaluator(): TenantAuthorizationEvaluator
     {
         return new TenantAuthorizationEvaluator(
-            new PdoTenantAuthorizationRepository($this->database),
+            new ThinkPhpTenantAuthorizationRepository(),
             new RevisionPermissionCache(),
         );
     }
@@ -413,7 +413,7 @@ final class FunctionalAuthorizationTest extends DatabaseTestCase
     private function platformEvaluator(): PlatformAuthorizationEvaluator
     {
         return new PlatformAuthorizationEvaluator(
-            new PdoPlatformAuthorizationRepository($this->database),
+            new ThinkPhpPlatformAuthorizationRepository(),
             new RevisionPermissionCache(),
         );
     }

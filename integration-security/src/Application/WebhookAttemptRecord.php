@@ -15,6 +15,7 @@ final readonly class WebhookAttemptRecord implements \JsonSerializable
         public string $attemptedAt,
     ) {}
 
+    /** @return array<string, int|string|null> */
     public function jsonSerialize(): array
     {
         return [

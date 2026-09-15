@@ -9,13 +9,14 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Module\CompiledModuleRegistry;
 use PeanutAdmin\Kernel\Module\ModuleException;
-use PeanutAdmin\Kernel\Module\ModuleGuard;
+use PeanutAdmin\Kernel\Module\ModuleAvailabilityService;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 
 final readonly class ModuleAvailabilityAdapter
 {
     public function __construct(
         private CompiledModuleRegistry $registry,
-        private ModuleGuard $guard,
+        private ModuleAvailabilityService $modules,
     ) {}
 
     public function assertAvailable(
@@ -26,9 +27,13 @@ final readonly class ModuleAvailabilityAdapter
         if (!in_array($operation->moduleKey, $this->registry->moduleKeys(), true)) {
             throw new ModuleException('MODULE_NOT_INSTALLED', 'The Module is not registered by this host.');
         }
-        $this->guard->assertDeployment($operation->moduleKey);
+        $this->modules->assertDeployment($operation->moduleKey);
         if ($context instanceof TenantContext) {
-            $this->guard->assertTenant($context->tenantId, $operation->moduleKey, $now);
+            $this->modules->assertTenant(
+                TenantScope::fromTrustedContext($context->tenantId, 'external-operation-host'),
+                $operation->moduleKey,
+                $now,
+            );
         }
     }
 }

@@ -6,19 +6,19 @@ namespace PeanutAdmin\Testing\Authorization;
 
 use DateTimeImmutable;
 use DateTimeZone;
-use PDO;
-use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
+use PeanutAdmin\DataPermission\Constraint\ThinkPhpQueryConstraintApplier;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 use PeanutAdmin\DataPermission\Target\TypedResourceTargetCollection;
 use PeanutAdmin\DataPermission\Target\TypedResourceTargetSet;
 use PeanutAdmin\Kernel\Auth\TenantContext;
-use Throwable;
+use think\db\PDOConnection;
+use think\db\Query;
+use think\facade\Db;
 
 final readonly class ResourceProviderContractHarness
 {
     public function __construct(
-        private PDO $pdo,
         private DataPermissionEngine $engine,
         private TenantContext $context,
         private AuthorizationSqlTrace $trace,
@@ -33,11 +33,10 @@ final readonly class ResourceProviderContractHarness
         ?TypedResourceTargetCollection $targets = null,
         ?string $namePrefix = null,
     ): array {
-        [$sql, $parameters] = $this->authorizedSelect($operation, $targets, $namePrefix);
-        $statement = $this->pdo->prepare($sql . ' ORDER BY record.id');
-        $statement->execute($parameters);
+        $query = $this->authorizedQuery($operation, $targets, $namePrefix)->order('record.id');
+        $this->traceQuery($query);
 
-        return array_values($statement->fetchAll(PDO::FETCH_ASSOC));
+        return array_values($query->select()->toArray());
     }
 
     /** @return array<string, mixed>|null */
@@ -46,13 +45,9 @@ final readonly class ResourceProviderContractHarness
         string $operation,
         TypedResourceTargetCollection $targets,
     ): ?array {
-        [$sql, $parameters] = $this->authorizedSelect($operation, $targets);
-        $sql .= ' AND record.id = :record_id';
-        $parameters['record_id'] = $recordId;
-        $this->trace->record($sql, $parameters);
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($parameters);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $query = $this->authorizedQuery($operation, $targets)->where('record.id', $recordId);
+        $this->traceQuery($query);
+        $row = $query->find();
 
         return is_array($row) ? $row : null;
     }
@@ -73,18 +68,12 @@ final readonly class ResourceProviderContractHarness
             throw new DataAuthorizationException($decision->reasonCode, 'Create target is denied.');
         }
         $projectId = $this->singlePrimaryTarget($targets);
-        $statement = $this->pdo->prepare(<<<'SQL'
-INSERT INTO fixture_record (tenant_id, project_id, created_by_member_id, name)
-VALUES (:tenant_id, :project_id, :member_id, :name)
-SQL);
-        $statement->execute([
+        return (int) $this->query('fixture_record')->insertGetId([
             'tenant_id' => $this->context->tenantId,
             'project_id' => $projectId,
-            'member_id' => $this->context->memberId,
+            'created_by_member_id' => $this->context->memberId,
             'name' => $payload['name'],
         ]);
-
-        return (int) $this->pdo->lastInsertId();
     }
 
     public function update(
@@ -97,17 +86,10 @@ SQL);
             if ($this->detail($recordId, $operation, $targets) === null) {
                 throw new DataAuthorizationException('AUTHZ_DATA_DENIED', 'Record not found.');
             }
-            $statement = $this->pdo->prepare(<<<'SQL'
-UPDATE fixture_record SET name = :name
-WHERE tenant_id = :tenant_id AND id = :record_id
-SQL);
-            $statement->execute([
-                'name' => $name,
-                'tenant_id' => $this->context->tenantId,
-                'record_id' => $recordId,
-            ]);
-
-            return $statement->rowCount() === 1;
+            return $this->query('fixture_record')
+                ->where('tenant_id', $this->context->tenantId)
+                ->where('id', $recordId)
+                ->update(['name' => $name]) === 1;
         });
     }
 
@@ -120,15 +102,10 @@ SQL);
             if ($this->detail($recordId, $operation, $targets) === null) {
                 throw new DataAuthorizationException('AUTHZ_DATA_DENIED', 'Record not found.');
             }
-            $statement = $this->pdo->prepare(<<<'SQL'
-DELETE FROM fixture_record WHERE tenant_id = :tenant_id AND id = :record_id
-SQL);
-            $statement->execute([
-                'tenant_id' => $this->context->tenantId,
-                'record_id' => $recordId,
-            ]);
-
-            return $statement->rowCount() === 1;
+            return $this->query('fixture_record')
+                ->where('tenant_id', $this->context->tenantId)
+                ->where('id', $recordId)
+                ->delete() === 1;
         });
     }
 
@@ -141,41 +118,24 @@ SQL);
     ): int {
         return $this->transaction(function () use ($recordIds, $operation, $targets, $name): int {
             $projectId = $this->singlePrimaryTarget($targets);
-            [$sql, $parameters] = $this->authorizedSelect($operation, $targets);
-            $placeholders = [];
-            foreach ($recordIds as $index => $recordId) {
-                $parameter = 'record_' . $index;
-                $placeholders[] = ':' . $parameter;
-                $parameters[$parameter] = $recordId;
-            }
-            $sql .= ' AND record.id IN (' . implode(', ', $placeholders) . ')'
-                . ' AND record.project_id = :primary_project_id FOR UPDATE';
-            $parameters['primary_project_id'] = $projectId;
-            $this->trace->record($sql, $parameters);
-            $statement = $this->pdo->prepare($sql);
-            $statement->execute($parameters);
-            $authorizedIds = array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN));
+            $query = $this->authorizedQuery($operation, $targets)
+                ->whereIn('record.id', $recordIds)
+                ->where('record.project_id', $projectId)
+                ->lock(true);
+            $this->traceQuery($query);
+            $authorizedIds = array_map('intval', $query->column('record.id'));
             if (count(array_unique($authorizedIds)) !== count(array_unique($recordIds))) {
                 throw new DataAuthorizationException('AUTHZ_DATA_DENIED', 'The batch contains a denied record.');
             }
 
-            $update = $this->pdo->prepare(
-                'UPDATE fixture_record SET name = :name WHERE tenant_id = :tenant_id'
-                . ' AND project_id = :project_id AND id IN (' . implode(', ', $placeholders) . ')',
-            );
-            $update->execute([
-                'name' => $name,
-                'tenant_id' => $this->context->tenantId,
-                'project_id' => $projectId,
-                ...array_filter(
-                    $parameters,
-                    static fn(string $key): bool => str_starts_with($key, 'record_'),
-                    ARRAY_FILTER_USE_KEY,
-                ),
-            ]);
+            $updated = $this->query('fixture_record')
+                ->where('tenant_id', $this->context->tenantId)
+                ->where('project_id', $projectId)
+                ->whereIn('id', $recordIds)
+                ->update(['name' => $name]);
             $this->recordMultiTargetAudit($operation, $recordIds);
 
-            return $update->rowCount();
+            return $updated;
         });
     }
 
@@ -197,18 +157,16 @@ SQL);
                     throw new DataAuthorizationException($decision->reasonCode, 'Import row is denied.');
                 }
             }
+            $payload = [];
             foreach ($rows as $row) {
-                $statement = $this->pdo->prepare(<<<'SQL'
-INSERT INTO fixture_record (tenant_id, project_id, created_by_member_id, name)
-VALUES (:tenant_id, :project_id, :member_id, :name)
-SQL);
-                $statement->execute([
+                $payload[] = [
                     'tenant_id' => $this->context->tenantId,
                     'project_id' => $row['project_id'],
-                    'member_id' => $this->context->memberId,
+                    'created_by_member_id' => $this->context->memberId,
                     'name' => $row['name'],
-                ]);
+                ];
             }
+            $this->query('fixture_record')->insertAll($payload);
 
             return count($rows);
         });
@@ -241,28 +199,25 @@ SQL);
     }
 
     /**
-     * @return array{string, array<string, int|string>}
+     * @return Query
      */
-    private function authorizedSelect(
+    private function authorizedQuery(
         string $operation,
         ?TypedResourceTargetCollection $targets,
         ?string $namePrefix = null,
-    ): array {
-        $compiled = (new PdoQueryConstraintCompiler())->compile($this->engine->queryConstraint(
+    ): Query {
+        $query = $this->query('fixture_record')->alias('record');
+        (new ThinkPhpQueryConstraintApplier())->apply($query, $this->engine->queryConstraint(
             $this->context,
             $this->resourceKey,
             $operation,
             $targets ?? new TypedResourceTargetCollection(),
         ));
-        $sql = 'SELECT record.* FROM fixture_record record WHERE ' . $compiled->sql;
-        $parameters = $compiled->parameters;
         if ($namePrefix !== null) {
-            $sql .= ' AND record.name LIKE :name_prefix';
-            $parameters['name_prefix'] = $namePrefix . '%';
+            $query->whereLike('record.name', $namePrefix . '%');
         }
-        $this->trace->record($sql, $parameters);
 
-        return [$sql, $parameters];
+        return $query;
     }
 
     private function singlePrimaryTarget(TypedResourceTargetCollection $targets): string
@@ -284,30 +239,21 @@ SQL);
     {
         $normalized = array_map('strval', $targetIds);
         sort($normalized, SORT_STRING);
-        $statement = $this->pdo->prepare(<<<'SQL'
-INSERT INTO pa_tenant_audit_event (
-    tenant_id, event_type, action, outcome,
-    actor_tenant_id, actor_tenant_member_id, actor_account_id, actor_type,
-    target_resource_type, target_count, target_set_digest,
-    authorization_basis_json, request_id, metadata_json, occurred_at
-) VALUES (
-    :tenant_id, 'fixture.batch.updated', :action, 'success',
-    :actor_tenant_id, :member_id, :account_id, 'member',
-    'fixture.record', :target_count, :target_digest,
-    :authorization_basis, :request_id, :metadata, :occurred_at
-)
-SQL);
-        $statement->execute([
+        $this->query('pa_tenant_audit_event')->insert([
             'tenant_id' => $this->context->tenantId,
+            'event_type' => 'fixture.batch.updated',
             'action' => $action,
+            'outcome' => 'success',
             'actor_tenant_id' => $this->context->tenantId,
-            'member_id' => $this->context->memberId,
-            'account_id' => $this->context->accountId,
+            'actor_tenant_member_id' => $this->context->memberId,
+            'actor_account_id' => $this->context->accountId,
+            'actor_type' => 'member',
+            'target_resource_type' => 'fixture.record',
             'target_count' => count($normalized),
-            'target_digest' => hash('sha256', implode('|', $normalized)),
-            'authorization_basis' => json_encode(['audience' => 'tenant'], JSON_THROW_ON_ERROR),
+            'target_set_digest' => hash('sha256', implode('|', $normalized)),
+            'authorization_basis_json' => json_encode(['audience' => 'tenant'], JSON_THROW_ON_ERROR),
             'request_id' => $this->context->requestId,
-            'metadata' => json_encode(['target_ids_recorded' => false], JSON_THROW_ON_ERROR),
+            'metadata_json' => json_encode(['target_ids_recorded' => false], JSON_THROW_ON_ERROR),
             'occurred_at' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v'),
         ]);
     }
@@ -319,18 +265,26 @@ SQL);
      */
     private function transaction(callable $operation): mixed
     {
-        $this->pdo->beginTransaction();
-        try {
-            $result = $operation();
-            $this->pdo->commit();
+        return Db::transaction($operation);
+    }
 
-            return $result;
-        } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
+    private function traceQuery(Query $query): void
+    {
+        $sql = (clone $query)->fetchSql()->select();
+        $this->trace->record(is_string($sql) ? $sql : '', []);
+    }
 
-            throw $exception;
+    private function query(string $table): Query
+    {
+        $connection = Db::connect();
+        if (!$connection instanceof PDOConnection) {
+            throw new \RuntimeException('The fixture requires ThinkPHP PDO query support.');
         }
+        $query = $connection->newQuery();
+        if (!$query instanceof Query) {
+            throw new \RuntimeException('The fixture requires ThinkPHP SQL query support.');
+        }
+
+        return $query->table($table);
     }
 }

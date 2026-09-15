@@ -28,7 +28,7 @@ interface NotificationRepository
         ?int $expectedRevision,
     ): array;
 
-    /** @return array<string, mixed> */
+    /** @return array{template_key:string,name:string,subject_template:string,body_template:string,channels:list<string>,variables:list<string>,revision:int} */
     public function activeTemplate(int $tenantId, string $templateKey): array;
 
     /**

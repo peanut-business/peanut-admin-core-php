@@ -114,7 +114,10 @@ final readonly class MachineIdentityService
         return new MachinePrincipal($row['tenant_id'], $row['identity_key'], $row['scopes']);
     }
 
-    /** @param list<string> $scopes @return array{string,list<string>,?DateTimeImmutable} */
+    /**
+     * @param list<string> $scopes
+     * @return array{string, list<string>, DateTimeImmutable|null}
+     */
     private function validate(string $name, array $scopes, ?DateTimeImmutable $expiresAt): array
     {
         $name = trim($name);
@@ -124,12 +127,15 @@ final readonly class MachineIdentityService
         return [$name, $this->scopes($scopes, false), $expiresAt];
     }
 
-    /** @param list<string> $scopes @return list<string> */
+    /**
+     * @param list<string> $scopes
+     * @return list<string>
+     */
     private function scopes(array $scopes, bool $allowEmpty): array
     {
         $unique = [];
         foreach ($scopes as $scope) {
-            if (!is_string($scope) || preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $scope) !== 1 || strlen($scope) > 96) {
+            if (preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $scope) !== 1 || strlen($scope) > 96) {
                 throw IntegrationSecurityException::invalid();
             }
             $unique[$scope] = true;

@@ -5,13 +5,11 @@ declare(strict_types=1);
 namespace PeanutAdmin\Testing\Authorization;
 
 use DateTimeImmutable;
-use PDO;
-use PDOStatement;
-use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
+use PeanutAdmin\DataPermission\Catalog\ThinkPhpResourceOperationCatalog;
 use PeanutAdmin\DataPermission\Constraint\ColumnReference;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
-use PeanutAdmin\DataPermission\Policy\PolicyStore;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
+use PeanutAdmin\DataPermission\Policy\ThinkPhpPolicyRepository;
 use PeanutAdmin\DataPermission\Provider\ConditionProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\ThinkPhpDepartmentHierarchyProvider;
 use PeanutAdmin\DataPermission\Provider\ThinkPhpTargetSetMembershipProvider;
@@ -24,8 +22,8 @@ use PeanutAdmin\DataPermission\Target\TargetResolverRegistry;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\PdoTenantAuthorizationRepository;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\ThinkPhpTenantAuthorizationRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ProtectedResourceDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ResourceOperationDefinition;
@@ -34,12 +32,13 @@ use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use RuntimeException;
 use think\db\PDOConnection;
+use think\facade\Db;
 
 final class AuthorizationAcceptanceFixture
 {
     private const NOW = '2026-07-16 12:00:00.000';
 
-    private PdoAuthorizationCatalogRepository $catalog;
+    private ThinkPhpAuthorizationCatalogRepository $catalog;
     private int $alphaTenant;
     private int $betaTenant;
     private int $accountId;
@@ -67,14 +66,9 @@ final class AuthorizationAcceptanceFixture
     /** @var array<string, int> */
     private array $recordIds = [];
 
-    private function __construct(
-        private readonly PDO $pdo,
-        private readonly PDOConnection $connection,
-    ) {}
-
-    public static function install(PDO $pdo, PDOConnection $connection): AuthorizationAcceptanceEnvironment
+    public static function install(): AuthorizationAcceptanceEnvironment
     {
-        $fixture = new self($pdo, $connection);
+        $fixture = new self();
 
         return $fixture->build();
     }
@@ -95,7 +89,7 @@ final class AuthorizationAcceptanceFixture
             $engine,
             $alphaContext,
             $betaContext,
-            new ResourceProviderContractHarness($this->pdo, $engine, $alphaContext, $trace),
+            new ResourceProviderContractHarness($engine, $alphaContext, $trace),
             $trace,
             $this->accountId,
             $this->alphaTenant,
@@ -166,13 +160,13 @@ CREATE TABLE fixture_reference_visibility (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 SQL,
         ] as $sql) {
-            $this->pdo->exec($sql);
+            $this->connection()->execute($sql);
         }
     }
 
     private function seedCatalog(): void
     {
-        $this->catalog = new PdoAuthorizationCatalogRepository($this->pdo);
+        $this->catalog = new ThinkPhpAuthorizationCatalogRepository();
         (new CorePermissionCatalogSynchronizer($this->catalog))->synchronize();
         $this->insert('pa_module_installation', [
             'module_key' => 'fixture',
@@ -359,17 +353,23 @@ SQL,
             [$this->alphaTenant, 'C', 'Project C'],
             [$this->betaTenant, 'A', 'Beta Project A'],
         ] as $row) {
-            $this->execute('INSERT INTO fixture_project (tenant_id, id, name) VALUES (?, ?, ?)', $row);
+            $this->insert('fixture_project', [
+                'tenant_id' => $row[0],
+                'id' => $row[1],
+                'name' => $row[2],
+            ]);
         }
-        $this->execute(
-            'INSERT INTO fixture_queue (tenant_id, id, name) VALUES (?, ?, ?)',
-            [$this->alphaTenant, 'A', 'Queue A'],
-        );
+        $this->insert('fixture_queue', [
+            'tenant_id' => $this->alphaTenant,
+            'id' => 'A',
+            'name' => 'Queue A',
+        ]);
         foreach (['A', 'B'] as $projectId) {
-            $this->execute(
-                'INSERT INTO fixture_target_visibility (tenant_id, member_id, target_id) VALUES (?, ?, ?)',
-                [$this->alphaTenant, $this->alphaMember, $projectId],
-            );
+            $this->insert('fixture_target_visibility', [
+                'tenant_id' => $this->alphaTenant,
+                'member_id' => $this->alphaMember,
+                'target_id' => $projectId,
+            ]);
         }
         foreach ([
             'alpha_a_1' => [$this->alphaTenant, 'A', $this->alphaMember, 'Alpha A 1'],
@@ -378,30 +378,36 @@ SQL,
             'alpha_c' => [$this->alphaTenant, 'C', $this->alphaMember, 'Alpha C'],
             'beta_a' => [$this->betaTenant, 'A', $this->betaMember, 'Beta A'],
         ] as $key => [$tenantId, $projectId, $memberId, $name]) {
-            $this->execute(<<<'SQL'
-INSERT INTO fixture_record (tenant_id, project_id, created_by_member_id, name)
-VALUES (?, ?, ?, ?)
-SQL, [$tenantId, $projectId, $memberId, $name]);
-            $this->recordIds[$key] = (int) $this->pdo->lastInsertId();
+            $this->recordIds[$key] = $this->insert('fixture_record', [
+                'tenant_id' => $tenantId,
+                'project_id' => $projectId,
+                'created_by_member_id' => $memberId,
+                'name' => $name,
+            ]);
         }
         foreach ([
             ['PUBLIC', null, null, 'public', 'Public reference'],
             ['PRIVATE_A', $this->alphaTenant, 'A', 'private', 'Private A'],
             ['PRIVATE_C', $this->alphaTenant, 'C', 'private', 'Private C'],
         ] as $row) {
-            $this->execute(<<<'SQL'
-INSERT INTO fixture_reference (id, owner_tenant_id, owner_project_id, visibility, name)
-VALUES (?, ?, ?, ?, ?)
-SQL, $row);
+            $this->insert('fixture_reference', [
+                'id' => $row[0],
+                'owner_tenant_id' => $row[1],
+                'owner_project_id' => $row[2],
+                'visibility' => $row[3],
+                'name' => $row[4],
+            ]);
         }
-        $this->execute(
-            'INSERT INTO fixture_reference_visibility (reference_id, tenant_id, project_id) VALUES (?, ?, ?)',
-            ['PRIVATE_A', $this->alphaTenant, 'A'],
-        );
-        $this->execute(
-            'INSERT INTO fixture_reference_visibility (reference_id, tenant_id, project_id) VALUES (?, ?, ?)',
-            ['PRIVATE_C', $this->alphaTenant, 'C'],
-        );
+        $this->insert('fixture_reference_visibility', [
+            'reference_id' => 'PRIVATE_A',
+            'tenant_id' => $this->alphaTenant,
+            'project_id' => 'A',
+        ]);
+        $this->insert('fixture_reference_visibility', [
+            'reference_id' => 'PRIVATE_C',
+            'tenant_id' => $this->alphaTenant,
+            'project_id' => 'C',
+        ]);
     }
 
     private function seedPolicies(): void
@@ -450,8 +456,8 @@ SQL, $row);
                 null,
                 ['fixture.project' => new ColumnReference('record.project_id')],
             ),
-            new ThinkPhpDepartmentHierarchyProvider($this->connection),
-            new ThinkPhpTargetSetMembershipProvider($this->connection),
+            new ThinkPhpDepartmentHierarchyProvider(),
+            new ThinkPhpTargetSetMembershipProvider(),
             new ConditionProviderRegistry(),
         );
         $referenceProvider = new StandardResourcePolicyProvider(
@@ -461,8 +467,8 @@ SQL, $row);
                 null,
                 ['fixture.project' => new ColumnReference('reference.owner_project_id')],
             ),
-            new ThinkPhpDepartmentHierarchyProvider($this->connection),
-            new ThinkPhpTargetSetMembershipProvider($this->connection),
+            new ThinkPhpDepartmentHierarchyProvider(),
+            new ThinkPhpTargetSetMembershipProvider(),
             new ConditionProviderRegistry(),
         );
         foreach (['fixture.record.standard' => $recordProvider, 'fixture.reference.standard' => $referenceProvider] as $key => $provider) {
@@ -471,19 +477,19 @@ SQL, $row);
             $providers->registerCreate($key, $provider);
         }
         $resolvers = new TargetResolverRegistry();
-        $resolvers->register('fixture.project.resolver', new FixtureTargetResolver($this->pdo, 'fixture.project'));
-        $resolvers->register('fixture.queue.resolver', new FixtureTargetResolver($this->pdo, 'fixture.queue'));
+        $resolvers->register('fixture.project.resolver', new FixtureTargetResolver('fixture.project'));
+        $resolvers->register('fixture.queue.resolver', new FixtureTargetResolver('fixture.queue'));
         $catalogProviders = new TargetCatalogProviderRegistry();
-        $catalogProviders->register('fixture.project.catalog', new FixtureTargetCatalogProvider($this->pdo));
+        $catalogProviders->register('fixture.project.catalog', new FixtureTargetCatalogProvider());
         $shared = new SharedMasterScopeProviderRegistry();
-        $shared->register('fixture.reference', new FixtureSharedMasterScopeProvider($this->pdo));
+        $shared->register('fixture.reference', new FixtureSharedMasterScopeProvider());
 
         return new DataPermissionEngine(
-            new ResourceOperationStore($this->connection),
-            new PolicyStore($this->connection),
+            new ThinkPhpResourceOperationCatalog(),
+            new ThinkPhpPolicyRepository(),
             new PolicyCache(),
             new TenantAuthorizationEvaluator(
-                new PdoTenantAuthorizationRepository($this->pdo),
+                new ThinkPhpTenantAuthorizationRepository(),
                 new RevisionPermissionCache(),
             ),
             $providers,
@@ -650,10 +656,12 @@ SQL, $row);
 
     private function permissionId(string $key): int
     {
-        $statement = $this->pdo->prepare('SELECT id FROM pa_permission WHERE `key` = :permission_key');
-        $statement->execute(['permission_key' => $key]);
+        $id = Db::name('permission')->where('key', $key)->value('id');
+        if ($id === null) {
+            throw new RuntimeException("Fixture permission does not exist: {$key}");
+        }
 
-        return (int) $statement->fetchColumn();
+        return (int) $id;
     }
 
     private function context(int $tenantId, int $memberId, int $accountId, string $suffix): TenantContext
@@ -673,28 +681,16 @@ SQL, $row);
     /** @param array<string, int|string|null> $values */
     private function insert(string $table, array $values): int
     {
-        $columns = array_keys($values);
-        $statement = $this->pdo->prepare(sprintf(
-            'INSERT INTO `%s` (%s) VALUES (%s)',
-            $table,
-            implode(', ', array_map(static fn(string $column): string => "`{$column}`", $columns)),
-            implode(', ', array_map(static fn(string $column): string => ":{$column}", $columns)),
-        ));
-        if (!$statement instanceof PDOStatement) {
-            throw new RuntimeException('Could not prepare fixture insert.');
-        }
-        $statement->execute($values);
-
-        return (int) $this->pdo->lastInsertId();
+        return (int) Db::table($table)->insertGetId($values);
     }
 
-    /** @param list<int|string|null> $parameters */
-    private function execute(string $sql, array $parameters): void
+    private function connection(): PDOConnection
     {
-        $statement = $this->pdo->prepare($sql);
-        if (!$statement instanceof PDOStatement) {
-            throw new RuntimeException('Could not prepare fixture statement.');
+        $connection = Db::connect();
+        if (!$connection instanceof PDOConnection) {
+            throw new RuntimeException('Authorization fixture requires ThinkPHP PDO query support.');
         }
-        $statement->execute($parameters);
+
+        return $connection;
     }
 }

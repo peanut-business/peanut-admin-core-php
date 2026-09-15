@@ -6,8 +6,10 @@ namespace PeanutAdmin\Testing\Tests\Unit\Workflow;
 
 use LogicException;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Testing\Workflow\WorkflowAtomicityContractHarness;
 use PHPUnit\Framework\TestCase;
+use think\facade\Db;
 use Throwable;
 
 final class WorkflowAtomicityContractHarnessTest extends TestCase
@@ -19,10 +21,9 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
             'instance_written', 'work_item_written', 'event_written', 'audit_written',
             'notification_written', 'task_written', 'idempotency_completed',
         ];
-        $operation = static function (PDO $pdo, callable $checkpoint) use (&$state): void {
-            $before = $state;
-            $pdo->beginTransaction();
-            try {
+        ThinkPhpTestConnection::fromPdo($this->connection());
+        $operation = static function (callable $checkpoint) use (&$state): void {
+            Db::transaction(function () use (&$state, $checkpoint): void {
                 ++$state['workflow'];
                 $checkpoint('instance_written');
                 ++$state['workflow'];
@@ -37,12 +38,14 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
                 $checkpoint('task_written');
                 ++$state['idempotency'];
                 $checkpoint('idempotency_completed');
-                $pdo->commit();
+            });
+        };
+        $operation = static function (callable $checkpoint) use (&$state, $operation): void {
+            $before = $state;
+            try {
+                $operation($checkpoint);
             } catch (Throwable $exception) {
                 $state = $before;
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
                 throw $exception;
             }
         };
@@ -54,7 +57,6 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
         }
 
         (new WorkflowAtomicityContractHarness())->assertAtomic(
-            $this->connection(),
             $operation,
             $probes,
             ['workflow' => 3, 'audit' => 1, 'notification' => 1, 'task' => 1, 'idempotency' => 1],
@@ -65,10 +67,10 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
 
     public function testRejectsOutOfOrderCheckpointSelection(): void
     {
+        ThinkPhpTestConnection::fromPdo($this->connection());
         $this->expectException(LogicException::class);
         (new WorkflowAtomicityContractHarness())->assertAtomic(
-            $this->connection(),
-            static fn(PDO $pdo, callable $checkpoint) => null,
+            static fn(callable $checkpoint) => null,
             ['workflow' => static fn(): int => 0],
             ['workflow' => 0],
             ['audit_written', 'event_written'],
@@ -77,19 +79,19 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
 
     public function testRejectsAnOperationThatSwallowsTheInjectedFailure(): void
     {
+        ThinkPhpTestConnection::fromPdo($this->connection());
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('swallowed injected failure');
 
         (new WorkflowAtomicityContractHarness())->assertAtomic(
-            $this->connection(),
-            static function (PDO $pdo, callable $checkpoint): void {
-                $pdo->beginTransaction();
-                try {
-                    $checkpoint('definition_written');
-                } catch (Throwable) {
-                    // Deliberately invalid fixture: rollback without propagation is not evidence.
-                    $pdo->rollBack();
-                }
+            static function (callable $checkpoint): void {
+                Db::transaction(function () use ($checkpoint): void {
+                    try {
+                        $checkpoint('definition_written');
+                    } catch (Throwable) {
+                        // Deliberately invalid fixture: commit without propagation is not evidence.
+                    }
+                });
             },
             ['definition' => static fn(): int => 0],
             ['definition' => 0],
@@ -97,14 +99,14 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
         );
     }
 
-    public function testRejectsCheckpointOutsideTheSuppliedPdoTransaction(): void
+    public function testRejectsCheckpointOutsideTheThinkPhpTransaction(): void
     {
+        ThinkPhpTestConnection::fromPdo($this->connection());
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('outside the supplied PDO transaction');
+        $this->expectExceptionMessage('outside the ThinkPHP transaction');
 
         (new WorkflowAtomicityContractHarness())->assertAtomic(
-            $this->connection(),
-            static function (PDO $pdo, callable $checkpoint): void {
+            static function (callable $checkpoint): void {
                 $checkpoint('definition_written');
             },
             ['definition' => static fn(): int => 0],
@@ -113,15 +115,15 @@ final class WorkflowAtomicityContractHarnessTest extends TestCase
         );
     }
 
-    public function testRejectsOperationThatLeavesTheSuppliedPdoTransactionOpen(): void
+    public function testRejectsOperationThatLeavesTheThinkPhpTransactionOpen(): void
     {
+        ThinkPhpTestConnection::fromPdo($this->connection());
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('transaction remained open');
 
         (new WorkflowAtomicityContractHarness())->assertAtomic(
-            $this->connection(),
-            static function (PDO $pdo, callable $checkpoint): void {
-                $pdo->beginTransaction();
+            static function (callable $checkpoint): void {
+                Db::connect()->startTrans();
                 $checkpoint('definition_written');
             },
             ['definition' => static fn(): int => 0],

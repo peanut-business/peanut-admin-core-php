@@ -271,7 +271,10 @@ final readonly class WorkflowGraph
         return new WorkflowNode($key, $type, $completion, $assignments);
     }
 
-    /** @param array<string, mixed> $input @param array<string, WorkflowNode> $nodes */
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, WorkflowNode> $nodes
+     */
     private static function parseTransition(array $input, array $nodes): WorkflowTransition
     {
         self::assertExactKeys($input, self::TRANSITION_KEYS);
@@ -296,7 +299,7 @@ final readonly class WorkflowGraph
         if (in_array($action, ['approve', 'reject'], true) && !$input['human_required']) {
             throw WorkflowException::definitionInvalid('Approval decisions must require a human work item.');
         }
-        if ($action === 'automate' && ($nodes[$from]->type !== 'action' || $input['human_required'])) {
+        if ($action === 'automate' && $nodes[$from]->type !== 'action') {
             throw WorkflowException::definitionInvalid('Automation transitions require a non-human action node.');
         }
         $maxTraversals = $input['max_traversals'];
@@ -347,7 +350,10 @@ final readonly class WorkflowGraph
         );
     }
 
-    /** @param mixed $value @return non-empty-list<string> */
+    /**
+     * @param mixed $value
+     * @return non-empty-list<string>
+     */
     private static function permissionKeys(mixed $value): array
     {
         if (!is_array($value) || !array_is_list($value) || $value === []) {
@@ -365,7 +371,6 @@ final readonly class WorkflowGraph
         }
         $keys = array_keys($permissions);
         sort($keys, SORT_STRING);
-
         return $keys;
     }
 
@@ -381,7 +386,10 @@ final readonly class WorkflowGraph
         return $value;
     }
 
-    /** @param array<string, mixed> $value @param list<string> $expected */
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $expected
+     */
     private static function assertExactKeys(array $value, array $expected): void
     {
         $actual = array_keys($value);
@@ -392,7 +400,10 @@ final readonly class WorkflowGraph
         }
     }
 
-    /** @param list<WorkflowNode> $nodes @param array<string, list<WorkflowTransition>> $outgoing */
+    /**
+     * @param list<WorkflowNode> $nodes
+     * @param array<string, list<WorkflowTransition>> $outgoing
+     */
     private static function assertReachable(string $start, array $nodes, array $outgoing): void
     {
         $visited = [];
@@ -412,7 +423,10 @@ final readonly class WorkflowGraph
         }
     }
 
-    /** @param list<WorkflowNode> $nodes @param list<WorkflowTransition> $transitions */
+    /**
+     * @param list<WorkflowNode> $nodes
+     * @param list<WorkflowTransition> $transitions
+     */
     private static function assertReturnEdges(array $nodes, array $transitions): void
     {
         $forward = [];

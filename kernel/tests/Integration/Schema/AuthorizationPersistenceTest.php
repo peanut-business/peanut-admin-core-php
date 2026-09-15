@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Tests\Integration\Schema;
 
 use DomainException;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationRevisionRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationRevisionRepository;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ProtectedResourceDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ResourceOperationDefinition;
@@ -26,7 +26,7 @@ final class AuthorizationPersistenceTest extends DatabaseTestCase
 
     public function testCatalogSynchronizesExplicitRelationsWithoutChangingOwners(): void
     {
-        $catalog = new PdoAuthorizationCatalogRepository($this->database);
+        $catalog = new ThinkPhpAuthorizationCatalogRepository();
         $permissionId = $catalog->syncPermission(new PermissionDefinition(
             'example.work-item.read',
             'example',
@@ -126,7 +126,7 @@ final class AuthorizationPersistenceTest extends DatabaseTestCase
             'updated_at' => self::NOW,
         ]);
 
-        $revisions = new PdoAuthorizationRevisionRepository($this->database);
+        $revisions = new ThinkPhpAuthorizationRevisionRepository();
         self::assertSame(2, $revisions->bumpTenant($tenant));
         self::assertSame(2, $revisions->bumpMember($tenant, $member));
         self::assertSame(2, $revisions->bumpRole($tenant, $role));

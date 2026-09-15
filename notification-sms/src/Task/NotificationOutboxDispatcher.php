@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\NotificationSms\Task;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
 use PeanutAdmin\NotificationSms\Package;
 use PeanutAdmin\NotificationSms\Persistence\NotificationRepository;
@@ -16,7 +16,6 @@ final readonly class NotificationOutboxDispatcher
 {
     public function __construct(
         private NotificationRepository $repository,
-        private TransactionManager $transactions,
         private TrustedJobPublisher $publisher,
     ) {}
 
@@ -27,7 +26,7 @@ final readonly class NotificationOutboxDispatcher
         ) {
             throw NotificationException::denied();
         }
-        return $this->transactions->run(function () use ($context, $outboxKey): JobRecord {
+        return Db::transaction(function () use ($context, $outboxKey): JobRecord {
             $outbox = $this->repository->outboxForSubmission($context->tenantContext->tenantId, $outboxKey);
             $taskType = 'notification.' . $outbox->channel . '.dispatch';
             $job = $this->publisher->publish($context, $taskType, ['outbox_key' => $outboxKey], $outboxKey);

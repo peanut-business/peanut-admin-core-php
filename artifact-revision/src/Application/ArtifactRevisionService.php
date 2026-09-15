@@ -9,24 +9,24 @@ use DateTimeZone;
 use JsonException;
 use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
 use PeanutAdmin\ArtifactRevision\Package;
-use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionRepository;
+use PeanutAdmin\ArtifactRevision\Persistence\ThinkPhpArtifactRevisionRepository;
 use PeanutAdmin\Kernel\Api\ApiException;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use RuntimeException;
 use Throwable;
 use UnexpectedValueException;
+use think\facade\Db;
 
 final readonly class ArtifactRevisionService
 {
     public function __construct(
-        private ArtifactRevisionRepository $repository,
-        private TransactionManager $transactions,
-        private PdoIdempotencyRepository $idempotency,
-        private AuditRepository $audit,
+        private ThinkPhpArtifactRevisionRepository $repository,
+        private IdempotencyService $idempotency,
+        private AuditService $audit,
     ) {}
 
     public function createRevision(
@@ -294,7 +294,7 @@ final readonly class ArtifactRevisionService
             $comparisonTime = new DateTimeImmutable('now', new DateTimeZone('UTC'));
             $expiresAt = $comparisonTime->modify('+1 day');
 
-            return $this->transactions->run(function () use (
+            return Db::transaction(function () use (
                 $context,
                 $operationKey,
                 $key,
@@ -304,7 +304,10 @@ final readonly class ArtifactRevisionService
                 $operation,
             ): ArtifactRevisionReceipt {
                 $record = $this->idempotency->beginTenant(
-                    $context->tenantContext->tenantId,
+                    TenantScope::fromTrustedContext(
+                        $context->tenantContext->tenantId,
+                        'artifact-revision-command',
+                    ),
                     $context->tenantContext->memberId,
                     $operationKey,
                     $key,
@@ -324,6 +327,10 @@ final readonly class ArtifactRevisionService
                 }
                 $receipt = $operation($comparisonTime->format('Y-m-d H:i:s.v'));
                 $this->idempotency->completeTenant(
+                    TenantScope::fromTrustedContext(
+                        $context->tenantContext->tenantId,
+                        'artifact-revision-command',
+                    ),
                     $record->id,
                     200,
                     $receipt->toArray(),
@@ -368,7 +375,7 @@ final readonly class ArtifactRevisionService
         string $eventType,
         ArtifactRevision $revision,
     ): void {
-        $this->audit->appendTenantMember(
+        $this->audit->tenantMember(
             $context->tenantContext,
             $eventType,
             $context->resourceKey . '.' . $context->operation,
@@ -432,7 +439,7 @@ final readonly class ArtifactRevisionService
             || $context->operation === '') {
             throw ArtifactRevisionException::invalid();
         }
-        $targets = array_values($context->targets);
+        $targets = $context->targets;
         $target = $targets[0] ?? null;
         if (!hash_equals($context->resourceKey, $artifactType)
             || count($targets) !== 1

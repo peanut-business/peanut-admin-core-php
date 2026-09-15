@@ -9,9 +9,11 @@ use PDO;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
 use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
 
@@ -20,9 +22,10 @@ final class IdempotencyRepositoryTest extends DatabaseTestCase
     public function testInstanceRepositoryRejectsTenantSchemaBeforeUpdatingARecord(): void
     {
         [$tenantId, $memberId] = $this->tenantMemberFixture();
+        $scope = $this->scope($tenantId);
         $now = new DateTimeImmutable('2026-07-19T10:00:00Z');
-        $record = (new PdoIdempotencyRepository($this->database))->beginTenant(
-            $tenantId,
+        $record = (new IdempotencyService())->beginTenant(
+            $scope,
             $memberId,
             'schemaMismatchCommand',
             IdempotencyKey::fromString('01KPEANUTADMIN-MISMATCH-001'),
@@ -31,11 +34,10 @@ final class IdempotencyRepositoryTest extends DatabaseTestCase
             $now,
         );
         try {
-            (new PdoIdempotencyRepository(
-                $this->database,
+            (new IdempotencyService(
                 TenantPersistenceMode::InstanceScoped,
                 $tenantId,
-            ))->completeTenant($record->id, 200, ['data' => ['ok' => true]]);
+            ))->completeTenant($scope, $record->id, 200, ['data' => ['ok' => true]]);
             self::fail('An instance-scoped repository must reject tenant-scoped storage.');
         } catch (\RuntimeException $exception) {
             self::assertSame('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH', $exception->getMessage());
@@ -69,15 +71,15 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pa_tenant_idempotency_record'
   AND COLUMN_NAME = 'tenant_id'
 SQL)->fetchColumn());
 
-        $repository = new PdoIdempotencyRepository(
-            $this->database,
+        $repository = new IdempotencyService(
             TenantPersistenceMode::InstanceScoped,
             $tenantId,
         );
+        $scope = $this->scope($tenantId);
         $now = new DateTimeImmutable('2026-07-19T10:00:00Z');
         $key = IdempotencyKey::fromString('01KPEANUTADMIN-INSTANCE-0001');
         $created = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'instanceCommand',
             $key,
@@ -85,9 +87,9 @@ SQL)->fetchColumn());
             $now->modify('+1 hour'),
             $now,
         );
-        $repository->completeTenant($created->id, 200, ['data' => ['ok' => true]]);
+        $repository->completeTenant($scope, $created->id, 200, ['data' => ['ok' => true]]);
         $replay = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'instanceCommand',
             $key,
@@ -101,7 +103,7 @@ SQL)->fetchColumn());
 
         $this->expectException(\RuntimeException::class);
         $repository->beginTenant(
-            $tenantId + 1,
+            $this->scope($tenantId + 1),
             $memberId,
             'instanceCommand',
             $key,
@@ -134,21 +136,22 @@ SQL)->fetchColumn());
             'account_id' => $accountId, 'status' => 'active', 'security_revision' => 1,
             'created_at' => $now, 'updated_at' => $now,
         ]);
-        $repository = new PdoIdempotencyRepository($this->database);
+        $repository = new IdempotencyService();
+        $scope = $this->scope($tenantId);
         $comparisonTime = new DateTimeImmutable('2026-07-16T12:00:00Z');
         $expires = new DateTimeImmutable('2026-07-17T12:00:00Z');
         $key = IdempotencyKey::fromString('01KPEANUTADMIN-REQUEST-0001');
 
-        $tenant = $repository->beginTenant($tenantId, $memberId, 'createWorkItem', $key, 'request-a', $expires, $comparisonTime);
+        $tenant = $repository->beginTenant($scope, $memberId, 'createWorkItem', $key, 'request-a', $expires, $comparisonTime);
         self::assertTrue($tenant->created);
-        $repository->completeTenant($tenant->id, 201, ['data' => ['id' => '1']], 'example.work-item', '1');
-        $replay = $repository->beginTenant($tenantId, $memberId, 'createWorkItem', $key, 'request-a', $expires, $comparisonTime);
+        $repository->completeTenant($scope, $tenant->id, 201, ['data' => ['id' => '1']], 'example.work-item', '1');
+        $replay = $repository->beginTenant($scope, $memberId, 'createWorkItem', $key, 'request-a', $expires, $comparisonTime);
         self::assertFalse($replay->created);
         self::assertSame('completed', $replay->status);
         self::assertSame(201, $replay->responseStatus);
 
         try {
-            $repository->beginTenant($tenantId, $memberId, 'createWorkItem', $key, 'request-changed', $expires, $comparisonTime);
+            $repository->beginTenant($scope, $memberId, 'createWorkItem', $key, 'request-changed', $expires, $comparisonTime);
             self::fail('A reused idempotency key with a different request must be rejected.');
         } catch (ApiException $exception) {
             self::assertSame('IDEMPOTENCY_KEY_REUSED', $exception->errorCode);
@@ -168,12 +171,13 @@ SQL)->fetchColumn());
     public function testExpiredProcessingLeaseIsNeverTakenOverAndKeepsItsHashBinding(): void
     {
         [$tenantId, $memberId] = $this->tenantMemberFixture();
-        $repository = new PdoIdempotencyRepository($this->database);
+        $repository = new IdempotencyService();
+        $scope = $this->scope($tenantId);
         $key = IdempotencyKey::fromString('01KPEANUTADMIN-RECOVERY-0001');
         $requestHash = hash('sha256', 'recovery-request');
         $firstNow = new DateTimeImmutable('2026-07-19T10:00:00Z');
         $record = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'recoverCommand',
             $key,
@@ -184,7 +188,7 @@ SQL)->fetchColumn());
         $this->database->exec("UPDATE pa_tenant_idempotency_record SET expires_at = '2026-07-19 09:59:59.000'");
 
         $stale = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'recoverCommand',
             $key,
@@ -204,7 +208,7 @@ SQL)->fetchColumn());
 
         try {
             $repository->beginTenant(
-                $tenantId,
+                $scope,
                 $memberId,
                 'recoverCommand',
                 $key,
@@ -221,11 +225,12 @@ SQL)->fetchColumn());
     public function testFailedOutcomeReplaysAndDuplicateTerminalTransitionIsRejected(): void
     {
         [$tenantId, $memberId] = $this->tenantMemberFixture();
-        $repository = new PdoIdempotencyRepository($this->database);
+        $repository = new IdempotencyService();
+        $scope = $this->scope($tenantId);
         $now = new DateTimeImmutable('2026-07-19T10:00:00Z');
         $key = IdempotencyKey::fromString('01KPEANUTADMIN-FAILED-0001');
         $record = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'failedCommand',
             $key,
@@ -233,10 +238,10 @@ SQL)->fetchColumn());
             $now->modify('+1 hour'),
             $now,
         );
-        $repository->failTenant($record->id, 422, ['code' => 'FIXTURE_DENIED']);
+        $repository->failTenant($scope, $record->id, 422, ['code' => 'FIXTURE_DENIED']);
 
         $replay = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'failedCommand',
             $key,
@@ -249,7 +254,7 @@ SQL)->fetchColumn());
         self::assertSame(422, $replay->responseStatus);
 
         try {
-            $repository->completeTenant($record->id, 200, ['data' => ['ok' => true]]);
+            $repository->completeTenant($scope, $record->id, 200, ['data' => ['ok' => true]]);
             self::fail('A terminal idempotency record cannot transition again.');
         } catch (ApiException $exception) {
             self::assertSame('IDEMPOTENCY_STATE_CONFLICT', $exception->errorCode);
@@ -263,8 +268,8 @@ SQL)->fetchColumn());
 
         $this->expectException(\InvalidArgumentException::class);
         try {
-            (new PdoIdempotencyRepository($this->database))->beginTenant(
-                $tenantId,
+            (new IdempotencyService())->beginTenant(
+                $this->scope($tenantId),
                 $memberId,
                 'invalidExpiryCommand',
                 IdempotencyKey::fromString('01KPEANUTADMIN-EXPIRY-0001'),
@@ -280,13 +285,15 @@ SQL)->fetchColumn());
     public function testFoundRowsModeCannotCreateFalseExecutionOwnership(): void
     {
         [$tenantId, $memberId] = $this->tenantMemberFixture();
-        $repository = new PdoIdempotencyRepository($this->connection(foundRows: true));
+        ThinkPhpTestConnection::fromPdo($this->connection(foundRows: true));
+        $repository = new IdempotencyService();
+        $scope = $this->scope($tenantId);
         $now = new DateTimeImmutable('2026-07-19T10:00:00Z');
         $key = IdempotencyKey::fromString('01KPEANUTADMIN-FOUND-ROWS01');
         $requestHash = hash('sha256', 'found-rows-request');
 
         $created = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'foundRowsCommand',
             $key,
@@ -295,7 +302,7 @@ SQL)->fetchColumn());
             $now,
         );
         $existing = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'foundRowsCommand',
             $key,
@@ -313,12 +320,13 @@ SQL)->fetchColumn());
     public function testNewLeaseAndCompletionRollbackWithTheOuterTransaction(): void
     {
         [$tenantId, $memberId] = $this->tenantMemberFixture();
-        $repository = new PdoIdempotencyRepository($this->database);
+        $repository = new IdempotencyService();
+        $scope = $this->scope($tenantId);
         $now = new DateTimeImmutable('2026-07-19T10:00:00Z');
 
         $this->database->beginTransaction();
         $record = $repository->beginTenant(
-            $tenantId,
+            $scope,
             $memberId,
             'rollbackCommand',
             IdempotencyKey::fromString('01KPEANUTADMIN-ROLLBACK-0001'),
@@ -326,7 +334,7 @@ SQL)->fetchColumn());
             $now->modify('+1 hour'),
             $now,
         );
-        $repository->completeTenant($record->id, 200, ['data' => ['ok' => true]]);
+        $repository->completeTenant($scope, $record->id, 200, ['data' => ['ok' => true]]);
         $this->database->rollBack();
 
         self::assertSame(0, (int) $this->query('SELECT COUNT(*) FROM pa_tenant_idempotency_record')->fetchColumn());
@@ -346,8 +354,8 @@ SQL)->fetchColumn());
         $keyValue = '01KPEANUTADMIN-CONCURRENT-STALE';
         $requestHash = hash('sha256', 'concurrent-request');
         $firstNow = new DateTimeImmutable('2026-07-19T10:00:00Z');
-        (new PdoIdempotencyRepository($this->database))->beginTenant(
-            $tenantId,
+        (new IdempotencyService())->beginTenant(
+            $this->scope($tenantId),
             $memberId,
             'concurrentCommand',
             IdempotencyKey::fromString($keyValue),
@@ -377,8 +385,9 @@ SQL)->fetchColumn());
                 try {
                     $pdo = $this->connection();
                     $pdo->beginTransaction();
-                    $record = (new PdoIdempotencyRepository($pdo))->beginTenant(
-                        $tenantId,
+                    ThinkPhpTestConnection::fromPdo($pdo);
+                    $record = (new IdempotencyService())->beginTenant(
+                        $this->scope($tenantId),
                         $memberId,
                         'concurrentCommand',
                         IdempotencyKey::fromString($keyValue),
@@ -410,6 +419,7 @@ SQL)->fetchColumn());
         }
         $this->database = $this->connection();
         $this->admin = $this->connection(null);
+        ThinkPhpTestConnection::fromPdo($this->database);
         $results = array_map(static function (string $path): array {
             $result = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
             unlink($path);
@@ -448,6 +458,11 @@ SQL)->fetchColumn());
         ]);
 
         return [$tenantId, $memberId];
+    }
+
+    private function scope(int $tenantId): TenantScope
+    {
+        return TenantScope::fromTrustedContext($tenantId, 'idempotency-integration-test');
     }
 
     private function connection(?string $database = self::DATABASE, bool $foundRows = false): PDO

@@ -6,7 +6,7 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Module;
 
 use DateTimeImmutable;
 use PeanutAdmin\Kernel\Module\ModuleGuard;
-use PeanutAdmin\Kernel\Module\Persistence\PdoModuleRuntimeRepository;
+use PeanutAdmin\Kernel\Module\Persistence\ThinkPhpModuleRuntimeRepository;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 
 require_once dirname(__DIR__) . '/Schema/DatabaseTestCase.php';
@@ -81,7 +81,7 @@ final class ModuleRuntimeSchemaTest extends DatabaseTestCase
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
         ]);
-        $repository = new PdoModuleRuntimeRepository($this->database);
+        $repository = new ThinkPhpModuleRuntimeRepository();
 
         $repository->enable($tenantId, 'example.target', ['mode' => 'fixture'], $now);
         (new ModuleGuard($repository))->assertMemberAccess($tenantId, 'example.target', true, $now);

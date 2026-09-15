@@ -31,4 +31,23 @@ final readonly class PlatformContext
             $session->issuedAt,
         );
     }
+
+    /**
+     * Creates an execution context for a trusted, non-interactive application
+     * entry point. Business services still verify that the referenced operator
+     * is active before performing mutations.
+     */
+    public static function fromTrustedAutomation(
+        int $accountId,
+        int $operatorId,
+        string $clientKey,
+        string $requestId,
+        DateTimeImmutable $issuedAt,
+    ): self {
+        if ($accountId < 1 || $operatorId < 1 || trim($clientKey) === '' || trim($requestId) === '') {
+            throw new \InvalidArgumentException('Trusted Platform automation context is incomplete.');
+        }
+
+        return new self($accountId, $operatorId, '', $clientKey, $requestId, $issuedAt);
+    }
 }

@@ -8,7 +8,7 @@ use DateTimeImmutable;
 use PDO;
 use PDOException;
 use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
-use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
+use PeanutAdmin\DataPermission\Constraint\ThinkPhpQueryConstraintApplier;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 use PeanutAdmin\DataPermission\Target\TargetCatalogQuery;
@@ -23,6 +23,7 @@ use PeanutAdmin\Testing\Authorization\AuthorizationAcceptanceFixture;
 use PeanutAdmin\Testing\Authorization\ResourceProviderContractHarness;
 use ReflectionMethod;
 use ReflectionNamedType;
+use think\facade\Db;
 
 require_once dirname(__DIR__, 3) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
 require_once dirname(__DIR__) . '/Integration/Schema/DataPermissionMigrationRunner.php';
@@ -42,10 +43,8 @@ final class AuthorizationPathParityTest extends DatabaseTestCase
             'root',
             getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
         ))->migrate();
-        $this->fixture = AuthorizationAcceptanceFixture::install(
-            $this->database,
-            ThinkPhpTestConnection::fromPdo($this->database),
-        );
+        ThinkPhpTestConnection::fromPdo($this->database);
+        $this->fixture = AuthorizationAcceptanceFixture::install();
     }
 
     public function testListDetailSearchAndAggregateApplyAuthorizationInsideSql(): void
@@ -235,28 +234,22 @@ SQL);
 
     public function testSharedMasterVisibilityUsageAndMissingProviderAreFailClosed(): void
     {
-        $compiled = (new PdoQueryConstraintCompiler())->compile($this->fixture->engine->queryConstraint(
+        $query = Db::table('fixture_reference')->alias('reference');
+        (new ThinkPhpQueryConstraintApplier())->apply($query, $this->fixture->engine->queryConstraint(
             $this->fixture->alphaContext,
             'fixture.reference',
             'list',
         ));
-        $statement = $this->database->prepare(
-            'SELECT id FROM fixture_reference reference WHERE ' . $compiled->sql . ' ORDER BY id',
-        );
-        $statement->execute($compiled->parameters);
-        self::assertSame(['PRIVATE_A', 'PUBLIC'], $statement->fetchAll(PDO::FETCH_COLUMN));
+        self::assertSame(['PRIVATE_A', 'PUBLIC'], $query->order('id')->column('id'));
 
-        $targeted = (new PdoQueryConstraintCompiler())->compile($this->fixture->engine->queryConstraint(
+        $targeted = Db::table('fixture_reference')->alias('reference');
+        (new ThinkPhpQueryConstraintApplier())->apply($targeted, $this->fixture->engine->queryConstraint(
             $this->fixture->alphaContext,
             'fixture.reference',
             'list',
             ResourceProviderContractHarness::targets('fixture.project', ['A']),
         ));
-        $statement = $this->database->prepare(
-            'SELECT id FROM fixture_reference reference WHERE ' . $targeted->sql . ' ORDER BY id',
-        );
-        $statement->execute($targeted->parameters);
-        self::assertSame(['PRIVATE_A', 'PUBLIC'], $statement->fetchAll(PDO::FETCH_COLUMN));
+        self::assertSame(['PRIVATE_A', 'PUBLIC'], $targeted->order('id')->column('id'));
 
         self::assertTrue($this->fixture->engine->decideTargets(
             $this->fixture->alphaContext,

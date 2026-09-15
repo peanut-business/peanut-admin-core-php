@@ -43,11 +43,6 @@ final class WebsiteConfigService
         if (array_keys($defaults) !== self::FIELDS) {
             throw new InvalidArgumentException('品牌默认字段与网站配置合同不一致');
         }
-        foreach ($defaults as $value) {
-            if (!is_string($value)) {
-                throw new InvalidArgumentException('品牌默认字段必须是字符串');
-            }
-        }
         $this->defaults = $defaults;
     }
 

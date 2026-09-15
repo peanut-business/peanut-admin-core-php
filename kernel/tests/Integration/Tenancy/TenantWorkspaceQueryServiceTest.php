@@ -9,7 +9,7 @@ use PeanutAdmin\Kernel\Audit\GovernanceAuditFilter;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 use PeanutAdmin\Kernel\Tenancy\Application\TenantWorkspaceQueryService;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
@@ -23,7 +23,7 @@ final class TenantWorkspaceQueryServiceTest extends DatabaseTestCase
     public function testQueriesStayInsideTenantAndExposeOnlyAvailableModuleCatalog(): void
     {
         $this->runner->migrate();
-        $catalog = new PdoAuthorizationCatalogRepository($this->database);
+        $catalog = new ThinkPhpAuthorizationCatalogRepository();
         (new CorePermissionCatalogSynchronizer($catalog))->synchronize();
         $catalog->syncPermission(new PermissionDefinition(
             'example.target.read',
@@ -91,7 +91,7 @@ final class TenantWorkspaceQueryServiceTest extends DatabaseTestCase
             'request_id' => 'req_workspace_fixture',
             'occurred_at' => self::NOW,
         ]);
-        $service = new TenantWorkspaceQueryService($this->database);
+        $service = new TenantWorkspaceQueryService();
 
         self::assertSame((string) $tenantId, $service->tenant($tenantId)['id']);
         self::assertContains('core.member.read', array_column($service->permissions($tenantId), 'key'));

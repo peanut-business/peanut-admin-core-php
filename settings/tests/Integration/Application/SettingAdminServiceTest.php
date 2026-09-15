@@ -8,9 +8,10 @@ use DateTimeImmutable;
 use PeanutAdmin\Settings\Application\EffectiveSetting;
 use PeanutAdmin\Settings\Application\SettingAdminService;
 use PeanutAdmin\Settings\Application\SettingException;
-use PeanutAdmin\Settings\Persistence\SettingStore;
+use PeanutAdmin\Settings\Definition\SettingDefinitionSynchronizer;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
 use PeanutAdmin\Settings\Tests\Integration\Support\SettingsDatabaseTestCase;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 
 require_once dirname(__DIR__) . '/Support/SettingsDatabaseTestCase.php';
 
@@ -44,34 +45,49 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
         ));
     }
 
-    public function testAssertCurrentDefinitionAcceptsActiveAndRejectsDigestMismatchAndRetired(): void
+    public function testBusinessWriteAcceptsCurrentDefinitionAndRejectsDigestMismatchAndRetired(): void
     {
         $registry = $this->registry([$this->plainDefinition('display-mode')]);
-        $repository = $this->synchronize($registry);
+        $synchronizer = $this->synchronize($registry);
         $definition = $registry->require('example.module', 'display-mode');
-
-        $repository->assertCurrentDefinition($definition);
-        $repository->assertCurrentDefinition($definition, true);
+        $service = new SettingAdminService($this->protector());
+        $operatorId = $this->operator();
+        $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
+        $service->replaceDeployment($definition, 'compact', $operatorId, $now, null, null, '*');
 
         $changedRegistry = $this->registry([
             $this->plainDefinition('display-mode', ['description' => 'Changed trusted definition.']),
         ]);
         $this->expectSettingError(
             'SETTING_NOT_FOUND',
-            fn() => $repository->assertCurrentDefinition(
+            fn() => $service->replaceDeployment(
                 $changedRegistry->require('example.module', 'display-mode'),
+                'comfortable',
+                $operatorId,
+                $now,
+                null,
+                '"rev-1"',
+                null,
             ),
             404,
         );
 
         $replacementRegistry = $this->registry([$this->plainDefinition('replacement-setting')]);
-        $repository->synchronize(
+        $synchronizer->synchronize(
             $replacementRegistry,
             new DateTimeImmutable('2026-07-19T08:01:00Z'),
         );
         $this->expectSettingError(
             'SETTING_NOT_FOUND',
-            fn() => $repository->assertCurrentDefinition($definition),
+            fn() => $service->replaceDeployment(
+                $definition,
+                'comfortable',
+                $operatorId,
+                $now,
+                null,
+                '"rev-1"',
+                null,
+            ),
             404,
         );
     }
@@ -83,7 +99,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
         $definition = $registry->require('example.module', 'display-mode');
         $operatorId = $this->operator();
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
-        (new SettingAdminService($repository, $this->protector()))->replaceDeployment(
+        (new SettingAdminService($this->protector()))->replaceDeployment(
             $definition,
             'compact',
             $operatorId,
@@ -93,26 +109,20 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
             '*',
         );
 
-        $writer = $this->additionalSettingsConnection();
-        $writerConnection = $writer->connect();
+        $writerConnection = $this->additionalDatabaseConnection();
         $writerConnection->beginTransaction();
-        (new SettingStore($writer))->writeDeployment(
-            $definition,
-            'set',
-            ['value_json' => '"comfortable"', 'ciphertext' => null, 'nonce' => null, 'key_id' => null],
-            $operatorId,
-            $now,
-            null,
-            '"rev-1"',
-            null,
-        );
+        $writerConnection->exec(<<<'SQL'
+UPDATE pa_setting_deployment_value
+SET value_json = '"comfortable"', revision = revision + 1
+WHERE definition_id = (SELECT id FROM pa_setting_definition WHERE module_key = 'example.module' AND setting_key = 'display-mode')
+SQL);
         $changed = $this->registry([
             $this->plainDefinition('display-mode', ['description' => 'Changed during a value write.']),
         ]);
-        $mutatorConnection = $this->additionalSettingsConnection();
-        $mutatorPdo = $mutatorConnection->connect();
+        $mutatorPdo = $this->additionalDatabaseConnection();
         $mutatorPdo->exec('SET SESSION innodb_lock_wait_timeout = 1');
-        $mutator = new SettingStore($mutatorConnection);
+        ThinkPhpTestConnection::fromPdo($mutatorPdo);
+        $mutator = new SettingDefinitionSynchronizer();
 
         try {
             try {
@@ -133,6 +143,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
             if ($writerConnection->inTransaction()) {
                 $writerConnection->rollBack();
             }
+            ThinkPhpTestConnection::fromPdo($this->database);
         }
     }
 
@@ -140,7 +151,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
     {
         $registry = $this->registry([$this->plainDefinition('display-mode')]);
         $repository = $this->synchronize($registry);
-        $service = new SettingAdminService($repository, $this->protector());
+        $service = new SettingAdminService($this->protector());
         $definition = $registry->require('example.module', 'display-mode');
         $operatorId = $this->operator();
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
@@ -221,11 +232,8 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
         $definition = $registry->require('example.module', 'display-mode');
         $operatorId = $this->operator();
         $now = new DateTimeImmutable('2026-07-19T08:00:00Z');
-        $first = new SettingAdminService($repository, $this->protector());
-        $second = new SettingAdminService(
-            new SettingStore($this->additionalSettingsConnection()),
-            $this->protector(),
-        );
+        $first = new SettingAdminService($this->protector());
+        $second = new SettingAdminService($this->protector());
 
         $first->replaceDeployment($definition, 'compact', $operatorId, $now, null, null, '*');
         $this->expectSettingError(
@@ -260,7 +268,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
     {
         $registry = $this->registry([$this->plainDefinition('display-mode')]);
         $repository = $this->synchronize($registry);
-        $service = new SettingAdminService($repository, $this->protector());
+        $service = new SettingAdminService($this->protector());
         $definition = $registry->require('example.module', 'display-mode');
         $operatorId = $this->operator();
         $tenant = $this->tenant('alpha');
@@ -424,7 +432,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
     {
         $registry = $this->registry([$this->plainDefinition('display-mode')]);
         $repository = $this->synchronize($registry);
-        $service = new SettingAdminService($repository, $this->protector());
+        $service = new SettingAdminService($this->protector());
         $definition = $registry->require('example.module', 'display-mode');
         $alpha = $this->tenant('alpha');
         $beta = $this->tenant('beta');
@@ -499,7 +507,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
     {
         $registry = $this->registry([$this->plainDefinition('display-mode')]);
         $repository = $this->synchronize($registry);
-        $service = new SettingAdminService($repository, $this->protector());
+        $service = new SettingAdminService($this->protector());
         $definition = $registry->require('example.module', 'display-mode');
         $operatorId = $this->operator();
         $exact = new DateTimeImmutable('2026-07-19T08:00:00.123000Z');
@@ -546,7 +554,7 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
     {
         $registry = $this->registry([$this->secretDefinition()]);
         $repository = $this->synchronize($registry);
-        $service = new SettingAdminService($repository, $this->protector());
+        $service = new SettingAdminService($this->protector());
         $definition = $registry->require('example.module', 'api-token');
         $operatorId = $this->operator();
 
@@ -718,8 +726,10 @@ final class SettingAdminServiceTest extends SettingsDatabaseTestCase
 declare(strict_types=1);
 
 use PeanutAdmin\Settings\Application\SettingException;
+use PeanutAdmin\Settings\Application\SettingAdminService;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
-use PeanutAdmin\Settings\Persistence\SettingStore;
+use PeanutAdmin\Settings\Secret\SecretProtector;
+use PeanutAdmin\Settings\Secret\SecretStorageContext;
 
 require $argv[1] . '/vendor/autoload.php';
 
@@ -745,6 +755,7 @@ $connection = $manager->connect();
 if (!$connection instanceof \think\db\PDOConnection) {
     throw new \RuntimeException('The settings race worker requires a PDO connection.');
 }
+\think\Container::getInstance()->instance(\think\DbManager::class, $manager);
 $pdo = $connection->connect();
 $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 $pdo->setAttribute(\PDO::ATTR_DEFAULT_FETCH_MODE, \PDO::FETCH_ASSOC);
@@ -792,10 +803,23 @@ if (fgets(STDIN) !== "go\n") {
 }
 
 try {
-    (new SettingStore($connection))->writeDeployment(
+    (new SettingAdminService(new class implements SecretProtector {
+        public function protect(string $plaintext, SecretStorageContext $context): array
+        {
+            throw new \RuntimeException('Plain settings must not invoke secret protection.');
+        }
+
+        public function reveal(
+            string $ciphertext,
+            string $nonce,
+            string $keyId,
+            SecretStorageContext $context,
+        ): string {
+            throw new \RuntimeException('Plain settings must not invoke secret protection.');
+        }
+    }))->replaceDeployment(
         $definition,
-        'set',
-        ['value_json' => '"comfortable"', 'ciphertext' => null, 'nonce' => null, 'key_id' => null],
+        'comfortable',
         (int) $argv[5],
         new \DateTimeImmutable('2026-07-19T08:00:00Z'),
         null,

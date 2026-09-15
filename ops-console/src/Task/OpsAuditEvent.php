@@ -23,7 +23,7 @@ final readonly class OpsAuditEvent
         Contract::qualifiedKey($eventType, 96);
         Contract::qualifiedKey($action, 64);
         foreach ($metadata as $key => $value) {
-            if (!in_array($key, self::METADATA_KEYS, true) || (!is_bool($value) && !is_int($value) && !is_string($value) && $value !== null)) {
+            if (!in_array($key, self::METADATA_KEYS, true)) {
                 throw new InvalidArgumentException('Unsafe audit metadata.');
             }
             if (is_string($value)) {

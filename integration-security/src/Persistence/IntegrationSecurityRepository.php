@@ -15,8 +15,6 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 
 interface IntegrationSecurityRepository
 {
-    public function transaction(callable $operation): mixed;
-
     /** @param list<string> $scopes */
     public function createMachine(TenantContext $context, string $identityKey, string $familyKey, string $name, array $scopes, string $tokenPrefix, string $tokenDigest, string $tokenLastFour, ?DateTimeImmutable $expiresAt): MachineIdentity;
     /** @return list<MachineIdentity> */
@@ -40,6 +38,7 @@ interface IntegrationSecurityRepository
     public function claimDelivery(int $tenantId, string $leaseDigest, int $leaseSeconds, DateTimeImmutable $now): ?WebhookDelivery;
     public function completeDelivery(WebhookDelivery $delivery, int $statusCode, int $durationMs, DateTimeImmutable $now): void;
     public function failDelivery(WebhookDelivery $delivery, string $safeCode, bool $retryable, ?int $statusCode, int $durationMs, DateTimeImmutable $now): void;
+    /** @return array{payloads_cleared: int, attempts_deleted: int, deliveries_deleted: int} */
     public function purgeExpiredDeliveryData(DateTimeImmutable $payloadCutoff, DateTimeImmutable $evidenceCutoff): array;
     public function deliveryRecords(int $tenantId, int $page, int $pageSize): IntegrationSecurityPage;
     public function deliveryAttemptRecords(int $tenantId, string $deliveryKey, int $page, int $pageSize): IntegrationSecurityPage;

@@ -8,7 +8,7 @@ use PeanutAdmin\Kernel\Async\JobHandlerAdapter;
 use PeanutAdmin\Kernel\Async\VerifiedJobEnvelope;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Persistence\TaskJobStore;
 use Throwable;
@@ -19,7 +19,6 @@ final readonly class LocalWorker
         private int $tenantId,
         private string $workerId,
         private TaskJobStore $repository,
-        private TransactionManager $transactions,
         private TaskHandlerRegistry $handlers,
         private JobHandlerAdapter $authorization,
         private int $leaseSeconds = 60,
@@ -34,7 +33,7 @@ final readonly class LocalWorker
 
     public function runOnce(): ?string
     {
-        $claim = $this->transactions->run(
+        $claim = Db::transaction(
             fn(): ?JobClaim => $this->repository->claim($this->tenantId, $this->workerId, $this->leaseSeconds),
         );
         if ($claim === null) {
@@ -56,18 +55,18 @@ final readonly class LocalWorker
                 },
             );
         } catch (RetryableTaskException $exception) {
-            $status = $this->transactions->run(
+            $status = Db::transaction(
                 fn(): string => $this->repository->fail($claim, $exception->safeCode, true, $this->backoff($claim->attemptNumber)),
             );
             return $status;
         } catch (Throwable $exception) {
             $code = $exception instanceof TaskJobException ? $exception->problemCode : 'TASK_HANDLER_FAILED';
-            $status = $this->transactions->run(
+            $status = Db::transaction(
                 fn(): string => $this->repository->fail($claim, $code, false, 0),
             );
             return $status;
         }
-        $this->transactions->run(function () use ($claim): void {
+        Db::transaction(function () use ($claim): void {
             $this->repository->succeed($claim);
         });
         return 'succeeded';

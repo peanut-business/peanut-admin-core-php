@@ -7,6 +7,10 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Identity;
 use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
+use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use PeanutAdmin\Kernel\Identity\SelfService\AccountSelfService;
@@ -69,12 +73,12 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
             'created_at' => self::NOW,
             'updated_at' => self::NOW,
         ]);
-        $this->service = new AccountSelfService($this->database, $this->passwords);
+        $this->service = new AccountSelfService(new AuditService(), $this->passwords);
     }
 
     public function testProfileIsSelfScopedMaskedAndAuditedOnUpdate(): void
     {
-        $profile = $this->service->profile($this->tenantId, $this->memberId, $this->accountId);
+        $profile = $this->service->profile($this->context('request-profile'));
 
         self::assertSame((string) $this->accountId, $profile['account_id']);
         self::assertSame('Original name', $profile['display_name']);
@@ -82,19 +86,16 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
         self::assertArrayNotHasKey('secret_hash', $profile['credential']);
 
         try {
-            $this->service->profile($this->tenantId + 1, $this->memberId, $this->accountId);
+            $this->service->profile($this->context('request-profile-wrong-tenant', $this->tenantId + 1));
             self::fail('Expected a mismatched tenant/member/account binding to fail closed.');
         } catch (AdminAccessException $exception) {
             self::assertSame('ACCOUNT_CREDENTIAL_UNAVAILABLE', $exception->errorCode);
         }
 
         $updated = $this->service->updateProfile(
-            $this->tenantId,
-            $this->memberId,
-            $this->accountId,
+            $this->context('request-profile-update'),
             'Updated name',
             'https://cdn.example.test/avatar.png',
-            'request-profile-update',
         );
 
         self::assertSame('Updated name', $updated['display_name']);
@@ -111,15 +112,11 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
     {
         try {
             $this->service->changePassword(
-                $this->tenantId,
-                $this->memberId,
-                $this->accountId,
-                'session-tenant-wrong',
+                $this->context('request-password-denied', sessionKey: 'session-tenant-wrong'),
                 'wrong-current-password',
                 'Replacement-password-456!',
                 '127.0.0.1',
                 'integration-test',
-                'request-password-denied',
             );
             self::fail('Expected current password verification to fail.');
         } catch (AdminAccessException $exception) {
@@ -194,12 +191,9 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
     {
         try {
             $this->service->updateProfile(
-                $this->tenantId + 1,
-                $this->memberId,
-                $this->accountId,
+                $this->context('request-cross-tenant-profile', $this->tenantId + 1),
                 'Cross tenant update',
                 null,
-                'request-cross-tenant-profile',
             );
             self::fail('Expected cross-tenant profile update to fail closed.');
         } catch (AdminAccessException $exception) {
@@ -208,15 +202,15 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
 
         try {
             $this->service->changePassword(
-                $this->tenantId + 1,
-                $this->memberId,
-                $this->accountId,
-                'session-cross-tenant-001',
+                $this->context(
+                    'request-cross-tenant-password',
+                    $this->tenantId + 1,
+                    sessionKey: 'session-cross-tenant-001',
+                ),
                 self::CURRENT_PASSWORD,
                 'Replacement-password-456!',
                 '127.0.0.1',
                 'integration-test',
-                'request-cross-tenant-password',
             );
             self::fail('Expected cross-tenant password change to fail closed.');
         } catch (AdminAccessException $exception) {
@@ -250,15 +244,11 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
         ]);
 
         $this->service->changePassword(
-            $this->tenantId,
-            $this->memberId,
-            $this->accountId,
-            'tenant-session-key-000001',
+            $this->context('request-password-change', sessionKey: 'tenant-session-key-000001'),
             self::CURRENT_PASSWORD,
             'Replacement-password-456!',
             '127.0.0.1',
             'integration-test',
-            'request-password-change',
         );
 
         $hash = (string) $this->query(
@@ -287,15 +277,14 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
         for ($attempt = 1; $attempt <= 5; $attempt++) {
             try {
                 $this->service->changePassword(
-                    $this->tenantId,
-                    $this->memberId,
-                    $this->accountId,
-                    'session-rate-limit-00001',
+                    $this->context(
+                        'request-password-denied-' . $attempt,
+                        sessionKey: 'session-rate-limit-00001',
+                    ),
                     'wrong-current-password',
                     'Replacement-password-456!',
                     '192.0.2.10',
                     'integration-test',
-                    'request-password-denied-' . $attempt,
                 );
                 self::fail('Expected current password verification to fail.');
             } catch (AdminAccessException $exception) {
@@ -305,15 +294,11 @@ final class AccountSelfServiceIntegrationTest extends DatabaseTestCase
 
         try {
             $this->service->changePassword(
-                $this->tenantId,
-                $this->memberId,
-                $this->accountId,
-                'session-rate-limit-00001',
+                $this->context('request-password-rate-limited', sessionKey: 'session-rate-limit-00001'),
                 'wrong-current-password',
                 'Replacement-password-456!',
                 '192.0.2.10',
                 'integration-test',
-                'request-password-rate-limited',
             );
             self::fail('Expected password change attempts to be rate limited.');
         } catch (AdminAccessException $exception) {
@@ -536,7 +521,8 @@ SQL)->fetchColumn());
             $gateConnection = null;
             $this->admin = $this->newConnection();
             $this->database = $this->newConnection(self::DATABASE);
-            $this->service = new AccountSelfService($this->database, $this->passwords);
+            ThinkPhpTestConnection::fromPdo($this->database);
+            $this->service = new AccountSelfService(new AuditService(), $this->passwords);
         }
 
         self::assertSame('ready', $firstReady['type'] ?? null);
@@ -706,15 +692,17 @@ SQL);
     ): AdminAccessException {
         try {
             $service->changePassword(
-                $tenantId,
-                $memberId,
-                $accountId,
-                'session-password-test-001',
+                $this->context(
+                    $requestId,
+                    $tenantId,
+                    $memberId,
+                    $accountId,
+                    'session-password-test-001',
+                ),
                 $currentPassword,
                 $newPassword,
                 $ipAddress,
                 'integration-test',
-                $requestId,
             );
         } catch (AdminAccessException $exception) {
             self::addToAssertionCount(1);
@@ -723,6 +711,25 @@ SQL);
         }
 
         self::fail('Expected password change to fail.');
+    }
+
+    private function context(
+        string $requestId,
+        ?int $tenantId = null,
+        ?int $memberId = null,
+        ?int $accountId = null,
+        string $sessionKey = 'session-password-test-001',
+    ): TenantContext {
+        return TenantContext::fromValidatedSession(new ValidatedTenantSession(
+            1,
+            $sessionKey,
+            $tenantId ?? $this->tenantId,
+            $accountId ?? $this->accountId,
+            $memberId ?? $this->memberId,
+            'admin-web',
+            new DateTimeImmutable(self::NOW, new DateTimeZone('UTC')),
+            1,
+        ), $requestId);
     }
 
     private function newConnection(?string $database = null): PDO
@@ -831,18 +838,21 @@ SQL);
                 throw new RuntimeException('Password-change child received an invalid command.');
             }
 
-            $service = new AccountSelfService($pdo, new PasswordHasher());
+            ThinkPhpTestConnection::fromPdo($pdo);
+            $service = new AccountSelfService(new AuditService(), new PasswordHasher());
             try {
                 $service->changePassword(
-                    $this->tenantId,
-                    $memberId,
-                    $accountId,
-                    'session-password-test-001',
+                    $this->context(
+                        $requestId,
+                        $this->tenantId,
+                        $memberId,
+                        $accountId,
+                        'session-password-test-001',
+                    ),
                     'wrong-current-password',
                     'Replacement-password-456!',
                     '192.0.2.50',
                     'integration-test',
-                    $requestId,
                 );
                 $outcome = 'success';
             } catch (AdminAccessException $exception) {

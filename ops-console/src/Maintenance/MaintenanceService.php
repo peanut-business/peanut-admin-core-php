@@ -137,7 +137,10 @@ final readonly class MaintenanceService
         }
     }
 
-    /** @param array<string, int|string> $request @return array{string, string} */
+    /**
+     * @param array<string, int|string> $request
+     * @return array{string, string}
+     */
     private function digests(string $idempotencyKey, array $request): array
     {
         if (strlen($idempotencyKey) < 8 || strlen($idempotencyKey) > 200

@@ -4,8 +4,9 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tenancy;
 
-use PDO;
 use PeanutAdmin\Kernel\Context\TenantSystemContext;
+use PeanutAdmin\Kernel\Persistence\Model\TenantEntryBinding;
+use think\facade\Db;
 
 final readonly class TenantEntryBindingResolver
 {
@@ -14,7 +15,6 @@ final readonly class TenantEntryBindingResolver
 
     /** @param null|\Closure(string,string,string):TenantSystemContext $defaultSystem */
     public function __construct(
-        private PDO $pdo,
         private ?\Closure $defaultSystem = null,
         private bool $bindingsEnabled = true,
     ) {}
@@ -92,14 +92,21 @@ final readonly class TenantEntryBindingResolver
             return null;
         }
         try {
-            $statement = $this->pdo->prepare(<<<'SQL'
-SELECT b.tenant_id, b.status AS binding_status, t.code AS tenant_code, t.status AS tenant_status
-FROM pa_tenant_entry_binding b JOIN pa_tenant t ON t.id = b.tenant_id
-WHERE b.host = :host AND b.client_key = :client_key ORDER BY b.id LIMIT 2
-SQL);
-            $statement->execute(['host' => $host, 'client_key' => $clientKey]);
-            $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
-        } catch (\PDOException $exception) {
+            $rows = TenantEntryBinding::alias('binding')
+                ->join('tenant tenant', 'tenant.id = binding.tenant_id')
+                ->where('binding.host', $host)
+                ->where('binding.client_key', $clientKey)
+                ->field([
+                    'binding.tenant_id',
+                    'binding_status' => 'binding.status',
+                    'tenant_code' => 'tenant.code',
+                    'tenant_status' => 'tenant.status',
+                ])
+                ->order('binding.id')
+                ->limit(2)
+                ->select()
+                ->toArray();
+        } catch (\Throwable $exception) {
             throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE', 0, $exception);
         }
         if ($rows === []) {

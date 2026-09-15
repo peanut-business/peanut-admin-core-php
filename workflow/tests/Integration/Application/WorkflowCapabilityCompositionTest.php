@@ -5,13 +5,12 @@ declare(strict_types=1);
 namespace PeanutAdmin\Workflow\Tests\Integration\Application;
 
 use DateTimeImmutable;
+use LogicException;
 use PDO;
-use PDOException;
-use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
-use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
+use PeanutAdmin\DataPermission\Catalog\ThinkPhpResourceOperationCatalog;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
-use PeanutAdmin\DataPermission\Policy\PolicyStore;
+use PeanutAdmin\DataPermission\Policy\ThinkPhpPolicyRepository;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
@@ -27,8 +26,9 @@ use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\AuthorizationException;
-use PeanutAdmin\Kernel\Authorization\PdoTenantAuthorizationRepository;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\ThinkPhpTenantAuthorizationRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationRevisionRepository;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ProtectedResourceDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ResourceOperationDefinition;
@@ -38,9 +38,9 @@ use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
+use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
 use PeanutAdmin\NotificationSms\Application\AttachmentResolver as NotificationAttachmentResolver;
@@ -72,10 +72,12 @@ use PeanutAdmin\Workflow\Application\WorkflowException;
 use PeanutAdmin\Workflow\Application\WorkflowRuntime;
 use PeanutAdmin\Workflow\Database\Schema as WorkflowSchema;
 use PeanutAdmin\Workflow\Package as WorkflowPackage;
-use PeanutAdmin\Workflow\Persistence\WorkflowStore;
+use PeanutAdmin\Workflow\Persistence\ThinkPhpWorkflowRepository;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
-use think\db\PDOConnection;
+use think\App;
+use think\db\exception\PDOException as ThinkPhpPDOException;
+use think\facade\Db;
 use Throwable;
 
 require_once dirname(__DIR__, 4) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
@@ -98,18 +100,35 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
     private int $tenantId;
     private int $accountId;
     private int $memberId;
+    private int $roleId;
+    private App $app;
+    private bool $appInitialized = false;
     private TenantContext $tenantContext;
     private TenantAuthorizationEvaluator $functionalAuthorization;
     private DataPermissionEngine $dataAuthorization;
-    private PdoAuthorizationCatalogRepository $catalog;
+    private ThinkPhpAuthorizationCatalogRepository $catalog;
     private CapabilityWorkflowAuthorization $workflowAuthorization;
     private NotificationService $notifications;
     private TrustedJobPublisher $tasks;
-    private PDOConnection $connection;
+
+    /** @var array<string, string|false> */
+    private array $originalEnvironment = [];
 
     protected function setUp(): void
     {
         parent::setUp();
+        foreach (['DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD'] as $name) {
+            $this->originalEnvironment[$name] = getenv($name);
+        }
+        putenv('DB_HOST=127.0.0.1');
+        putenv('DB_PORT=' . (getenv('MYSQL_PORT') ?: '3306'));
+        putenv('DB_DATABASE=' . self::DATABASE);
+        putenv('DB_USERNAME=root');
+        putenv('DB_PASSWORD=' . (getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev'));
+        $this->app = new App(dirname(__DIR__, 6) . '/backend');
+        $this->app->initialize();
+        $this->appInitialized = true;
+
         $this->runner->migrate();
         (new DataPermissionMigrationRunner(
             self::DATABASE,
@@ -129,17 +148,14 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
         }
         $this->createHostFixtureTables();
         $this->seedAuthorities();
-        $this->connection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->notifications = new NotificationService(
-            new NotificationStore($this->connection),
-            new ThinkPhpTransactionManager($this->connection),
-            new CapabilityRecipientResolver($this->database),
+            new NotificationStore(),
+            new CapabilityRecipientResolver(),
             new CapabilityNotificationAttachments(),
             new TemplateRenderer(),
         );
         $this->tasks = new TrustedJobPublisher(
-            new TaskJobStore($this->connection),
-            new ThinkPhpTransactionManager($this->connection),
+            new TaskJobStore(),
             new TaskSubmissionRegistry([new CapabilityTaskSubmissionProvider()]),
             new TrustedEnvelopeCodec(self::ENVELOPE_KEY),
         );
@@ -155,7 +171,19 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
         );
     }
 
-    public function testHarnessExecutesRealWritesInsideTheSuppliedMySqlTransaction(): void
+    protected function tearDown(): void
+    {
+        foreach ($this->originalEnvironment as $name => $value) {
+            $value === false ? putenv($name) : putenv("{$name}={$value}");
+        }
+        if ($this->appInitialized) {
+            restore_error_handler();
+            restore_exception_handler();
+        }
+        parent::tearDown();
+    }
+
+    public function testHarnessExecutesRealWritesInsideTheThinkPhpTransaction(): void
     {
         $checkpoints = [
             'instance_written',
@@ -166,25 +194,16 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
             'task_written',
             'idempotency_completed',
         ];
-        $operation = static function (PDO $pdo, callable $checkpoint) use ($checkpoints): void {
-            $pdo->beginTransaction();
-            try {
-                $insert = $pdo->prepare('INSERT INTO test_workflow_atomicity (checkpoint_name) VALUES (:checkpoint)');
+        $operation = static function (callable $checkpoint) use ($checkpoints): void {
+            Db::transaction(function () use ($checkpoints, $checkpoint): void {
                 foreach ($checkpoints as $name) {
-                    $insert->execute(['checkpoint' => $name]);
+                    Db::table('test_workflow_atomicity')->insert(['checkpoint_name' => $name]);
                     $checkpoint($name);
                 }
-                $pdo->commit();
-            } catch (Throwable $exception) {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
-                throw $exception;
-            }
+            });
         };
 
         (new WorkflowAtomicityContractHarness())->assertAtomic(
-            $this->database,
             $operation,
             [
                 'workflow' => fn(): int => $this->checkpointCount(['instance_written', 'work_item_written', 'event_written']),
@@ -233,13 +252,6 @@ final class WorkflowCapabilityCompositionTest extends DatabaseTestCase
         self::assertSame('review', $started->currentNodeKey);
         self::assertGreaterThan(0, $this->workflowAuthorization->decideTargetCalls);
 
-        $otherConnection = $this->connection();
-        $this->expectTransitionRollback(
-            new CapabilityWorkflowPublisher($otherConnection, null, null, $this->tasks),
-            (string) $started->instanceKey,
-            'WORKFLOW_PROVIDER_UNAVAILABLE',
-        );
-
         $missingProvider = $this->publisher(null);
         $this->expectTransitionRollback($missingProvider, (string) $started->instanceKey, 'WORKFLOW_PROVIDER_UNAVAILABLE');
 
@@ -271,14 +283,12 @@ SQL);
         );
 
         $wrongTaskContext = new TrustedJobPublisher(
-            new TaskJobStore($this->connection),
-            new ThinkPhpTransactionManager($this->connection),
+            new TaskJobStore(),
             new TaskSubmissionRegistry([new MismatchedCapabilityTaskSubmissionProvider()]),
             new TrustedEnvelopeCodec(self::ENVELOPE_KEY),
         );
         $this->expectTransitionRollback(
             new CapabilityWorkflowPublisher(
-                $this->database,
                 $this->notifications,
                 $this->notificationContext(),
                 $wrongTaskContext,
@@ -299,10 +309,10 @@ SQL);
         );
         self::assertSame('completed', $receipt->instanceStatus);
         self::assertSame(NotificationPackage::RESOURCE_KEY, $publisher->lastNotificationContext?->resourceKey);
-        self::assertSame('manage', $publisher->lastNotificationContext?->operation);
+        self::assertSame('manage', $publisher->lastNotificationContext->operation);
         self::assertNotSame(
             $definitionRead->authorizationBasisDigest,
-            $publisher->lastNotificationContext?->authorizationBasisDigest,
+            $publisher->lastNotificationContext->authorizationBasisDigest,
         );
         self::assertSame(1, (int) $this->query('SELECT COUNT(*) FROM pa_notification_message')->fetchColumn());
         self::assertSame(1, (int) $this->query('SELECT COUNT(*) FROM pa_notification_outbox')->fetchColumn());
@@ -360,10 +370,10 @@ SQL);
             'tenant_id' => $this->tenantId,
             'permission_key' => self::APPROVE_PERMISSION,
         ]);
+        (new ThinkPhpAuthorizationRevisionRepository())->bumpRole($this->tenantId, $this->roleId);
         $freshAuthorization = new CapabilityWorkflowAuthorization(
-            $this->database,
             new TenantAuthorizationEvaluator(
-                new PdoTenantAuthorizationRepository($this->database),
+                new ThinkPhpTenantAuthorizationRepository(),
                 new RevisionPermissionCache(),
             ),
             $this->dataAuthorization,
@@ -406,14 +416,13 @@ SQL);
     private function runtime(CapabilityWorkflowPublisher $publisher): WorkflowRuntime
     {
         return new WorkflowRuntime(
-            new WorkflowStore($this->connection),
-            new ThinkPhpTransactionManager($this->connection),
-            new PdoIdempotencyRepository($this->database),
-            new PdoAuditRepository($this->database),
-            new CapabilityWorkflowAssignments($this->database),
+            new ThinkPhpWorkflowRepository(),
+            new IdempotencyService(),
+            new AuditService(),
+            new CapabilityWorkflowAssignments(),
             $this->workflowAuthorization,
-            new CapabilitySubjectRevisionResolver($this->database),
-            new CapabilityWorkflowAttachments($this->database),
+            new CapabilitySubjectRevisionResolver(),
+            new CapabilityWorkflowAttachments(),
             $publisher,
         );
     }
@@ -421,7 +430,6 @@ SQL);
     private function publisher(?AuthorizedOperationContext $notificationContext): CapabilityWorkflowPublisher
     {
         return new CapabilityWorkflowPublisher(
-            $this->database,
             $notificationContext === null ? null : $this->notifications,
             $notificationContext,
             $this->tasks,
@@ -598,7 +606,7 @@ SQL);
 
     private function seedAuthorities(): void
     {
-        $this->catalog = new PdoAuthorizationCatalogRepository($this->database);
+        $this->catalog = new ThinkPhpAuthorizationCatalogRepository();
         $this->accountId = $this->insert('pa_account', [
             'display_name' => 'Workflow reviewer',
             'created_at' => self::NOW,
@@ -657,7 +665,7 @@ SQL);
                 '1.0.0',
             ));
         }
-        $roleId = $this->insert('pa_role', [
+        $this->roleId = $this->insert('pa_role', [
             'tenant_id' => $this->tenantId,
             'key' => 'host.reviewer',
             'name' => 'Workflow reviewer',
@@ -667,13 +675,13 @@ SQL);
         $this->insert('pa_member_role', [
             'tenant_id' => $this->tenantId,
             'tenant_member_id' => $this->memberId,
-            'role_id' => $roleId,
+            'role_id' => $this->roleId,
             'assigned_at' => self::NOW,
         ]);
         foreach ($permissions as $permissionId) {
             $this->insert('pa_role_permission', [
                 'tenant_id' => $this->tenantId,
-                'role_id' => $roleId,
+                'role_id' => $this->roleId,
                 'permission_id' => $permissionId,
                 'granted_at' => self::NOW,
             ]);
@@ -697,9 +705,11 @@ SQL);
             '1.0.0',
             hash('sha256', 'workflow-subject-target'),
         ));
+        $startPermission = $permissions[self::START_PERMISSION] ?? throw new LogicException('Start permission fixture is missing.');
+        $approvePermission = $permissions[self::APPROVE_PERMISSION] ?? throw new LogicException('Approve permission fixture is missing.');
         foreach ([
-            ['start', $permissions[self::START_PERMISSION]],
-            ['approve', $permissions[self::APPROVE_PERMISSION]],
+            ['start', $startPermission],
+            ['approve', $approvePermission],
         ] as [$operation, $permissionId]) {
             $operationId = $this->catalog->syncResourceOperation(new ResourceOperationDefinition(
                 self::SUBJECT_RESOURCE,
@@ -734,18 +744,17 @@ SQL);
             1,
         ), 'req_workflow_capability');
         $this->functionalAuthorization = new TenantAuthorizationEvaluator(
-            new PdoTenantAuthorizationRepository($this->database),
+            new ThinkPhpTenantAuthorizationRepository(),
             new RevisionPermissionCache(),
         );
         $resolvers = new TargetResolverRegistry();
         $resolvers->register(
             'host.workflow.subject.resolver',
-            new CapabilitySubjectTargetResolver($this->database),
+            new CapabilitySubjectTargetResolver(),
         );
-        $connection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->dataAuthorization = new DataPermissionEngine(
-            new ResourceOperationStore($connection),
-            new PolicyStore($connection),
+            new ThinkPhpResourceOperationCatalog(),
+            new ThinkPhpPolicyRepository(),
             new PolicyCache(),
             $this->functionalAuthorization,
             new ResourceProviderRegistry(),
@@ -754,29 +763,11 @@ SQL);
             new SharedMasterScopeProviderRegistry(),
         );
         $this->workflowAuthorization = new CapabilityWorkflowAuthorization(
-            $this->database,
             $this->functionalAuthorization,
             $this->dataAuthorization,
         );
     }
 
-    private function connection(): PDO
-    {
-        return new PDO(
-            sprintf(
-                'mysql:host=127.0.0.1;port=%d;dbname=%s;charset=utf8mb4',
-                (int) (getenv('MYSQL_PORT') ?: 3306),
-                self::DATABASE,
-            ),
-            'root',
-            getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
-            [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES => false,
-            ],
-        );
-    }
 }
 
 final class CapabilityWorkflowAuthorization implements WorkflowAuthorizationResolver
@@ -784,7 +775,6 @@ final class CapabilityWorkflowAuthorization implements WorkflowAuthorizationReso
     public int $decideTargetCalls = 0;
 
     public function __construct(
-        private readonly PDO $pdo,
         private readonly TenantAuthorizationEvaluator $functional,
         private readonly DataPermissionEngine $data,
     ) {}
@@ -839,8 +829,6 @@ final class CapabilityWorkflowAuthorization implements WorkflowAuthorizationReso
 
 final readonly class CapabilitySubjectTargetResolver implements ResourceTargetResolver
 {
-    public function __construct(private PDO $pdo) {}
-
     public function resolveAndValidate(
         TenantContext $context,
         TypedResourceTargetSet $targets,
@@ -851,12 +839,11 @@ final readonly class CapabilitySubjectTargetResolver implements ResourceTargetRe
         ) {
             throw WorkflowException::subjectNotFound();
         }
-        $statement = $this->pdo->prepare(<<<'SQL'
-SELECT subject_key FROM test_workflow_subject
-WHERE tenant_id = :tenant_id AND subject_key = :subject_key
-SQL);
-        $statement->execute(['tenant_id' => $context->tenantId, 'subject_key' => $targets->targetIds[0]]);
-        if ($statement->fetchColumn() === false) {
+        $subjectKey = Db::table('test_workflow_subject')
+            ->where('tenant_id', $context->tenantId)
+            ->where('subject_key', $targets->targetIds[0])
+            ->value('subject_key');
+        if ($subjectKey === null) {
             throw WorkflowException::subjectNotFound();
         }
 
@@ -866,46 +853,45 @@ SQL);
 
 final readonly class CapabilityWorkflowAssignments implements WorkflowAssignmentResolver
 {
-    public function __construct(private PDO $pdo) {}
-
     public function resolve(
         AuthorizedOperationContext $context,
         array $rules,
         int $initiatorMemberId,
         ?int $previousActorMemberId,
     ): array {
-        $rule = $rules[0] ?? null;
-        if (!is_array($rule) || $rule !== ['kind' => 'role', 'key' => 'host.reviewer']) {
+        $rule = $rules[0];
+        if ($rule !== ['kind' => 'role', 'key' => 'host.reviewer']) {
             throw WorkflowException::assignmentDenied();
         }
-        $statement = $this->pdo->prepare(<<<'SQL'
-SELECT member.id
-FROM pa_tenant_member member
-INNER JOIN pa_member_role membership
-  ON membership.tenant_id = member.tenant_id AND membership.tenant_member_id = member.id
-INNER JOIN pa_role role
-  ON role.tenant_id = membership.tenant_id AND role.id = membership.role_id
-WHERE member.tenant_id = :tenant_id AND member.status = 'active'
-  AND role.`key` = 'host.reviewer' AND role.status = 'active'
-ORDER BY member.id
-SQL);
-        $statement->execute(['tenant_id' => $context->tenantContext->tenantId]);
+        $memberIds = TenantMember::alias('member')
+            ->join(
+                'member_role membership',
+                'membership.tenant_id = member.tenant_id AND membership.tenant_member_id = member.id',
+            )
+            ->join(
+                'role role',
+                'role.tenant_id = membership.tenant_id AND role.id = membership.role_id',
+            )
+            ->where('member.tenant_id', $context->tenantContext->tenantId)
+            ->where('member.status', 'active')
+            ->where('role.key', 'host.reviewer')
+            ->where('role.status', 'active')
+            ->order('member.id')
+            ->column('member.id');
 
-        return array_map(
+        return array_values(array_map(
             static fn(string|int $memberId): array => [
                 'source_kind' => 'role',
                 'source_key' => 'host.reviewer',
                 'member_id' => (int) $memberId,
             ],
-            $statement->fetchAll(PDO::FETCH_COLUMN),
-        );
+            $memberIds,
+        ));
     }
 }
 
 final readonly class CapabilitySubjectRevisionResolver implements WorkflowSubjectRevisionResolver
 {
-    public function __construct(private PDO $pdo) {}
-
     public function resolve(
         AuthorizedOperationContext $context,
         string $subjectType,
@@ -915,17 +901,13 @@ final readonly class CapabilitySubjectRevisionResolver implements WorkflowSubjec
         if ($subjectType !== WorkflowCapabilityCompositionTest::SUBJECT_RESOURCE) {
             throw WorkflowException::subjectNotFound();
         }
-        $statement = $this->pdo->prepare(<<<'SQL'
-SELECT revision_key, revision_sha256 FROM test_workflow_subject
-WHERE tenant_id = :tenant_id AND subject_key = :subject_key AND revision_key = :revision_key
-SQL);
-        $statement->execute([
-            'tenant_id' => $context->tenantContext->tenantId,
-            'subject_key' => $subjectKey,
-            'revision_key' => $expectedRevisionKey,
-        ]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+        $row = Db::table('test_workflow_subject')
+            ->where('tenant_id', $context->tenantContext->tenantId)
+            ->where('subject_key', $subjectKey)
+            ->where('revision_key', $expectedRevisionKey)
+            ->field('revision_key,revision_sha256')
+            ->find();
+        if ($row === null) {
             throw WorkflowException::subjectRevisionConflict();
         }
 
@@ -935,8 +917,6 @@ SQL);
 
 final readonly class CapabilityWorkflowAttachments implements WorkflowAttachmentResolver
 {
-    public function __construct(private PDO $pdo) {}
-
     public function snapshot(AuthorizedOperationContext $context, string $fileKey): WorkflowAttachment
     {
         throw WorkflowException::attachmentUnavailable();
@@ -949,18 +929,10 @@ final class CapabilityWorkflowPublisher implements WorkflowSideEffectPublisher
     public ?AuthorizedOperationContext $lastNotificationContext = null;
 
     public function __construct(
-        private readonly PDO $pdo,
         private readonly ?NotificationService $notifications,
         private readonly ?AuthorizedOperationContext $notificationContext,
         private readonly TrustedJobPublisher $tasks,
     ) {}
-
-    public function assertTransactionParticipation(): void
-    {
-        if (!$this->pdo->inTransaction()) {
-            throw WorkflowException::providerUnavailable();
-        }
-    }
 
     public function publish(
         AuthorizedOperationContext $context,
@@ -1021,29 +993,27 @@ final class CapabilityWorkflowPublisher implements WorkflowSideEffectPublisher
 
     private function reserveChild(string $childKey, string $kind, string $requestHash): bool
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
-INSERT INTO test_workflow_effect_child (child_key, effect_kind, request_hash)
-VALUES (:child_key, :effect_kind, :request_hash)
-SQL);
         try {
-            $statement->execute([
+            Db::table('test_workflow_effect_child')->insert([
                 'child_key' => $childKey,
                 'effect_kind' => $kind,
                 'request_hash' => $requestHash,
             ]);
 
             return true;
-        } catch (PDOException $exception) {
-            if ($exception->getCode() !== '23000') {
+        } catch (ThinkPhpPDOException $exception) {
+            $error = $exception->getData()['PDO Error Info'] ?? [];
+            if (($error['SQLSTATE'] ?? null) !== '23000'
+                || (int) ($error['Driver Error Code'] ?? 0) !== 1062
+            ) {
                 throw $exception;
             }
         }
-        $existing = $this->pdo->prepare(<<<'SQL'
-SELECT effect_kind, request_hash FROM test_workflow_effect_child WHERE child_key = :child_key
-SQL);
-        $existing->execute(['child_key' => $childKey]);
-        $row = $existing->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)
+        $row = Db::table('test_workflow_effect_child')
+            ->where('child_key', $childKey)
+            ->field('effect_kind,request_hash')
+            ->find();
+        if ($row === null
             || !hash_equals((string) $row['effect_kind'], $kind)
             || !hash_equals((string) $row['request_hash'], $requestHash)
         ) {
@@ -1102,22 +1072,19 @@ final readonly class MismatchedCapabilityTaskSubmissionProvider implements TaskS
 
 final readonly class CapabilityRecipientResolver implements RecipientResolver
 {
-    public function __construct(private PDO $pdo) {}
-
     public function snapshot(TenantContext $context, int $memberId, bool $requiresSms): RecipientSnapshot
     {
         if ($requiresSms) {
             throw NotificationException::recipientUnavailable();
         }
-        $statement = $this->pdo->prepare(<<<'SQL'
-SELECT member.account_id, account.display_name
-FROM pa_tenant_member member
-INNER JOIN pa_account account ON account.id = member.account_id
-WHERE member.tenant_id = :tenant_id AND member.id = :member_id AND member.status = 'active'
-SQL);
-        $statement->execute(['tenant_id' => $context->tenantId, 'member_id' => $memberId]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
+        $row = TenantMember::alias('member')
+            ->join('account account', 'account.id = member.account_id')
+            ->where('member.tenant_id', $context->tenantId)
+            ->where('member.id', $memberId)
+            ->where('member.status', 'active')
+            ->field('member.account_id,account.display_name')
+            ->find();
+        if ($row === null) {
             throw NotificationException::recipientUnavailable();
         }
 

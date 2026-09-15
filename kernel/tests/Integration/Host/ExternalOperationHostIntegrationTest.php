@@ -6,6 +6,7 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Host;
 
 use DateTimeImmutable;
 use PDO;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Api\RequestId;
@@ -17,7 +18,7 @@ use PeanutAdmin\Kernel\Authorization\PermissionRequirement;
 use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationRepository;
-use PeanutAdmin\Kernel\Host\AtomicOperationAdapter;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Kernel\Host\ExternalHostConfiguration;
 use PeanutAdmin\Kernel\Host\ExternalOperationDefinition;
@@ -32,17 +33,18 @@ use PeanutAdmin\Kernel\Host\TrustedContextAdapter;
 use PeanutAdmin\Kernel\Host\TypedTargetAdapter;
 use PeanutAdmin\Kernel\Http\PermissionMiddleware;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyKey;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Module\CompiledModuleRegistry;
 use PeanutAdmin\Kernel\Module\ManifestDocument;
-use PeanutAdmin\Kernel\Module\ModuleGuard;
+use PeanutAdmin\Kernel\Module\ModuleAvailabilityService;
 use PeanutAdmin\Kernel\Module\ModuleHostLayout;
-use PeanutAdmin\Kernel\Module\Persistence\PdoModuleRuntimeRepository;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationRepository;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\KernelMigrationRunner;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use think\facade\Db;
 
 require_once dirname(__DIR__) . '/Schema/KernelMigrationRunner.php';
 
@@ -78,6 +80,7 @@ final class ExternalOperationHostIntegrationTest extends TestCase
             'CREATE DATABASE `' . self::DATABASE . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci',
         );
         $this->database = $this->connect(self::DATABASE);
+        ThinkPhpTestConnection::fromPdo($this->database);
         (new KernelMigrationRunner(
             self::DATABASE,
             '127.0.0.1',
@@ -121,19 +124,16 @@ final class ExternalOperationHostIntegrationTest extends TestCase
         $createHandler = function (
             AuthorizedExternalOperation $authorized,
             ExternalOperationRequest $request,
-            PDO $pdo,
         ) use ($create): ExternalOperationResult {
             self::assertSame($create, $authorized->operation);
             $context = $this->tenantContext($authorized);
-            $statement = $pdo->prepare(
-                "INSERT INTO fixture_record (tenant_id, scope_id, name, status, revision) VALUES (:tenant, :scope, :name, 'draft', 1)",
-            );
-            $statement->execute([
-                'tenant' => $context->tenantId,
-                'scope' => (int) $authorized->targets[0]->targetIds[0],
+            $id = (string) Db::table('fixture_record')->insertGetId([
+                'tenant_id' => $context->tenantId,
+                'scope_id' => (int) $authorized->targets[0]->targetIds[0],
                 'name' => (string) $request->body['name'],
+                'status' => 'draft',
+                'revision' => 1,
             ]);
-            $id = (string) $pdo->lastInsertId();
             return new ExternalOperationResult(
                 201,
                 ['data' => ['id' => $id, 'name' => (string) $request->body['name']]],
@@ -144,9 +144,11 @@ final class ExternalOperationHostIntegrationTest extends TestCase
                 $id,
             );
         };
-        $outbox = static function (PDO $pdo, ExternalOperationResult $result): void {
-            $statement = $pdo->prepare('INSERT INTO fixture_outbox (event_key, resource_id) VALUES (:event, :resource)');
-            $statement->execute(['event' => $result->auditEventType, 'resource' => $result->resourceId]);
+        $outbox = static function (ExternalOperationResult $result): void {
+            Db::table('fixture_outbox')->insert([
+                'event_key' => $result->auditEventType,
+                'resource_id' => $result->resourceId,
+            ]);
         };
 
         $created = $this->host->command($create, $createRequest, $createHandler, $outbox);
@@ -248,9 +250,11 @@ final class ExternalOperationHostIntegrationTest extends TestCase
             $tenantId,
             $scopeId,
             '01KPEANUT-R02-UPDATE-0001',
-            static function (PDO $pdo, TenantContext $context, string $id): ExternalOperationResult {
-                $statement = $pdo->prepare('UPDATE fixture_record SET name = :name, revision = revision + 1 WHERE tenant_id = :tenant AND id = :id');
-                $statement->execute(['name' => 'Updated record', 'tenant' => $context->tenantId, 'id' => $id]);
+            static function (TenantContext $context, string $id): ExternalOperationResult {
+                Db::table('fixture_record')->where('tenant_id', $context->tenantId)->where('id', $id)->update([
+                    'name' => 'Updated record',
+                    'revision' => Db::raw('revision + 1'),
+                ]);
                 return new ExternalOperationResult(200, ['data' => ['id' => $id]], 'fixture.record.updated', 'fixture.record.update', ['revision' => 2], 'fixture.record', $id);
             },
             $outbox,
@@ -265,9 +269,11 @@ final class ExternalOperationHostIntegrationTest extends TestCase
             $tenantId,
             $scopeId,
             '01KPEANUT-R02-STATUS-0001',
-            static function (PDO $pdo, TenantContext $context, string $id): ExternalOperationResult {
-                $statement = $pdo->prepare("UPDATE fixture_record SET status = 'active', revision = revision + 1 WHERE tenant_id = :tenant AND id = :id");
-                $statement->execute(['tenant' => $context->tenantId, 'id' => $id]);
+            static function (TenantContext $context, string $id): ExternalOperationResult {
+                Db::table('fixture_record')->where('tenant_id', $context->tenantId)->where('id', $id)->update([
+                    'status' => 'active',
+                    'revision' => Db::raw('revision + 1'),
+                ]);
                 return new ExternalOperationResult(200, ['data' => ['id' => $id, 'status' => 'active']], 'fixture.record.status-changed', 'fixture.record.status', ['revision' => 3], 'fixture.record', $id);
             },
             $outbox,
@@ -313,9 +319,15 @@ final class ExternalOperationHostIntegrationTest extends TestCase
         $domainFailure = $this->host->command(
             $operation,
             $this->request($tenantId, 'req_r02_fail_0001', 'POST', '/api/v1/fixture/records', ['name' => 'Fail domain'], [$this->oneTarget($scopeId)], '01KPEANUT-R02-FAILURE-0001'),
-            function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request, PDO $pdo): ExternalOperationResult {
+            function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request): ExternalOperationResult {
                 $context = $this->tenantContext($authorized);
-                $pdo->exec("INSERT INTO fixture_record (tenant_id, scope_id, name, status, revision) VALUES ({$context->tenantId}, {$authorized->targets[0]->targetIds[0]}, 'partial', 'draft', 1)");
+                Db::table('fixture_record')->insert([
+                    'tenant_id' => $context->tenantId,
+                    'scope_id' => (int) $authorized->targets[0]->targetIds[0],
+                    'name' => 'partial',
+                    'status' => 'draft',
+                    'revision' => 1,
+                ]);
                 throw new RuntimeException('internal domain failure');
             },
         );
@@ -336,9 +348,9 @@ final class ExternalOperationHostIntegrationTest extends TestCase
         $completionFailure = $this->host->command(
             $operation,
             $this->request($tenantId, 'req_r02_fail_0003', 'POST', '/api/v1/fixture/records', ['name' => 'Fail completion'], [$this->oneTarget($scopeId)], '01KPEANUT-R02-FAILURE-0003'),
-            function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request, PDO $pdo): ExternalOperationResult {
-                $result = ($this->insertingHandler())($authorized, $request, $pdo);
-                $pdo->exec("UPDATE pa_tenant_idempotency_record SET status = 'completed' WHERE status = 'processing'");
+            function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request): ExternalOperationResult {
+                $result = ($this->insertingHandler())($authorized, $request);
+                Db::name('tenant_idempotency_record')->where('status', 'processing')->update(['status' => 'completed']);
                 return $result;
             },
         );
@@ -367,10 +379,10 @@ final class ExternalOperationHostIntegrationTest extends TestCase
             [$this->oneTarget($scopeId)],
             '01KPEANUT-R02-EXPIRED-0001',
         );
-        $repository = new PdoIdempotencyRepository($this->database);
+        $repository = new IdempotencyService();
         $comparisonTime = $request->comparisonTime->modify('-2 hours');
         $record = $repository->beginTenant(
-            $tenantId,
+            TenantScope::fromTrustedContext($tenantId, 'external-operation-host-integration'),
             $this->memberIds[$tenantId],
             $operation->operationId,
             IdempotencyKey::fromString($request->idempotencyKey),
@@ -443,28 +455,23 @@ final class ExternalOperationHostIntegrationTest extends TestCase
                 function (
                     AuthorizedExternalOperation $authorized,
                     ExternalOperationRequest $command,
-                    PDO $pdo,
                 ) use (&$handlerCalls, $replay): ExternalOperationResult {
                     ++$handlerCalls;
                     if ($replay) {
                         throw new RuntimeException('An exact replay must not run the domain handler.');
                     }
 
-                    return ($this->insertingHandler())($authorized, $command, $pdo);
+                    return ($this->insertingHandler())($authorized, $command);
                 },
                 guard: function (
                     AuthorizedExternalOperation $authorized,
                     ExternalOperationRequest $command,
-                    PDO $transaction,
                 ) use ($worker, &$unrelatedCommitObserved, &$targetWaitObserved): void {
                     $context = $this->tenantContext($authorized);
-                    $guard = new ModuleGuard(new PdoModuleRuntimeRepository(
-                        $transaction,
-                        lockAvailabilityReads: true,
-                    ));
+                    $guard = new ModuleAvailabilityService();
                     $guard->assertDeployment($authorized->operation->moduleKey);
                     $guard->assertTenant(
-                        $context->tenantId,
+                        TenantScope::fromTrustedContext($context->tenantId, 'external-host-lock-test'),
                         $authorized->operation->moduleKey,
                         $command->comparisonTime,
                     );
@@ -566,14 +573,12 @@ final class ExternalOperationHostIntegrationTest extends TestCase
             new TrustedContextAdapter($configuration),
             new ModuleAvailabilityAdapter(
                 $registry,
-                new ModuleGuard(new PdoModuleRuntimeRepository($this->database)),
+                new ModuleAvailabilityService(),
             ),
             new PermissionAdapter($permissions),
             new TypedTargetAdapter($dataPermission),
-            new AtomicOperationAdapter(
-                $this->database,
-                new \PeanutAdmin\Kernel\Persistence\Pdo\PdoTransactionManager($this->database),
-            ),
+            new IdempotencyService(),
+            new AuditService(),
             new ProblemDetailsAdapter(),
         );
     }
@@ -682,8 +687,8 @@ final class ExternalOperationHostIntegrationTest extends TestCase
     }
 
     /**
-     * @param callable(PDO, TenantContext, string): ExternalOperationResult $domain
-     * @param callable(PDO, ExternalOperationResult): void $outbox
+     * @param callable(TenantContext, string): ExternalOperationResult $domain
+     * @param callable(ExternalOperationResult): void $outbox
      */
     private function commandRecord(
         string $operationId,
@@ -702,25 +707,25 @@ final class ExternalOperationHostIntegrationTest extends TestCase
                 ? '/api/v1/fixture/records/{record_id}/status'
                 : '/api/v1/fixture/records/{record_id}', $permission, true),
             $this->request($tenantId, 'req_' . strtolower($operationId), $method, $path, [], [$this->oneTarget($scopeId)], $idempotencyKey),
-            function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request, PDO $pdo) use ($domain, $recordId): ExternalOperationResult {
-                return $domain($pdo, $this->tenantContext($authorized), $recordId);
+            function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request) use ($domain, $recordId): ExternalOperationResult {
+                return $domain($this->tenantContext($authorized), $recordId);
             },
             $outbox,
         );
     }
 
-    /** @return callable(AuthorizedExternalOperation, ExternalOperationRequest, PDO): ExternalOperationResult */
+    /** @return callable(AuthorizedExternalOperation, ExternalOperationRequest): ExternalOperationResult */
     private function insertingHandler(): callable
     {
-        return function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request, PDO $pdo): ExternalOperationResult {
+        return function (AuthorizedExternalOperation $authorized, ExternalOperationRequest $request): ExternalOperationResult {
             $context = $this->tenantContext($authorized);
-            $statement = $pdo->prepare("INSERT INTO fixture_record (tenant_id, scope_id, name, status, revision) VALUES (:tenant, :scope, :name, 'draft', 1)");
-            $statement->execute([
-                'tenant' => $context->tenantId,
-                'scope' => (int) $authorized->targets[0]->targetIds[0],
+            $id = (string) Db::table('fixture_record')->insertGetId([
+                'tenant_id' => $context->tenantId,
+                'scope_id' => (int) $authorized->targets[0]->targetIds[0],
                 'name' => (string) $request->body['name'],
+                'status' => 'draft',
+                'revision' => 1,
             ]);
-            $id = (string) $pdo->lastInsertId();
             return new ExternalOperationResult(201, ['data' => ['id' => $id]], 'fixture.record.created', 'fixture.record.create', ['revision' => 1], 'fixture.record', $id);
         };
     }

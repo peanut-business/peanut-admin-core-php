@@ -5,10 +5,8 @@ declare(strict_types=1);
 namespace PeanutAdmin\ArtifactRevision\Tests\Integration\Workflow;
 
 use DateTimeImmutable;
-use LogicException;
-use PeanutAdmin\ArtifactRevision\Model\Artifact;
 use PeanutAdmin\ArtifactRevision\Model\ArtifactRevision;
-use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionRepository;
+use PeanutAdmin\ArtifactRevision\Workflow\ArtifactSubjectRevisionReader;
 use PeanutAdmin\ArtifactRevision\Workflow\ArtifactWorkflowSubjectRevisionResolver;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
@@ -170,40 +168,12 @@ final class ArtifactWorkflowSubjectRevisionResolverTest extends TestCase
     }
 }
 
-final class ArtifactRevisionResolverRepository implements ArtifactRevisionRepository
+final class ArtifactRevisionResolverRepository implements ArtifactSubjectRevisionReader
 {
     public function __construct(
         private readonly ?ArtifactRevision $resolved,
         private readonly bool $failIntegrity = false,
     ) {}
-
-    public function artifact(int $tenantId, string $artifactType, string $artifactKey, bool $forUpdate = false): ?Artifact
-    {
-        throw new LogicException('Unused resolver test method.');
-    }
-
-    public function lockOrCreateArtifact(
-        int $tenantId,
-        string $artifactType,
-        string $artifactKey,
-        int $memberId,
-        ?int $expectedRevision,
-        string $now,
-    ): Artifact {
-        throw new LogicException('Unused resolver test method.');
-    }
-
-    public function createPendingRevision(
-        int $tenantId,
-        int $artifactId,
-        string $revisionKey,
-        ?int $parentRevisionId,
-        int $expectedArtifactRevision,
-        int $memberId,
-        string $now,
-    ): ArtifactRevision {
-        throw new LogicException('Unused resolver test method.');
-    }
 
     public function revision(
         int $tenantId,
@@ -217,31 +187,5 @@ final class ArtifactRevisionResolverRepository implements ArtifactRevisionReposi
         }
 
         return $this->resolved;
-    }
-
-    public function revisionById(
-        int $tenantId,
-        int $artifactId,
-        int $revisionId,
-        bool $forUpdate = false,
-    ): ?ArtifactRevision {
-        throw new LogicException('Unused resolver test method.');
-    }
-
-    public function finalizeRevision(
-        int $tenantId,
-        int $artifactId,
-        string $revisionKey,
-        int $expectedArtifactRevision,
-        int $expectedRevision,
-        int $memberId,
-        string $payloadSchemaKey,
-        string $payloadSchemaVersion,
-        string $payloadRef,
-        string $payloadSha256,
-        ?string $attachmentManifestSha256,
-        string $now,
-    ): ArtifactRevision {
-        throw new LogicException('Unused resolver test method.');
     }
 }

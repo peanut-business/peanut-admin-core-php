@@ -7,6 +7,7 @@ namespace PeanutAdmin\Workflow\Tests\Integration\Application;
 use DateTimeImmutable;
 use PDO;
 use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
@@ -14,10 +15,8 @@ use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Persistence\Schema\KernelSchema;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PeanutAdmin\Workflow\Adapter\WorkflowAssignmentResolver;
 use PeanutAdmin\Workflow\Adapter\WorkflowAttachment;
 use PeanutAdmin\Workflow\Adapter\WorkflowAttachmentResolver;
@@ -32,7 +31,7 @@ use PeanutAdmin\Workflow\Application\WorkflowRuntime;
 use PeanutAdmin\Workflow\Database\Schema;
 use PeanutAdmin\Workflow\Definition\WorkflowGraph;
 use PeanutAdmin\Workflow\Package;
-use PeanutAdmin\Workflow\Persistence\WorkflowStore;
+use PeanutAdmin\Workflow\Persistence\ThinkPhpWorkflowRepository;
 use PeanutAdmin\Workflow\Tests\Unit\Definition\WorkflowGraphTest;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
@@ -1527,13 +1526,12 @@ final class WorkflowRuntimeTest extends TestCase
         WorkflowAttachmentResolver $attachments,
         WorkflowSideEffectPublisher $sideEffects,
     ): WorkflowRuntime {
-        $connection = ThinkPhpTestConnection::fromPdo($pdo);
+        ThinkPhpTestConnection::fromPdo($pdo);
 
         return new WorkflowRuntime(
-            new WorkflowStore($connection),
-            new ThinkPhpTransactionManager($connection),
-            new PdoIdempotencyRepository($pdo),
-            new PdoAuditRepository($pdo),
+            new ThinkPhpWorkflowRepository(),
+            new IdempotencyService(),
+            new AuditService(),
             $assignments,
             $authorization,
             $subjects,
@@ -1545,7 +1543,7 @@ final class WorkflowRuntimeTest extends TestCase
     private function queryFor(PDO $pdo, WorkflowAuthorizationResolver $authorization): WorkflowQueryService
     {
         return new WorkflowQueryService(
-            new WorkflowStore(ThinkPhpTestConnection::fromPdo($pdo)),
+            new ThinkPhpWorkflowRepository(),
             $authorization,
         );
     }

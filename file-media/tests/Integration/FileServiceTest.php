@@ -11,12 +11,12 @@ use PeanutAdmin\FileMedia\Application\FileMediaException;
 use PeanutAdmin\FileMedia\Application\FileService;
 use PeanutAdmin\FileMedia\Application\UploadPolicy;
 use PeanutAdmin\FileMedia\Database\Schema;
-use PeanutAdmin\FileMedia\Persistence\FileStore;
 use PeanutAdmin\FileMedia\Storage\StorageProvider;
 use PeanutAdmin\FileMedia\Storage\StoredObject;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
+use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Module\ModuleAvailabilityService;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -74,6 +74,42 @@ CREATE TABLE pa_tenant_member (
 ) ENGINE=InnoDB
 SQL);
         $this->pdo->exec(Schema::createSql('pa_file_object'));
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE pa_module_installation (
+  module_key VARCHAR(160) NOT NULL PRIMARY KEY,
+  status VARCHAR(32) NOT NULL
+) ENGINE=InnoDB;
+CREATE TABLE pa_tenant_module (
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  module_key VARCHAR(160) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  effective_at DATETIME(3) NULL,
+  expires_at DATETIME(3) NULL,
+  PRIMARY KEY (tenant_id, module_key)
+) ENGINE=InnoDB;
+CREATE TABLE pa_tenant_audit_event (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  event_type VARCHAR(160) NOT NULL,
+  action VARCHAR(160) NOT NULL,
+  outcome VARCHAR(32) NOT NULL,
+  actor_tenant_id BIGINT UNSIGNED NULL,
+  actor_tenant_member_id BIGINT UNSIGNED NULL,
+  actor_account_id BIGINT UNSIGNED NULL,
+  actor_type VARCHAR(32) NOT NULL,
+  target_resource_type VARCHAR(160) NULL,
+  target_resource_id VARCHAR(160) NULL,
+  boundary_target_type VARCHAR(160) NULL,
+  boundary_target_id VARCHAR(160) NULL,
+  target_count INT NOT NULL,
+  target_set_digest VARCHAR(128) NULL,
+  request_id VARCHAR(160) NOT NULL,
+  metadata_json JSON NULL,
+  occurred_at DATETIME(3) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO pa_module_installation (module_key, status) VALUES ('peanut.file-media', 'active');
+SQL);
+        ThinkPhpTestConnection::fromPdo($this->pdo);
         $this->storage = new MemoryStorageProvider();
         $this->upload = tempnam(sys_get_temp_dir(), 'peanut-file-upload-') ?: throw new RuntimeException('Cannot create upload fixture.');
         file_put_contents($this->upload, "tenant private bytes\n");
@@ -133,12 +169,11 @@ SQL);
 
     private function service(): FileService
     {
-        $connection = ThinkPhpTestConnection::fromPdo($this->pdo);
         return new FileService(
-            new FileStore($connection),
-            new ThinkPhpTransactionManager($connection),
             $this->storage,
             new UploadPolicy(['text/plain']),
+            new AuditService(),
+            new ModuleAvailabilityService(),
         );
     }
 
@@ -151,6 +186,10 @@ SQL);
         );
         $statement->execute([$tenantId, $accountId]);
         $memberId = (int) $this->pdo->lastInsertId();
+        $statement = $this->pdo->prepare(
+            "INSERT INTO pa_tenant_module (tenant_id, module_key, status) VALUES (?, 'peanut.file-media', 'enabled')",
+        );
+        $statement->execute([$tenantId]);
 
         return TenantContext::fromValidatedSession(new ValidatedTenantSession(
             $accountId,

@@ -19,6 +19,7 @@ final readonly class WebhookDeliveryRecord implements \JsonSerializable
         public ?string $deliveredAt,
     ) {}
 
+    /** @return array<string, int|string|null> */
     public function jsonSerialize(): array
     {
         return [

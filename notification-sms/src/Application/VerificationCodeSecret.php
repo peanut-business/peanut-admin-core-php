@@ -13,9 +13,6 @@ final class VerificationCodeSecret
             throw new \InvalidArgumentException('The verification code format is invalid.');
         }
         $hash = password_hash($code, PASSWORD_DEFAULT);
-        if (!is_string($hash)) {
-            throw new \RuntimeException('The verification code hash could not be created.');
-        }
 
         return $hash;
     }

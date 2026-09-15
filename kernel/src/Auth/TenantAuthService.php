@@ -10,7 +10,7 @@ use PeanutAdmin\Kernel\Identity\CredentialStatus;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
 use PeanutAdmin\Kernel\Membership\TenantMemberStatus;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\Kernel\Tenancy\TenantStatus;
 use SensitiveParameter;
 
@@ -26,7 +26,6 @@ final class TenantAuthService
     private readonly TenantClient $client;
 
     public function __construct(
-        private readonly TransactionManager $transactions,
         private readonly TenantAuthRepository $repository,
         private readonly PasswordHasher $passwords,
         private readonly Clock $clock,
@@ -85,7 +84,7 @@ final class TenantAuthService
             throw new AuthException('AUTH_RATE_LIMITED', 429);
         }
 
-        $result = $this->transactions->run(function () use (
+        $result = Db::transaction(function () use (
             $normalizedEmail,
             $plainPassword,
             $tenantCode,
@@ -204,7 +203,7 @@ final class TenantAuthService
     ): TenantAuthentication {
         $this->assertPrefix($challengeToken, 'pa_lc_', 'AUTH_CHALLENGE_INVALID');
         $now = $this->clock->now();
-        $result = $this->transactions->run(function () use (
+        $result = Db::transaction(function () use (
             $challengeToken,
             $tenantId,
             $ipAddress,
@@ -360,7 +359,7 @@ final class TenantAuthService
     ): TenantAuthentication {
         $this->assertTenantTokenPrefix($refreshToken, 'pa_trt_');
         $now = $this->clock->now();
-        $result = $this->transactions->run(function () use (
+        $result = Db::transaction(function () use (
             $refreshToken,
             $ipAddress,
             $userAgent,
@@ -447,7 +446,7 @@ final class TenantAuthService
     {
         $session = $this->validatedAccessSession($accessToken);
         $now = $this->clock->now();
-        $this->transactions->run(function () use ($session, $requestId, $now): void {
+        Db::transaction(function () use ($session, $requestId, $now): void {
             $this->repository->revokeSession($session->sessionId, 'logout', $now);
             $this->repository->recordSecurityEvent(
                 'session_revoked',
@@ -469,7 +468,7 @@ final class TenantAuthService
     {
         $session = $this->validatedAccessSession($accessToken);
         $now = $this->clock->now();
-        $this->transactions->run(function () use ($session, $requestId, $now): void {
+        Db::transaction(function () use ($session, $requestId, $now): void {
             $this->repository->revokeSessionsForAccount($session->accountId, 'logout_all', $now);
             $this->repository->recordSecurityEvent(
                 'session_revoked',
@@ -494,7 +493,7 @@ final class TenantAuthService
         ?string $userAgent,
         string $requestId,
     ): TenantSelectionRequired {
-        $result = $this->transactions->run(function () use (
+        $result = Db::transaction(function () use (
             $accessToken,
             $ipAddress,
             $userAgent,
@@ -536,7 +535,7 @@ final class TenantAuthService
     {
         $this->assertTenantTokenPrefix($accessToken, 'pa_tat_');
         $now = $this->clock->now();
-        $result = $this->transactions->run(function () use ($accessToken, $now): ValidatedTenantSession|AuthException {
+        $result = Db::transaction(function () use ($accessToken, $now): ValidatedTenantSession|AuthException {
             $record = $this->repository->sessionByTokenHash(
                 hash('sha256', $accessToken),
                 'access',

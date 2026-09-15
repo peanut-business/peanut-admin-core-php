@@ -7,6 +7,7 @@ namespace PeanutAdmin\Kernel\Tests\Integration\Schema;
 use PDO;
 use PDOException;
 use PDOStatement;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -36,6 +37,7 @@ abstract class DatabaseTestCase extends TestCase
         );
 
         $this->database = $this->connect(self::DATABASE);
+        ThinkPhpTestConnection::fromPdo($this->database);
         $this->runner = new KernelMigrationRunner(
             self::DATABASE,
             '127.0.0.1',

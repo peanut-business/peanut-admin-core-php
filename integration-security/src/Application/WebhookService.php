@@ -69,7 +69,10 @@ final readonly class WebhookService
         return $this->repository->disableEndpoint($context->tenantContext, $endpointKey, $expectedRevision);
     }
 
-    /** @param list<string> $events @return array{string,list<string>} */
+    /**
+     * @param list<string> $events
+     * @return array{string, list<string>}
+     */
     private function validate(string $name, array $events): array
     {
         $name = trim($name);
@@ -78,7 +81,7 @@ final readonly class WebhookService
         }
         $unique = [];
         foreach ($events as $event) {
-            if (!is_string($event) || preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $event) !== 1 || strlen($event) > 96) {
+            if (preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/D', $event) !== 1 || strlen($event) > 96) {
                 throw IntegrationSecurityException::invalid();
             }
             $unique[$event] = true;

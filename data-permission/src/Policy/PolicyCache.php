@@ -5,22 +5,14 @@ declare(strict_types=1);
 namespace PeanutAdmin\DataPermission\Policy;
 
 use DateTimeImmutable;
+use think\facade\Cache;
 
 final class PolicyCache
 {
-    /** @var array<string, array{expires: int, policies: EffectivePolicySet}> */
-    private array $entries = [];
-
     public function get(string $key): ?EffectivePolicySet
     {
-        $entry = $this->entries[$key] ?? null;
-        if ($entry === null || $entry['expires'] <= time()) {
-            unset($this->entries[$key]);
-
-            return null;
-        }
-
-        return $entry['policies'];
+        $value = Cache::get($this->key($key));
+        return $value instanceof EffectivePolicySet ? $value : null;
     }
 
     public function put(string $key, EffectivePolicySet $policies, ?DateTimeImmutable $nextTransition): void
@@ -29,6 +21,11 @@ final class PolicyCache
         if ($nextTransition !== null) {
             $expires = min($expires, $nextTransition->getTimestamp());
         }
-        $this->entries[$key] = ['expires' => max(time() + 1, $expires), 'policies' => $policies];
+        Cache::set($this->key($key), $policies, max(1, $expires - time()));
+    }
+
+    private function key(string $key): string
+    {
+        return 'peanut:data-policy:' . hash('sha256', $key);
     }
 }

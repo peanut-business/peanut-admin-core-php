@@ -17,7 +17,8 @@ use PeanutAdmin\EntitlementQuota\Contract\EntitlementMeterRegistry;
 use PeanutAdmin\EntitlementQuota\Contract\EntitlementPolicyProvider;
 use PeanutAdmin\EntitlementQuota\Database\Schema;
 use PeanutAdmin\EntitlementQuota\Package;
-use PeanutAdmin\EntitlementQuota\Persistence\EntitlementQuotaStore;
+use PeanutAdmin\EntitlementQuota\Persistence\ThinkPhpEntitlementQuotaRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\Clock;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
@@ -25,10 +26,8 @@ use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Idempotency\IdempotencySchema;
-use PeanutAdmin\Kernel\Idempotency\PdoIdempotencyRepository;
-use PeanutAdmin\Kernel\Persistence\Pdo\PdoAuditRepository;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Persistence\Schema\KernelSchema;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ReflectionMethod;
@@ -309,12 +308,11 @@ final class EntitlementQuotaServiceTest extends TestCase
         $authorized = $this->quotaContext($context, self::TARGET_KEY);
 
         $missingRegistry = new EntitlementQuotaService(
-            new EntitlementQuotaStore($this->connection),
+            new ThinkPhpEntitlementQuotaRepository(),
             new FixedEntitlementMeterRegistry(null),
             new MutableEntitlementPolicyProvider($this->snapshot()),
-            new ThinkPhpTransactionManager($this->connection),
-            new PdoIdempotencyRepository($this->pdo),
-            new PdoAuditRepository($this->pdo),
+            new IdempotencyService(),
+            new AuditService(),
             $clock,
         );
         $this->assertQuotaError('ENTITLEMENT_QUOTA_DENIED', fn() => $missingRegistry->usage(
@@ -471,12 +469,11 @@ SQL);
         MutableEntitlementClock $clock,
     ): EntitlementQuotaService {
         return new EntitlementQuotaService(
-            new EntitlementQuotaStore($this->connection),
+            new ThinkPhpEntitlementQuotaRepository(),
             new FixedEntitlementMeterRegistry(new EntitlementMeter(self::METER, self::TARGET_TYPE, 'record')),
             $provider,
-            new ThinkPhpTransactionManager($this->connection),
-            new PdoIdempotencyRepository($this->pdo),
-            new PdoAuditRepository($this->pdo),
+            new IdempotencyService(),
+            new AuditService(),
             $clock,
         );
     }

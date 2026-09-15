@@ -4,9 +4,14 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Integration\Module;
 
+use DateTimeImmutable;
+use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Module\CompiledModuleRegistry;
 use PeanutAdmin\Kernel\Module\ManifestDocument;
+use PeanutAdmin\Kernel\Module\Persistence\ThinkPhpModuleRuntimeRepository;
 use PeanutAdmin\Kernel\Module\TenantModuleConfigurationService;
 use PeanutAdmin\Kernel\Module\TenantModuleConfigValidator;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
@@ -71,19 +76,17 @@ final class TenantModuleConfigurationServiceTest extends DatabaseTestCase
             }
         };
         $service = new TenantModuleConfigurationService(
-            $this->database,
             $this->registry(),
             $validator,
+            new ThinkPhpModuleRuntimeRepository(),
+            new AuditService(),
         );
 
         $result = $service->update(
-            $tenantId,
+            $this->context($tenantId, $accountId, $memberId, 'req_module_config'),
             'example.configured',
             ['mode' => 'strict'],
             1,
-            $memberId,
-            $accountId,
-            'req_module_config',
         );
 
         self::assertSame('2', $result['revision']);
@@ -93,7 +96,12 @@ final class TenantModuleConfigurationServiceTest extends DatabaseTestCase
         self::assertSame(1, $validator->calls);
 
         try {
-            $service->update($tenantId, 'example.configured', ['mode' => 'strict'], 1, $memberId, $accountId, 'req_stale');
+            $service->update(
+                $this->context($tenantId, $accountId, $memberId, 'req_stale'),
+                'example.configured',
+                ['mode' => 'strict'],
+                1,
+            );
         } catch (AdminAccessException $exception) {
             self::assertSame('REVISION_MISMATCH', $exception->errorCode);
 
@@ -112,5 +120,19 @@ final class TenantModuleConfigurationServiceTest extends DatabaseTestCase
         ]);
 
         return new CompiledModuleRegistry([$manifest], [], [], [], $manifest->digest);
+    }
+
+    private function context(int $tenantId, int $accountId, int $memberId, string $requestId): TenantContext
+    {
+        return TenantContext::fromValidatedSession(new ValidatedTenantSession(
+            1,
+            'module-config-session',
+            $tenantId,
+            $accountId,
+            $memberId,
+            'admin-web',
+            new DateTimeImmutable(self::NOW),
+            1,
+        ), $requestId);
     }
 }

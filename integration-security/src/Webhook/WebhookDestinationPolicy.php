@@ -34,7 +34,7 @@ final readonly class WebhookDestinationPolicy
         if (!is_array($parts)
             || ($parts['scheme'] ?? null) !== 'https'
             || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])
-            || !isset($parts['host']) || !is_string($parts['host'])
+            || !isset($parts['host'])
             || (isset($parts['port']) && $parts['port'] !== 443)
         ) {
             throw IntegrationSecurityException::destinationDenied();

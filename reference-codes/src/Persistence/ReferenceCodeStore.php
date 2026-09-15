@@ -10,21 +10,19 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\ReferenceCodes\Application\ReferenceCodeException;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetDefinition;
 use PeanutAdmin\ReferenceCodes\Definition\ReferenceCodeSetRegistry;
+use PeanutAdmin\ReferenceCodes\Persistence\Model\ReferenceCodeEntryRecord;
 use think\db\exception\PDOException;
-use think\db\PDOConnection;
-use think\db\Query;
+use think\facade\Db;
 
-final readonly class ReferenceCodeStore
+final class ReferenceCodeStore
 {
-    public function __construct(private PDOConnection $connection) {}
-
     /** @template T
      * @param callable(): T $operation
      * @return T
      */
     public function atomically(callable $operation): mixed
     {
-        return $this->connection->transaction($operation);
+        return Db::transaction($operation);
     }
 
     /** @return array{inserted: int, updated: int, retired: int, reactivated: int} */
@@ -32,8 +30,8 @@ final readonly class ReferenceCodeStore
     {
         $this->assertExactMillisecond($now);
 
-        return $this->connection->transaction(function () use ($registry, $now): array {
-            $rows = $this->connection->query('SELECT * FROM pa_reference_code_set FOR UPDATE');
+        return Db::transaction(function () use ($registry, $now): array {
+            $rows = Db::name('reference_code_set')->lock(true)->select()->toArray();
             $existing = [];
             foreach ($rows as $row) {
                 if (is_array($row)) {
@@ -55,17 +53,13 @@ final readonly class ReferenceCodeStore
                 if (!$reactivating && hash_equals((string) $row['definition_digest'], $definition->digest)) {
                     continue;
                 }
-                $this->connection->execute(<<<'SQL'
-UPDATE pa_reference_code_set
-SET name = :name, description = :description, definition_digest = :definition_digest,
-    lifecycle = 'active', revision = revision + 1, updated_at = :updated_at
-WHERE id = :id
-SQL, [
+                Db::name('reference_code_set')->where('id', (int) $row['id'])->update([
                     'name' => $definition->name,
                     'description' => $definition->description,
                     'definition_digest' => $definition->digest,
+                    'lifecycle' => 'active',
+                    'revision' => Db::raw('revision + 1'),
                     'updated_at' => $this->date($now),
-                    'id' => (int) $row['id'],
                 ]);
                 ++$counts[$reactivating ? 'reactivated' : 'updated'];
             }
@@ -73,11 +67,12 @@ SQL, [
                 if (isset($declared[$qualifiedKey]) || (string) $row['lifecycle'] === 'retired') {
                     continue;
                 }
-                $affected = $this->connection->execute(<<<'SQL'
-UPDATE pa_reference_code_set
-SET lifecycle = 'retired', revision = revision + 1, updated_at = :updated_at
-WHERE id = :id AND lifecycle = 'active'
-SQL, ['updated_at' => $this->date($now), 'id' => (int) $row['id']]);
+                $affected = Db::name('reference_code_set')->where('id', (int) $row['id'])
+                    ->where('lifecycle', 'active')->update([
+                        'lifecycle' => 'retired',
+                        'revision' => Db::raw('revision + 1'),
+                        'updated_at' => $this->date($now),
+                    ]);
                 $counts['retired'] += $affected;
             }
 
@@ -101,7 +96,7 @@ SQL, ['updated_at' => $this->date($now), 'id' => (int) $row['id']]);
         DateTimeImmutable $effectiveAt,
         ?DateTimeImmutable $expiresAt,
     ): DateTimeImmutable {
-        return $this->connection->transaction(function () use (
+        return Db::transaction(function () use (
             $definition,
             $context,
             $code,
@@ -122,9 +117,7 @@ SQL, ['updated_at' => $this->date($now), 'id' => (int) $row['id']]);
             }
             $now = $this->databaseNow();
             try {
-                $entryId = (int) (new Query($this->connection))
-                    ->table('pa_reference_code_entry')
-                    ->insertGetId([
+                $entryId = (int) Db::name('reference_code_entry')->insertGetId([
                     'tenant_id' => $context->tenantId,
                     'set_id' => (int) $set['id'],
                     'code' => $code,
@@ -171,7 +164,7 @@ SQL, ['updated_at' => $this->date($now), 'id' => (int) $row['id']]);
         ?DateTimeImmutable $expiresAt,
         int $expectedRevision,
     ): DateTimeImmutable {
-        return $this->connection->transaction(function () use (
+        return Db::transaction(function () use (
             $definition,
             $context,
             $code,
@@ -197,16 +190,11 @@ SQL, ['updated_at' => $this->date($now), 'id' => (int) $row['id']]);
             }
             $revision = $expectedRevision + 1;
             $now = $this->databaseNow();
-            $affected = $this->connection->execute(<<<'SQL'
-UPDATE pa_reference_code_entry
-SET revision = :revision, updated_by_member_id = :member_id, updated_at = :updated_at
-WHERE id = :id AND lifecycle = 'active' AND revision = :expected_revision
-SQL, [
+            $affected = Db::name('reference_code_entry')->where('id', (int) $entry['id'])
+                ->where('lifecycle', 'active')->where('revision', $expectedRevision)->update([
                 'revision' => $revision,
-                'member_id' => $context->memberId,
+                'updated_by_member_id' => $context->memberId,
                 'updated_at' => $this->date($now),
-                'id' => (int) $entry['id'],
-                'expected_revision' => $expectedRevision,
             ]);
             if ($affected !== 1) {
                 throw ReferenceCodeException::revisionMismatch();
@@ -234,7 +222,7 @@ SQL, [
         string $code,
         int $expectedRevision,
     ): DateTimeImmutable {
-        return $this->connection->transaction(function () use ($definition, $context, $code, $expectedRevision): DateTimeImmutable {
+        return Db::transaction(function () use ($definition, $context, $code, $expectedRevision): DateTimeImmutable {
             $this->assertTenantActor($context);
             $set = $this->definitionRow($definition, true);
             $entry = $this->entry((int) $set['id'], $context->tenantId, $code, true);
@@ -247,28 +235,20 @@ SQL, [
             if ((int) $entry['revision'] !== $expectedRevision) {
                 throw ReferenceCodeException::revisionMismatch();
             }
-            $last = $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_reference_code_entry_version
-WHERE entry_id = :entry_id AND revision = :revision
-FOR UPDATE
-SQL, ['entry_id' => (int) $entry['id'], 'revision' => $expectedRevision]);
+            $last = Db::name('reference_code_entry_version')->where('entry_id', (int) $entry['id'])
+                ->where('revision', $expectedRevision)->lock(true)->find();
             if ($last === null) {
                 throw ReferenceCodeException::internal();
             }
             $revision = $expectedRevision + 1;
             $now = $this->databaseNow();
-            $affected = $this->connection->execute(<<<'SQL'
-UPDATE pa_reference_code_entry
-SET lifecycle = 'retired', revision = :revision, updated_by_member_id = :member_id,
-    retired_at = :retired_at, updated_at = :updated_at
-WHERE id = :id AND lifecycle = 'active' AND revision = :expected_revision
-SQL, [
+            $affected = Db::name('reference_code_entry')->where('id', (int) $entry['id'])
+                ->where('lifecycle', 'active')->where('revision', $expectedRevision)->update([
+                'lifecycle' => 'retired',
                 'revision' => $revision,
-                'member_id' => $context->memberId,
+                'updated_by_member_id' => $context->memberId,
                 'retired_at' => $this->date($now),
                 'updated_at' => $this->date($now),
-                'id' => (int) $entry['id'],
-                'expected_revision' => $expectedRevision,
             ]);
             if ($affected !== 1) {
                 throw ReferenceCodeException::revisionMismatch();
@@ -302,22 +282,17 @@ SQL, [
         ?string $code,
         ?DateTimeImmutable $asOf,
     ): array {
-        return $this->connection->transaction(function () use ($definition, $context, $code, $asOf): array {
+        return Db::transaction(function () use ($definition, $context, $code, $asOf): array {
             $this->assertTenantActor($context);
             $set = $this->definitionRow($definition);
             $comparisonTime = $asOf ?? $this->databaseNow();
             $this->assertExactMillisecond($comparisonTime);
-            $sql = <<<'SQL'
-SELECT e.* FROM pa_reference_code_entry e
-WHERE e.tenant_id = :tenant_id AND e.set_id = :set_id
-SQL;
-            $parameters = ['tenant_id' => $context->tenantId, 'set_id' => (int) $set['id']];
+            $query = ReferenceCodeEntryRecord::where('tenant_id', $context->tenantId)
+                ->where('set_id', (int) $set['id']);
             if ($code !== null) {
-                $sql .= ' AND e.code = :code';
-                $parameters['code'] = $code;
+                $query->where('code', $code);
             }
-            $sql .= ' ORDER BY BINARY e.code ASC';
-            $rows = $this->connection->query($sql, $parameters);
+            $rows = $query->orderRaw('BINARY `code` ASC')->select()->toArray();
             $entries = [];
             foreach ($rows as $entry) {
                 if (!is_array($entry)) {
@@ -327,11 +302,8 @@ SQL;
                     || !$this->memberBelongsToTenant($context->tenantId, $entry['updated_by_member_id'] ?? null)) {
                     throw ReferenceCodeException::internal();
                 }
-                $versions = $this->connection->query(<<<'SQL'
-SELECT * FROM pa_reference_code_entry_version
-WHERE entry_id = :entry_id
-ORDER BY revision ASC
-SQL, ['entry_id' => (int) $entry['id']]);
+                $versions = Db::name('reference_code_entry_version')->where('entry_id', (int) $entry['id'])
+                    ->order('revision')->select()->toArray();
                 foreach ($versions as $version) {
                     if (!is_array($version)
                         || !$this->memberBelongsToTenant($context->tenantId, $version['changed_by_member_id'] ?? null)) {
@@ -348,7 +320,7 @@ SQL, ['entry_id' => (int) $entry['id']]);
     /** @return list<array{module_key: string, set_key: string, name: string, description: string, definition_revision: int}> */
     public function definitionSummaries(ReferenceCodeSetRegistry $registry): array
     {
-        return $this->connection->transaction(function () use ($registry): array {
+        return Db::transaction(function () use ($registry): array {
             $summaries = [];
             foreach ($registry->all() as $definition) {
                 $row = $this->definitionRow($definition);
@@ -367,20 +339,14 @@ SQL, ['entry_id' => (int) $entry['id']]);
 
     private function insertDefinition(ReferenceCodeSetDefinition $definition, DateTimeImmutable $now): void
     {
-        $this->connection->execute(<<<'SQL'
-INSERT INTO pa_reference_code_set (
-  module_key, set_key, name, description, definition_digest,
-  lifecycle, revision, created_at, updated_at
-) VALUES (
-  :module_key, :set_key, :name, :description, :definition_digest,
-  'active', 1, :created_at, :updated_at
-)
-SQL, [
+        Db::name('reference_code_set')->insert([
             'module_key' => $definition->moduleKey,
             'set_key' => $definition->key,
             'name' => $definition->name,
             'description' => $definition->description,
             'definition_digest' => $definition->digest,
+            'lifecycle' => 'active',
+            'revision' => 1,
             'created_at' => $this->date($now),
             'updated_at' => $this->date($now),
         ]);
@@ -389,13 +355,12 @@ SQL, [
     /** @return array<string, mixed> */
     private function definitionRow(ReferenceCodeSetDefinition $definition, bool $forShare = false): array
     {
-        $row = $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_reference_code_set
-WHERE module_key = :module_key AND set_key = :set_key AND lifecycle = 'active'
-SQL . ($forShare ? ' FOR SHARE' : ''), [
-            'module_key' => $definition->moduleKey,
-            'set_key' => $definition->key,
-        ]);
+        $query = Db::name('reference_code_set')->where('module_key', $definition->moduleKey)
+            ->where('set_key', $definition->key)->where('lifecycle', 'active');
+        if ($forShare) {
+            $query->lock('FOR SHARE');
+        }
+        $row = $query->find();
         if ($row === null || !hash_equals((string) $row['definition_digest'], $definition->digest)) {
             throw ReferenceCodeException::setNotFound();
         }
@@ -427,23 +392,21 @@ SQL . ($forShare ? ' FOR SHARE' : ''), [
             return false;
         }
 
-        return $this->fetchOne(<<<'SQL'
-SELECT id FROM pa_tenant_member
-WHERE tenant_id = :tenant_id AND id = :member_id
-SQL, ['tenant_id' => $tenantId, 'member_id' => $memberId]) !== null;
+        return Db::name('tenant_member')->where('tenant_id', $tenantId)
+            ->where('id', $memberId)->value('id') !== null;
     }
 
     /** @return array<string, mixed>|null */
     private function entry(int $setId, int $tenantId, string $code, bool $forUpdate): ?array
     {
-        return $this->fetchOne(<<<'SQL'
-SELECT * FROM pa_reference_code_entry
-WHERE tenant_id = :tenant_id AND set_id = :set_id AND code = :code
-SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
-            'tenant_id' => $tenantId,
-            'set_id' => $setId,
-            'code' => $code,
-        ]);
+        $query = Db::name('reference_code_entry')->where('tenant_id', $tenantId)
+            ->where('set_id', $setId)->where('code', $code);
+        if ($forUpdate) {
+            $query->lock(true);
+        }
+        $row = $query->find();
+
+        return is_array($row) ? $row : null;
     }
 
     private function insertVersion(
@@ -458,15 +421,7 @@ SQL . ($forUpdate ? ' FOR UPDATE' : ''), [
         int $memberId,
         DateTimeImmutable $createdAt,
     ): void {
-        $this->connection->execute(<<<'SQL'
-INSERT INTO pa_reference_code_entry_version (
-  entry_id, revision, label, metadata_json, status, sort_order,
-  effective_at, expires_at, changed_by_member_id, created_at
-) VALUES (
-  :entry_id, :revision, :label, :metadata_json, :status, :sort_order,
-  :effective_at, :expires_at, :changed_by_member_id, :created_at
-)
-SQL, [
+        Db::name('reference_code_entry_version')->insert([
             'entry_id' => $entryId,
             'revision' => $revision,
             'label' => $label,
@@ -480,25 +435,13 @@ SQL, [
         ]);
     }
 
-    /** @param array<string, mixed> $parameters
-     * @return array<string, mixed>|null
-     */
-    private function fetchOne(string $sql, array $parameters): ?array
-    {
-        $row = $this->connection->query($sql, $parameters)[0] ?? null;
-
-        return is_array($row) ? $row : null;
-    }
-
     private function databaseNow(): DateTimeImmutable
     {
-        $row = $this->connection->query('SELECT UTC_TIMESTAMP(3) AS database_time')[0] ?? null;
-        $value = is_array($row) ? ($row['database_time'] ?? null) : null;
-        if (!is_string($value)) {
-            throw ReferenceCodeException::internal();
-        }
-
-        return new DateTimeImmutable($value, new DateTimeZone('UTC'));
+        return DateTimeImmutable::createFromFormat(
+            '!Y-m-d H:i:s.v',
+            (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v'),
+            new DateTimeZone('UTC'),
+        ) ?: throw ReferenceCodeException::internal();
     }
 
     private function assertExactMillisecond(DateTimeImmutable $date): void

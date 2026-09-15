@@ -29,20 +29,10 @@ final readonly class WorkflowTransitionEffects
             || strlen($subjectRevisionKey) > 160) {
             throw WorkflowException::definitionInvalid();
         }
-        foreach ($notificationIntents as $intent) {
-            if (!$intent instanceof WorkflowNotificationIntent) {
-                throw WorkflowException::definitionInvalid();
-            }
-        }
-        foreach ($taskIntents as $intent) {
-            if (!$intent instanceof WorkflowTaskIntent) {
-                throw WorkflowException::definitionInvalid();
-            }
-        }
         usort($notificationIntents, static fn(WorkflowNotificationIntent $left, WorkflowNotificationIntent $right): int => [$left->templateKey, $left->recipientRule] <=> [$right->templateKey, $right->recipientRule]);
         usort($taskIntents, static fn(WorkflowTaskIntent $left, WorkflowTaskIntent $right): int => strcmp($left->taskType, $right->taskType));
-        $this->notificationIntents = array_values($notificationIntents);
-        $this->taskIntents = array_values($taskIntents);
+        $this->notificationIntents = $notificationIntents;
+        $this->taskIntents = $taskIntents;
     }
 
     /** @var list<WorkflowNotificationIntent> */

@@ -7,6 +7,8 @@ namespace PeanutAdmin\Testing\Workflow;
 use LogicException;
 use PDO;
 use RuntimeException;
+use think\db\PDOConnection;
+use think\facade\Db;
 use Throwable;
 
 final class WorkflowAtomicityContractHarness
@@ -23,20 +25,20 @@ final class WorkflowAtomicityContractHarness
     ];
 
     /**
-     * @param callable(PDO, callable(string): void): mixed $operation
+     * @param callable(callable(string): void): mixed $operation
      * @param array<string, callable(): mixed> $stateProbes
      * @param array<string, mixed> $successfulState
      * @param non-empty-list<string> $checkpoints
      */
     public function assertAtomic(
-        PDO $pdo,
         callable $operation,
         array $stateProbes,
         array $successfulState,
         array $checkpoints,
     ): void {
+        $connection = $this->connection();
         $this->assertContract($stateProbes, $successfulState, $checkpoints);
-        $this->assertConnectionIdle($pdo, 'before workflow atomicity verification');
+        $this->assertConnectionIdle($connection, 'before workflow atomicity verification');
         foreach ($checkpoints as $injection) {
             $before = $this->snapshot($stateProbes);
             $failure = new RuntimeException("Injected workflow failure at {$injection}.");
@@ -44,16 +46,16 @@ final class WorkflowAtomicityContractHarness
             $propagated = false;
             $position = 0;
             try {
-                $operation($pdo, function (string $checkpoint) use (
-                    $pdo,
+                $operation(function (string $checkpoint) use (
+                    $connection,
                     $checkpoints,
                     $injection,
                     $failure,
                     &$reached,
                     &$position,
                 ): void {
-                    if (!$pdo->inTransaction()) {
-                        throw new LogicException("Workflow checkpoint was emitted outside the supplied PDO transaction: {$checkpoint}.");
+                    if (!$this->inTransaction($connection)) {
+                        throw new LogicException("Workflow checkpoint was emitted outside the ThinkPHP transaction: {$checkpoint}.");
                     }
                     $expected = $checkpoints[$position] ?? null;
                     if (!is_string($expected) || !hash_equals($expected, $checkpoint)) {
@@ -75,7 +77,7 @@ final class WorkflowAtomicityContractHarness
                 }
                 $propagated = true;
             }
-            $this->assertConnectionIdle($pdo, "after injected failure at {$injection}");
+            $this->assertConnectionIdle($connection, "after injected failure at {$injection}");
             if (!$reached) {
                 throw new LogicException("Workflow checkpoint was not reached: {$injection}.");
             }
@@ -88,9 +90,9 @@ final class WorkflowAtomicityContractHarness
         }
 
         $position = 0;
-        $operation($pdo, static function (string $checkpoint) use ($pdo, $checkpoints, &$position): void {
-            if (!$pdo->inTransaction()) {
-                throw new LogicException("Workflow checkpoint was emitted outside the supplied PDO transaction: {$checkpoint}.");
+        $operation(function (string $checkpoint) use ($connection, $checkpoints, &$position): void {
+            if (!$this->inTransaction($connection)) {
+                throw new LogicException("Workflow checkpoint was emitted outside the ThinkPHP transaction: {$checkpoint}.");
             }
             $expected = $checkpoints[$position] ?? null;
             if (!is_string($expected) || !hash_equals($expected, $checkpoint)) {
@@ -102,7 +104,7 @@ final class WorkflowAtomicityContractHarness
             }
             ++$position;
         });
-        $this->assertConnectionIdle($pdo, 'after successful workflow operation');
+        $this->assertConnectionIdle($connection, 'after successful workflow operation');
         if ($position !== count($checkpoints)) {
             throw new LogicException('A successful workflow operation omitted a required checkpoint.');
         }
@@ -111,11 +113,32 @@ final class WorkflowAtomicityContractHarness
         }
     }
 
-    private function assertConnectionIdle(PDO $pdo, string $phase): void
+    private function assertConnectionIdle(PDOConnection $connection, string $phase): void
     {
-        if ($pdo->inTransaction()) {
-            throw new LogicException("The supplied PDO transaction remained open {$phase}.");
+        if ($this->inTransaction($connection)) {
+            $connection->rollback();
+            throw new LogicException("The ThinkPHP transaction remained open {$phase}.");
         }
+    }
+
+    private function connection(): PDOConnection
+    {
+        $connection = Db::connect();
+        if (!$connection instanceof PDOConnection) {
+            throw new LogicException('Workflow atomicity verification requires ThinkPHP PDO transaction support.');
+        }
+
+        return $connection;
+    }
+
+    private function inTransaction(PDOConnection $connection): bool
+    {
+        $pdo = $connection->getPdo();
+        if (!$pdo instanceof PDO) {
+            throw new LogicException('Workflow atomicity verification cannot inspect the framework transaction.');
+        }
+
+        return $pdo->inTransaction();
     }
 
     /** @param array<string, callable(): mixed> $stateProbes

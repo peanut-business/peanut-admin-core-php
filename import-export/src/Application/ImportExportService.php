@@ -7,10 +7,10 @@ namespace PeanutAdmin\ImportExport\Application;
 use JsonException;
 use PeanutAdmin\ImportExport\Contract\DataProviderRegistry;
 use PeanutAdmin\ImportExport\Persistence\ImportExportStore;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\TaskJob\Application\TaskJobService;
 use PeanutAdmin\TaskJob\Submission\TrustedJobPublisher;
 
@@ -21,11 +21,10 @@ final readonly class ImportExportService
 
     public function __construct(
         private ImportExportStore $repository,
-        private TransactionManager $transactions,
         private DataProviderRegistry $providers,
         private TrustedJobPublisher $publisher,
         private TaskJobService $jobs,
-        private AuditRepository $audit,
+        private AuditService $audit,
     ) {}
 
     /** @param array<string, string> $mapping */
@@ -74,14 +73,14 @@ final readonly class ImportExportService
             throw ImportExportException::invalid();
         }
 
-        return $this->transactions->run(function () use ($context, $operationKey, $revision): OperationRecord {
+        return Db::transaction(function () use ($context, $operationKey, $revision): OperationRecord {
             $before = $this->repository->get($context->tenantContext->tenantId, $operationKey);
             $updated = $this->repository->requestCancel($context->tenantContext->tenantId, $operationKey, $revision);
             if ($before->status === 'queued' && $before->taskJobKey !== null) {
                 $job = $this->jobs->detail($this->jobContext($context, 'read'), $before->taskJobKey);
                 $this->jobs->cancel($this->jobContext($context, 'manage'), $before->taskJobKey, $job->revision);
             }
-            $this->audit->appendTenantMember(
+            $this->audit->tenantMember(
                 $context->tenantContext,
                 $updated->status === 'cancelled' ? 'tenant.import_export.cancelled' : 'tenant.import_export.cancel_requested',
                 self::RESOURCE_KEY . '.cancel',
@@ -114,7 +113,7 @@ final readonly class ImportExportService
             'retention_days' => $retentionDays,
         ]));
 
-        return $this->transactions->run(function () use ($context, $direction, $providerKey, $fileKey, $schema, $mapping, $idempotencyKey, $requestHash, $retentionDays): OperationRecord {
+        return Db::transaction(function () use ($context, $direction, $providerKey, $fileKey, $schema, $mapping, $idempotencyKey, $requestHash, $retentionDays): OperationRecord {
             $operation = $this->repository->create(
                 $context->tenantContext->tenantId,
                 $context->tenantContext->memberId,
@@ -133,7 +132,7 @@ final readonly class ImportExportService
             }
             $job = $this->publisher->publish($context, self::TASK_TYPE, ['operation_key' => $operation->operationKey], 'iox-' . $idempotencyKey);
             $operation = $this->repository->attachJob($context->tenantContext->tenantId, $operation->operationKey, $job->jobKey);
-            $this->audit->appendTenantMember(
+            $this->audit->tenantMember(
                 $context->tenantContext,
                 'tenant.import_export.submitted',
                 self::RESOURCE_KEY . '.create',

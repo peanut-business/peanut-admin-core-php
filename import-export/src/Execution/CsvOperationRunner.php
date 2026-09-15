@@ -10,9 +10,9 @@ use PeanutAdmin\ImportExport\Contract\DataProviderRegistry;
 use PeanutAdmin\ImportExport\Contract\RowIssue;
 use PeanutAdmin\ImportExport\File\FileMediaGateway;
 use PeanutAdmin\ImportExport\Persistence\ImportExportStore;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\TaskJob\Execution\RetryableTaskException;
 use Throwable;
 
@@ -23,10 +23,9 @@ final readonly class CsvOperationRunner
 
     public function __construct(
         private ImportExportStore $repository,
-        private TransactionManager $transactions,
         private DataProviderRegistry $providers,
         private FileMediaGateway $files,
-        private AuditRepository $audit,
+        private AuditService $audit,
     ) {}
 
     public function run(AuthorizedOperationContext $context, string $operationKey, string $jobKey, int $attempt): OperationRecord
@@ -128,9 +127,6 @@ final readonly class CsvOperationRunner
             if ($issues === []) {
                 $providerIssues = $provider->validateImport($context, $normalized['row']);
                 foreach ($providerIssues as $issue) {
-                    if (!$issue instanceof RowIssue) {
-                        throw ImportExportException::internal();
-                    }
                     $issues[] = $issue;
                 }
             }
@@ -219,7 +215,7 @@ final readonly class CsvOperationRunner
 
     private function beginAttempt(int $tenantId, string $operationKey, string $jobKey, int $attempt): OperationRecord
     {
-        return $this->transactions->run(
+        return Db::transaction(
             fn(): OperationRecord => $this->repository->beginAttempt($tenantId, $operationKey, $jobKey, $attempt),
         );
     }
@@ -233,7 +229,7 @@ final readonly class CsvOperationRunner
         int $accepted,
         int $rejected,
     ): OperationRecord {
-        return $this->transactions->run(
+        return Db::transaction(
             fn(): OperationRecord => $this->repository->checkpointProgressOrCancel(
                 $tenantId,
                 $operationId,
@@ -248,7 +244,7 @@ final readonly class CsvOperationRunner
 
     private function addRowIssue(int $tenantId, int $operationId, int $rowNumber, RowIssue $issue): void
     {
-        $this->transactions->run(function () use ($tenantId, $operationId, $rowNumber, $issue): void {
+        Db::transaction(function () use ($tenantId, $operationId, $rowNumber, $issue): void {
             $this->repository->addRowIssue($tenantId, $operationId, $rowNumber, $issue);
         });
     }
@@ -264,7 +260,7 @@ final readonly class CsvOperationRunner
         int $totalRows,
         ?string $errorCode = null,
     ): OperationRecord {
-        return $this->transactions->run(
+        return Db::transaction(
             fn(): OperationRecord => $this->repository->finish(
                 $tenantId,
                 $operationId,
@@ -309,7 +305,7 @@ final readonly class CsvOperationRunner
     /** @param array<string, int|string> $metadata */
     private function audit(AuthorizedOperationContext $context, OperationRecord $operation, string $event, array $metadata): void
     {
-        $this->audit->appendTenantMember(
+        $this->audit->tenantMember(
             $context->tenantContext,
             'tenant.import_export.' . $event,
             'peanut.import-export.execute',

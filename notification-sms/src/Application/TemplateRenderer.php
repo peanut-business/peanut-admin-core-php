@@ -32,9 +32,6 @@ final class TemplateRenderer
                 throw NotificationException::invalid('NOTIFICATION_TEMPLATE_VARIABLE_INVALID');
             }
             $value = $variables[$key];
-            if (!is_scalar($value) && $value !== null) {
-                throw NotificationException::invalid('NOTIFICATION_TEMPLATE_VARIABLE_INVALID');
-            }
             $replacement = $value === null ? '' : (is_bool($value) ? ($value ? 'true' : 'false') : (string) $value);
             if (str_contains($replacement, "\0") || str_contains($replacement, '{{')
                 || str_contains($replacement, '}}') || strlen($replacement) > 2000

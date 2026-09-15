@@ -7,12 +7,12 @@ namespace PeanutAdmin\DataPermission\Tests\Integration\Engine;
 use DateTimeImmutable;
 use PDO;
 use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
-use PeanutAdmin\DataPermission\Catalog\ResourceOperationStore;
+use PeanutAdmin\DataPermission\Catalog\ThinkPhpResourceOperationCatalog;
 use PeanutAdmin\DataPermission\Constraint\ColumnReference;
-use PeanutAdmin\DataPermission\Constraint\PdoQueryConstraintCompiler;
+use PeanutAdmin\DataPermission\Constraint\ThinkPhpQueryConstraintApplier;
 use PeanutAdmin\DataPermission\Engine\DataPermissionEngine;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
-use PeanutAdmin\DataPermission\Policy\PolicyStore;
+use PeanutAdmin\DataPermission\Policy\ThinkPhpPolicyRepository;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Provider\ConditionProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\ThinkPhpDepartmentHierarchyProvider;
@@ -31,8 +31,8 @@ use PeanutAdmin\DataPermission\Tests\Integration\Schema\DataPermissionMigrationR
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\PdoTenantAuthorizationRepository;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\ThinkPhpTenantAuthorizationRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
 use PeanutAdmin\Kernel\Authorization\Persistence\PermissionDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ProtectedResourceDefinition;
 use PeanutAdmin\Kernel\Authorization\Persistence\ResourceOperationDefinition;
@@ -41,6 +41,9 @@ use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
 use think\db\PDOConnection;
+use think\db\BaseQuery;
+use think\db\Query;
+use think\facade\Db;
 
 require_once dirname(__DIR__, 4) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
 require_once dirname(__DIR__) . '/Schema/DataPermissionMigrationRunner.php';
@@ -64,7 +67,7 @@ final class DataPermissionEngineTest extends DatabaseTestCase
     /** @var array<string, int> */
     private array $conditionIds = [];
 
-    private PdoAuthorizationCatalogRepository $authorizationCatalog;
+    private ThinkPhpAuthorizationCatalogRepository $authorizationCatalog;
     private DataPermissionEngine $engine;
     private TenantContext $context;
     private PDOConnection $connection;
@@ -254,28 +257,18 @@ SQL);
                 'core.specified_objects',
                 $targetSetId,
             ]]]);
-            $compiled = (new PdoQueryConstraintCompiler())->compile($this->engine->queryConstraint(
-                $this->context,
-                'example.work-item',
-                $operation,
-            ));
-            $statement = $this->database->prepare(
-                'SELECT COUNT(*) FROM test_work_item work_item WHERE ' . $compiled->sql,
-            );
-            $statement->execute($compiled->parameters);
-            self::assertSame($size, (int) $statement->fetchColumn());
-
-            $explain = $this->database->prepare(
-                'EXPLAIN SELECT id FROM test_work_item work_item WHERE ' . $compiled->sql,
-            );
-            $explain->execute($compiled->parameters);
-            self::assertNotFalse($explain->fetch(PDO::FETCH_ASSOC));
+            $query = $this->authorizedQuery($operation);
+            self::assertSame($size, (int) (clone $query)->count());
+            $bindCount = count($query->getBind(false));
+            $sql = (string) (clone $query)->field('id')->fetchSql()->select();
+            self::assertNotFalse($this->query('EXPLAIN ' . $sql)->fetch(PDO::FETCH_ASSOC));
             if ($size <= 500) {
-                self::assertStringContainsString(' IN (', $compiled->sql);
+                self::assertStringContainsString(' IN (', $sql);
+                self::assertSame($size + 1, $bindCount);
             } else {
-                self::assertStringContainsString('EXISTS (', $compiled->sql);
-                self::assertLessThan(10, count($compiled->parameters));
-                self::assertTrue((new ThinkPhpTargetSetMembershipProvider($this->connection))->containsAll(
+                self::assertStringContainsString('JSON_TABLE(', $sql);
+                self::assertLessThan(10, $bindCount);
+                self::assertTrue((new ThinkPhpTargetSetMembershipProvider())->containsAll(
                     $this->alphaTenant,
                     $targetSetId,
                     $targetIds,
@@ -312,7 +305,7 @@ SQL);
 
     private function seedKernel(): void
     {
-        $this->authorizationCatalog = new PdoAuthorizationCatalogRepository($this->database);
+        $this->authorizationCatalog = new ThinkPhpAuthorizationCatalogRepository();
         (new CorePermissionCatalogSynchronizer($this->authorizationCatalog))->synchronize();
         $this->insert('pa_module_installation', [
             'module_key' => 'example',
@@ -422,8 +415,8 @@ SQL);
                 new ColumnReference('work_item.department_id'),
                 ['example.project' => new ColumnReference('work_item.project_id')],
             ),
-            new ThinkPhpDepartmentHierarchyProvider($this->connection),
-            new ThinkPhpTargetSetMembershipProvider($this->connection),
+            new ThinkPhpDepartmentHierarchyProvider(),
+            new ThinkPhpTargetSetMembershipProvider(),
             new ConditionProviderRegistry(),
         );
         $providers = new ResourceProviderRegistry();
@@ -434,11 +427,11 @@ SQL);
         $resolvers->register('example.project.resolver', new ProjectTargetResolver($this->database));
 
         return new DataPermissionEngine(
-            new ResourceOperationStore($this->connection),
-            new PolicyStore($this->connection),
+            new ThinkPhpResourceOperationCatalog(),
+            new ThinkPhpPolicyRepository(),
             new PolicyCache(),
             new TenantAuthorizationEvaluator(
-                new PdoTenantAuthorizationRepository($this->database),
+                new ThinkPhpTenantAuthorizationRepository(),
                 new RevisionPermissionCache(),
             ),
             $providers,
@@ -557,17 +550,23 @@ SQL);
     /** @return list<int> */
     private function authorizedIds(string $operation): array
     {
-        $compiled = (new PdoQueryConstraintCompiler())->compile($this->engine->queryConstraint(
+        return array_values(array_map('intval', $this->authorizedQuery($operation)
+            ->order('id')
+            ->column('id')));
+    }
+
+    private function authorizedQuery(string $operation): Query
+    {
+        $query = new Query($this->connection);
+        $query->table('test_work_item');
+        $query->alias('work_item');
+        (new ThinkPhpQueryConstraintApplier())->apply($query, $this->engine->queryConstraint(
             $this->context,
             'example.work-item',
             $operation,
         ));
-        $statement = $this->database->prepare(
-            'SELECT id FROM test_work_item work_item WHERE ' . $compiled->sql . ' ORDER BY id',
-        );
-        $statement->execute($compiled->parameters);
 
-        return array_values(array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN)));
+        return $query;
     }
 
     private function conditionDefinitions(): void

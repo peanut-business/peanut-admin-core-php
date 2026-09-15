@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Tests\Integration\Platform;
 
 use DateTimeImmutable;
+use DateTimeZone;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
+use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Module\CompiledModuleRegistry;
 use PeanutAdmin\Kernel\Module\ManifestDocument;
 use PeanutAdmin\Kernel\Module\ModuleException;
-use PeanutAdmin\Kernel\Module\Persistence\PdoModuleRuntimeRepository;
+use PeanutAdmin\Kernel\Module\Persistence\ThinkPhpModuleRuntimeRepository;
 use PeanutAdmin\Kernel\Module\TenantModuleConfigValidator;
 use PeanutAdmin\Kernel\Module\TenantModuleManager;
 use PeanutAdmin\Kernel\Platform\Application\PlatformTenantAdminService;
@@ -39,10 +42,9 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
             'updated_at' => self::NOW,
         ]);
         $this->service = new PlatformTenantAdminService(
-            $this->database,
             new TenantModuleManager(
                 $this->registry(),
-                new PdoModuleRuntimeRepository($this->database),
+                new ThinkPhpModuleRuntimeRepository(),
                 new class implements TenantModuleConfigValidator {
                     public function assertValid(ManifestDocument $manifest, array $config): void
                     {
@@ -52,20 +54,19 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
                     }
                 },
             ),
+            new AuditService(),
         );
     }
 
     public function testCreatesUpdatesAndTransitionsTenantWithOwnerAndRevisionGuards(): void
     {
         $tenant = $this->service->createTenant(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_tenant_create'),
             'alpha-company',
             'Alpha Company',
             'Alpha',
             'zh-CN',
             'Asia/Shanghai',
-            'req_tenant_create',
         );
 
         self::assertSame('provisioning', $tenant['status']);
@@ -77,8 +78,7 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
         self::assertSame(0, (int) $this->query('SELECT COUNT(*) FROM pa_department')->fetchColumn());
 
         $tenant = $this->service->updateTenant(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_tenant_update'),
             (int) $tenant['id'],
             1,
             'Alpha Company Limited',
@@ -86,14 +86,12 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
             'en-US',
             'UTC',
             'Correct legal name',
-            'req_tenant_update',
         );
         self::assertSame('2', $tenant['revision']);
         self::assertSame('Alpha Limited', $tenant['display_name']);
 
         $this->expectAdminError('REVISION_MISMATCH', fn(): array => $this->service->updateTenant(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_tenant_stale'),
             (int) $tenant['id'],
             1,
             'Stale',
@@ -101,16 +99,13 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
             'zh-CN',
             'Asia/Shanghai',
             'Stale write',
-            'req_tenant_stale',
         ));
         $this->expectAdminError('TENANT_OWNER_REQUIRED', fn(): array => $this->service->transitionTenant(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_tenant_activate_without_owner'),
             (int) $tenant['id'],
             2,
             TenantStatus::Active,
             'Open tenant',
-            'req_tenant_activate_without_owner',
         ));
 
         $this->activateOwner((int) $tenant['id']);
@@ -121,13 +116,11 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
             [TenantStatus::Closed, 5, 'req_tenant_close'],
         ] as [$status, $revision, $requestId]) {
             $tenant = $this->service->transitionTenant(
-                $this->operatorId,
-                $this->operatorAccountId,
+                $this->context($requestId),
                 (int) $tenant['id'],
                 $revision,
                 $status,
                 'Lifecycle test',
-                $requestId,
             );
         }
 
@@ -149,8 +142,7 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
         $expiresAt = new DateTimeImmutable('2030-08-17T04:00:00Z');
 
         $target = $this->service->enableModule(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_module_target_enable'),
             (int) $tenant['id'],
             'example.target',
             ['valid' => true],
@@ -158,7 +150,6 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
             $effectiveAt,
             $expiresAt,
             'Enable target support',
-            'req_module_target_enable',
         );
         self::assertSame('enabled', $target['status']);
         self::assertSame('manual', $target['source']);
@@ -167,8 +158,7 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
         self::assertSame(['valid' => true], $target['config']);
 
         $this->service->enableModule(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_module_work_enable'),
             (int) $tenant['id'],
             'example.work-item',
             ['valid' => true],
@@ -176,32 +166,25 @@ final class PlatformTenantAdminServiceTest extends DatabaseTestCase
             null,
             null,
             'Enable work items',
-            'req_module_work_enable',
         );
         $this->expectAdminError('MODULE_DEPENDENT_ACTIVE', fn(): array => $this->service->disableModule(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_module_target_blocked'),
             (int) $tenant['id'],
             'example.target',
             'Disable dependency too early',
-            'req_module_target_blocked',
         ));
 
         $this->service->disableModule(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_module_work_disable'),
             (int) $tenant['id'],
             'example.work-item',
             'Disable work items',
-            'req_module_work_disable',
         );
         $target = $this->service->disableModule(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_module_target_disable'),
             (int) $tenant['id'],
             'example.target',
             'Disable target support',
-            'req_module_target_disable',
         );
 
         self::assertSame('disabled', $target['status']);
@@ -223,25 +206,21 @@ SQL)->fetchColumn());
     private function activeTenant(): array
     {
         $tenant = $this->service->createTenant(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_module_tenant_create'),
             'module-tenant',
             'Module Tenant',
             'Module Tenant',
             'zh-CN',
             'Asia/Shanghai',
-            'req_module_tenant_create',
         );
         $this->activateOwner((int) $tenant['id']);
 
         return $this->service->transitionTenant(
-            $this->operatorId,
-            $this->operatorAccountId,
+            $this->context('req_module_tenant_activate'),
             (int) $tenant['id'],
             1,
             TenantStatus::Active,
             'Activate module tenant',
-            'req_module_tenant_activate',
         );
     }
 
@@ -276,6 +255,17 @@ SQL)->fetchColumn());
             'created_at' => self::NOW,
             'updated_at' => self::NOW,
         ]);
+    }
+
+    private function context(string $requestId): PlatformContext
+    {
+        return PlatformContext::fromTrustedAutomation(
+            $this->operatorAccountId,
+            $this->operatorId,
+            'platform-web',
+            $requestId,
+            new DateTimeImmutable(self::NOW, new DateTimeZone('UTC')),
+        );
     }
 
     private function installModule(string $moduleKey): void

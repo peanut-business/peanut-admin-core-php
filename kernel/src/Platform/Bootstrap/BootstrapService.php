@@ -4,33 +4,35 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Platform\Bootstrap;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use DomainException;
-use PeanutAdmin\Kernel\Audit\AuditRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Identity\AccountStatus;
 use PeanutAdmin\Kernel\Identity\CredentialStatus;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
-use PeanutAdmin\Kernel\Identity\IdentityRepository;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
-use PeanutAdmin\Kernel\Membership\MembershipRepository;
 use PeanutAdmin\Kernel\Membership\TenantMemberStatus;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
-use PeanutAdmin\Kernel\Platform\PlatformRepository;
-use PeanutAdmin\Kernel\Tenancy\TenantRepository;
+use PeanutAdmin\Kernel\Persistence\Model\Account;
+use PeanutAdmin\Kernel\Persistence\Model\Credential;
+use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
+use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
+use PeanutAdmin\Kernel\Platform\PlatformOperatorStatus;
 use PeanutAdmin\Kernel\Tenancy\TenantStatus;
+use think\db\PDOConnection;
+use think\facade\Db;
 
+/** Fresh-install bootstrap over the application-managed ThinkPHP connection. */
 final readonly class BootstrapService
 {
     private const PLATFORM_OWNER_ROLE = 'platform.bootstrap-owner';
     private const TENANT_OWNER_ROLE = 'core.tenant-owner';
+    private const PLATFORM_BOOTSTRAP_LOCK = 'peanut-admin:bootstrap:platform-owner';
 
     public function __construct(
-        private TransactionManager $transactions,
-        private IdentityRepository $identity,
-        private TenantRepository $tenants,
-        private MembershipRepository $memberships,
-        private PlatformRepository $platform,
-        private AuditRepository $audit,
-        private PasswordHasher $passwords,
+        private AuditService $audit = new AuditService(),
+        private PasswordHasher $passwords = new PasswordHasher(),
     ) {}
 
     public function bootstrapPlatformOwner(
@@ -40,59 +42,89 @@ final readonly class BootstrapService
         string $requestId,
     ): PlatformBootstrapResult {
         $normalizedEmail = EmailAddress::fromString($email);
-        $this->platform->acquireBootstrapLock();
+        $this->acquireBootstrapLock();
 
         try {
-            return $this->transactions->run(function () use (
+            return Db::transaction(function () use (
                 $normalizedEmail,
                 $plainPassword,
                 $displayName,
                 $requestId,
             ): PlatformBootstrapResult {
-                if ($this->platform->operatorCount() !== 0) {
+                if (PlatformOperator::count() !== 0) {
                     throw new DomainException('Platform bootstrap has already completed.');
                 }
 
-                $credential = $this->identity->credentialByEmail($normalizedEmail, true);
-                if ($credential === null) {
-                    $account = $this->identity->createAccount($displayName);
-                    $credential = $this->identity->createEmailCredential(
-                        $account->id,
-                        $normalizedEmail,
-                        $this->passwords->hash($plainPassword),
-                    );
+                $credential = Credential::where('identifier_type', 'email')
+                    ->where('identifier_normalized', $normalizedEmail->value())
+                    ->lock(true)
+                    ->find();
+                if (!$credential instanceof Credential) {
+                    $account = new Account();
+                    $now = $this->now();
+                    $account->save(['display_name' => $displayName, 'created_at' => $now, 'updated_at' => $now]);
+                    $accountId = (int) $account->getKey();
+                    $credential = new Credential();
+                    $credential->save([
+                        'account_id' => $accountId,
+                        'kind' => 'email_password',
+                        'identifier_type' => 'email',
+                        'identifier_normalized' => $normalizedEmail->value(),
+                        'secret_hash' => $this->passwords->hash($plainPassword),
+                        'verified_at' => $now,
+                        'secret_changed_at' => $now,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
                 } else {
-                    if (!$this->passwords->verify($plainPassword, $credential->secretHash)) {
+                    if (!$this->passwords->verify($plainPassword, (string) $credential->getAttr('secret_hash'))) {
                         throw new DomainException('Existing credential cannot be overwritten by bootstrap.');
                     }
-                    $account = $this->identity->accountById($credential->accountId, true);
-                    if ($account === null || $account->status !== AccountStatus::Active) {
+                    $accountId = (int) $credential->getAttr('account_id');
+                    $account = Account::where('id', $accountId)->lock(true)->find();
+                    if (!$account instanceof Account
+                        || AccountStatus::from((string) $account->getAttr('status')) !== AccountStatus::Active) {
                         throw new DomainException('Existing bootstrap account is not active.');
                     }
                 }
-
-                if ($credential->status !== CredentialStatus::Active) {
+                if (CredentialStatus::from((string) $credential->getAttr('status')) !== CredentialStatus::Active) {
                     throw new DomainException('Bootstrap credential is not active.');
                 }
 
-                $operator = $this->platform->createOperator($account->id, $displayName);
-                $roleId = $this->platform->createBuiltinRole(
-                    self::PLATFORM_OWNER_ROLE,
-                    'Platform Bootstrap Owner',
-                );
-                $this->platform->assignRole($operator->id, $roleId);
-                $this->audit->appendPlatform(
+                $now = $this->now();
+                $operator = new PlatformOperator();
+                $operator->save([
+                    'account_id' => $accountId,
+                    'display_name' => $displayName,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+                $operatorId = (int) $operator->getKey();
+                $roleId = (int) Db::name('platform_role')->insertGetId([
+                    'key' => self::PLATFORM_OWNER_ROLE,
+                    'name' => 'Platform Bootstrap Owner',
+                    'is_builtin' => 1,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+                Db::name('platform_operator_role')->insert([
+                    'platform_operator_id' => $operatorId,
+                    'platform_role_id' => $roleId,
+                    'assigned_at' => $now,
+                ]);
+                PlatformOperator::where('id', $operatorId)->inc('security_revision')->update(['updated_at' => $now]);
+                $this->audit->platform(
+                    $operatorId,
+                    $accountId,
+                    $requestId,
                     'platform.bootstrap.completed',
                     'platform.bootstrap',
-                    $requestId,
-                    $operator->id,
-                    $account->id,
                 );
 
-                return new PlatformBootstrapResult($account->id, $operator->id, $roleId);
+                return new PlatformBootstrapResult($accountId, $operatorId, $roleId);
             });
         } finally {
-            $this->platform->releaseBootstrapLock();
+            $this->releaseBootstrapLock();
         }
     }
 
@@ -107,7 +139,7 @@ final readonly class BootstrapService
     ): TenantOwnerCandidateResult {
         $email = EmailAddress::fromString($ownerEmail);
 
-        return $this->transactions->run(function () use (
+        return Db::transaction(function () use (
             $platformOperatorId,
             $tenantCode,
             $tenantName,
@@ -116,68 +148,96 @@ final readonly class BootstrapService
             $ownerDisplayName,
             $requestId,
         ): TenantOwnerCandidateResult {
-            $operator = $this->platform->operatorById($platformOperatorId, true);
-            if ($operator === null || $operator->status->value !== 'active') {
-                throw new DomainException('Active platform operator is required.');
+            $operator = $this->activeOperator($platformOperatorId, true);
+            if (preg_match('/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/D', $tenantCode) !== 1) {
+                throw new \InvalidArgumentException('Invalid tenant code.');
             }
+            $now = $this->now();
+            $tenant = new Tenant();
+            $tenant->save([
+                'code' => $tenantCode,
+                'name' => $tenantName,
+                'display_name' => $tenantName,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $tenantId = (int) $tenant->getKey();
+            $roleId = (int) Db::name('role')->insertGetId([
+                'tenant_id' => $tenantId,
+                'key' => self::TENANT_OWNER_ROLE,
+                'name' => 'Tenant Owner',
+                'is_builtin' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
 
-            $tenant = $this->tenants->createProvisioning($tenantCode, $tenantName);
-            $this->tenants->byId($tenant->id, true);
-            $role = $this->memberships->createBuiltinRole(
-                $tenant->id,
-                self::TENANT_OWNER_ROLE,
-                'Tenant Owner',
-            );
-
-            $credential = $this->identity->credentialByEmail($email, true);
-            if ($credential === null) {
+            $credential = Credential::where('identifier_type', 'email')
+                ->where('identifier_normalized', $email->value())
+                ->lock(true)
+                ->find();
+            if (!$credential instanceof Credential) {
                 if ($initialPassword === null) {
                     throw new DomainException('Initial password is required for a new account.');
                 }
-                $account = $this->identity->createAccount($ownerDisplayName);
-                $this->identity->createEmailCredential(
-                    $account->id,
-                    $email,
-                    $this->passwords->hash($initialPassword),
-                );
+                $account = new Account();
+                $account->save(['display_name' => $ownerDisplayName, 'created_at' => $now, 'updated_at' => $now]);
+                $accountId = (int) $account->getKey();
+                (new Credential())->save([
+                    'account_id' => $accountId,
+                    'kind' => 'email_password',
+                    'identifier_type' => 'email',
+                    'identifier_normalized' => $email->value(),
+                    'secret_hash' => $this->passwords->hash($initialPassword),
+                    'verified_at' => $now,
+                    'secret_changed_at' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
             } else {
                 if ($initialPassword !== null) {
                     throw new DomainException('Password must not be supplied for an existing email.');
                 }
-                $account = $this->identity->accountById($credential->accountId, true);
-                if ($account === null || $account->status !== AccountStatus::Active) {
+                $accountId = (int) $credential->getAttr('account_id');
+                $account = Account::where('id', $accountId)->lock(true)->find();
+                if (!$account instanceof Account
+                    || AccountStatus::from((string) $account->getAttr('status')) !== AccountStatus::Active) {
                     throw new DomainException('Existing owner account is not active.');
                 }
             }
 
-            if ($this->memberships->pendingOrActiveMemberWithRoleExists(
-                $tenant->id,
-                self::TENANT_OWNER_ROLE,
-            )) {
+            if ($this->memberWithOwnerRoleExists($tenantId, ['pending', 'active'])) {
                 throw new DomainException('Tenant owner candidate already exists.');
             }
-
-            $member = $this->memberships->createPending(
-                $tenant->id,
-                $account->id,
-                $ownerDisplayName,
-            );
-            $this->memberships->assignRole($tenant->id, $member->id, $role->id);
-            $this->audit->appendPlatform(
+            $member = new TenantMember();
+            $member->save([
+                'tenant_id' => $tenantId,
+                'account_id' => $accountId,
+                'display_name' => $ownerDisplayName,
+                'status' => TenantMemberStatus::Pending->value,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $memberId = (int) $member->getKey();
+            Db::name('member_role')->insert([
+                'tenant_id' => $tenantId,
+                'tenant_member_id' => $memberId,
+                'role_id' => $roleId,
+                'assigned_at' => $now,
+            ]);
+            TenantMember::withoutGlobalScope()->where('tenant_id', $tenantId)->where('id', $memberId)->update([
+                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'updated_at' => $now,
+            ]);
+            $this->audit->platform(
+                $operator['id'],
+                $operator['account_id'],
+                $requestId,
                 'tenant.owner-candidate.created',
                 'platform.tenant.provision-owner',
-                $requestId,
-                $operator->id,
-                $operator->accountId,
-                ['tenant_id' => $tenant->id, 'member_id' => $member->id],
+                ['tenant_id' => $tenantId, 'member_id' => $memberId],
             );
 
-            return new TenantOwnerCandidateResult(
-                $tenant->id,
-                $account->id,
-                $member->id,
-                $role->id,
-            );
+            return new TenantOwnerCandidateResult($tenantId, $accountId, $memberId, $roleId);
         });
     }
 
@@ -187,39 +247,43 @@ final readonly class BootstrapService
         int $memberId,
         string $requestId,
     ): void {
-        $this->transactions->run(function () use (
-            $platformOperatorId,
-            $tenantId,
-            $memberId,
-            $requestId,
-        ): void {
-            $operator = $this->platform->operatorById($platformOperatorId, true);
-            $tenant = $this->tenants->byId($tenantId, true);
-            $member = $this->memberships->byId($tenantId, $memberId, true);
-            if ($operator === null || $operator->status->value !== 'active') {
-                throw new DomainException('Active platform operator is required.');
-            }
-            if ($tenant === null || $tenant->status !== TenantStatus::Provisioning) {
+        Db::transaction(function () use ($platformOperatorId, $tenantId, $memberId, $requestId): void {
+            $operator = $this->activeOperator($platformOperatorId, true);
+            $tenant = Tenant::where('id', $tenantId)->lock(true)->find();
+            $member = TenantMember::withoutGlobalScope()->where('tenant_id', $tenantId)->where('id', $memberId)
+                ->lock(true)->find();
+            if (!$tenant instanceof Tenant
+                || TenantStatus::from((string) $tenant->getAttr('status')) !== TenantStatus::Provisioning) {
                 throw new DomainException('Owner activation requires a provisioning tenant.');
             }
-            if ($member === null || $member->status !== TenantMemberStatus::Pending) {
+            if (!$member instanceof TenantMember
+                || TenantMemberStatus::from((string) $member->getAttr('status')) !== TenantMemberStatus::Pending) {
                 throw new DomainException('Pending owner candidate was not found.');
             }
-            if (!$this->memberships->memberHasRole($tenantId, $memberId, self::TENANT_OWNER_ROLE)) {
+            if (!$this->memberHasOwnerRole($tenantId, $memberId)) {
                 throw new DomainException('Owner candidate does not hold the owner role.');
             }
-
-            $account = $this->identity->accountById($member->accountId, true);
-            $credential = $this->identity->activeCredentialForAccount($member->accountId, true);
-            if ($account === null || $account->status !== AccountStatus::Active || $credential === null) {
+            $account = Account::where('id', (int) $member->getAttr('account_id'))->lock(true)->find();
+            $credential = Credential::where('account_id', (int) $member->getAttr('account_id'))
+                ->where('status', CredentialStatus::Active->value)->lock(true)->find();
+            if (!$account instanceof Account
+                || AccountStatus::from((string) $account->getAttr('status')) !== AccountStatus::Active
+                || !$credential instanceof Credential) {
                 throw new DomainException('Owner account and credential must be active.');
             }
-
-            $this->memberships->transition($tenantId, $memberId, TenantMemberStatus::Active);
-            $this->audit->appendTenantPlatformOperator(
+            TenantMemberStatus::Pending->transitionTo(TenantMemberStatus::Active);
+            $now = $this->now();
+            TenantMember::withoutGlobalScope()->where('tenant_id', $tenantId)->where('id', $memberId)->update([
+                'status' => TenantMemberStatus::Active->value,
+                'security_revision' => Db::raw('security_revision + 1'),
+                'authorization_revision' => Db::raw('authorization_revision + 1'),
+                'joined_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $this->audit->tenantPlatformOperator(
                 $tenantId,
-                $operator->id,
-                $operator->accountId,
+                $operator['id'],
+                $operator['account_id'],
                 'tenant.owner-candidate.activated',
                 'platform.tenant.provision-owner',
                 $requestId,
@@ -228,33 +292,109 @@ final readonly class BootstrapService
         });
     }
 
-    public function activateTenant(
-        int $platformOperatorId,
-        int $tenantId,
-        string $requestId,
-    ): void {
-        $this->transactions->run(function () use ($platformOperatorId, $tenantId, $requestId): void {
-            $operator = $this->platform->operatorById($platformOperatorId, true);
-            $tenant = $this->tenants->byId($tenantId, true);
-            if ($operator === null || $operator->status->value !== 'active') {
-                throw new DomainException('Active platform operator is required.');
-            }
-            if ($tenant === null || $tenant->status !== TenantStatus::Provisioning) {
+    public function activateTenant(int $platformOperatorId, int $tenantId, string $requestId): void
+    {
+        Db::transaction(function () use ($platformOperatorId, $tenantId, $requestId): void {
+            $operator = $this->activeOperator($platformOperatorId, true);
+            $tenant = Tenant::where('id', $tenantId)->lock(true)->find();
+            if (!$tenant instanceof Tenant
+                || TenantStatus::from((string) $tenant->getAttr('status')) !== TenantStatus::Provisioning) {
                 throw new DomainException('Only a provisioning tenant can be activated.');
             }
-            if (!$this->memberships->activeMemberWithRoleExists($tenantId, self::TENANT_OWNER_ROLE)) {
+            if (!$this->memberWithOwnerRoleExists($tenantId, ['active'])) {
                 throw new DomainException('Tenant requires an active owner before activation.');
             }
-
-            $this->tenants->transition($tenantId, TenantStatus::Active);
-            $this->audit->appendPlatform(
+            TenantStatus::Provisioning->transitionTo(TenantStatus::Active);
+            $now = $this->now();
+            Tenant::where('id', $tenantId)->update([
+                'status' => TenantStatus::Active->value,
+                'security_revision' => Db::raw('security_revision + 1'),
+                'revision' => Db::raw('revision + 1'),
+                'activated_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $this->audit->platform(
+                $operator['id'],
+                $operator['account_id'],
+                $requestId,
                 'tenant.activated',
                 'platform.tenant.lifecycle',
-                $requestId,
-                $operator->id,
-                $operator->accountId,
                 ['tenant_id' => $tenantId],
             );
         });
+    }
+
+    /** @return array{id:int,account_id:int} */
+    private function activeOperator(int $operatorId, bool $lock): array
+    {
+        $operator = PlatformOperator::where('id', $operatorId)->lock($lock)->find();
+        if (!$operator instanceof PlatformOperator
+            || PlatformOperatorStatus::from((string) $operator->getAttr('status')) !== PlatformOperatorStatus::Active) {
+            throw new DomainException('Active platform operator is required.');
+        }
+
+        return ['id' => (int) $operator->getAttr('id'), 'account_id' => (int) $operator->getAttr('account_id')];
+    }
+
+    private function memberHasOwnerRole(int $tenantId, int $memberId): bool
+    {
+        $roleId = Db::name('role')->where('tenant_id', $tenantId)
+            ->where('key', self::TENANT_OWNER_ROLE)->where('status', 'active')->value('id');
+
+        return $roleId !== null && Db::name('member_role')
+            ->where('tenant_id', $tenantId)
+            ->where('tenant_member_id', $memberId)
+            ->where('role_id', (int) $roleId)
+            ->find() !== null;
+    }
+
+    /** @param non-empty-list<string> $statuses */
+    private function memberWithOwnerRoleExists(int $tenantId, array $statuses): bool
+    {
+        $roleId = Db::name('role')->where('tenant_id', $tenantId)
+            ->where('key', self::TENANT_OWNER_ROLE)->where('status', 'active')->value('id');
+        if ($roleId === null) {
+            return false;
+        }
+        $memberIds = Db::name('member_role')->where('tenant_id', $tenantId)
+            ->where('role_id', (int) $roleId)->column('tenant_member_id');
+
+        return $memberIds !== [] && TenantMember::withoutGlobalScope()
+            ->where('tenant_id', $tenantId)
+            ->whereIn('id', $memberIds)
+            ->whereIn('status', $statuses)
+            ->find() !== null;
+    }
+
+    /** MySQL advisory locking is the one driver-specific bootstrap primitive. */
+    private function acquireBootstrapLock(): void
+    {
+        $rows = $this->driverConnection()->query(
+            'SELECT GET_LOCK(?, 10) AS acquired',
+            [self::PLATFORM_BOOTSTRAP_LOCK],
+        );
+        if ((int) ($rows[0]['acquired'] ?? 0) !== 1) {
+            throw new DomainException('Platform bootstrap lock could not be acquired.');
+        }
+    }
+
+    private function releaseBootstrapLock(): void
+    {
+        $this->driverConnection()->query('SELECT RELEASE_LOCK(?) AS released', [self::PLATFORM_BOOTSTRAP_LOCK]);
+    }
+
+    private function driverConnection(): PDOConnection
+    {
+        $connection = Db::connect();
+        if (!$connection instanceof PDOConnection) {
+            throw new DomainException('MySQL bootstrap locking requires ThinkPHP PDOConnection.');
+        }
+
+        return $connection;
+    }
+
+    private function now(): string
+    {
+        return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
     }
 }

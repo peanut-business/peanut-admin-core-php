@@ -16,12 +16,10 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\CorePermissionCatalogSynchronizer;
-use PeanutAdmin\Kernel\Authorization\Persistence\PdoAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Authorization\Persistence\ThinkPhpAuthorizationCatalogRepository;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Module\ModuleException;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
 use PeanutAdmin\Kernel\Tests\Integration\Schema\DatabaseTestCase;
-use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
-use think\db\PDOConnection;
 
 require_once dirname(__DIR__, 4) . '/kernel/tests/Integration/Schema/DatabaseTestCase.php';
 require_once dirname(__DIR__) . '/Schema/DataPermissionMigrationRunner.php';
@@ -33,7 +31,6 @@ final class DataPolicyAdminServiceTest extends DatabaseTestCase
     private DataPolicyAdminService $service;
     private TenantContext $context;
     private int $roleId;
-    private PDOConnection $connection;
 
     protected function setUp(): void
     {
@@ -47,7 +44,7 @@ final class DataPolicyAdminServiceTest extends DatabaseTestCase
             getenv('MYSQL_ROOT_PASSWORD') ?: 'peanut_admin_root_dev',
         ))->migrate();
         (new CorePermissionCatalogSynchronizer(
-            new PdoAuthorizationCatalogRepository($this->database),
+            new ThinkPhpAuthorizationCatalogRepository(),
         ))->synchronize();
         $tenantId = $this->tenant();
         $accountId = $this->account();
@@ -56,11 +53,9 @@ final class DataPolicyAdminServiceTest extends DatabaseTestCase
         $this->catalog($tenantId);
         $registry = new TargetResolverRegistry();
         $registry->register('test.project-resolver', new TestProjectResolver());
-        $this->connection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->service = new DataPolicyAdminService(
-            $this->connection,
-            new ThinkPhpTransactionManager($this->connection),
             $registry,
+            new AuditService(),
         );
         $this->context = TenantContext::fromValidatedSession(
             new ValidatedTenantSession(

@@ -123,7 +123,7 @@ abstract class ReferenceCodesDatabaseTestCase extends TestCase
 
     protected function repository(ReferenceCodeSetDefinition $definition): ReferenceCodeStore
     {
-        $store = new ReferenceCodeStore($this->connection);
+        $store = new ReferenceCodeStore();
         $store->synchronize($this->registry($definition), new DateTimeImmutable(self::NOW));
 
         return $store;
@@ -304,6 +304,7 @@ SQL);
                 ],
             ],
         ]);
+        \think\Container::getInstance()->instance(DbManager::class, $manager);
         $connection = $manager->connect();
         if (!$connection instanceof PDOConnection) {
             throw new RuntimeException('Reference Codes requires a ThinkPHP PDO connection.');

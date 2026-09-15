@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\NotificationSms\Task;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use PeanutAdmin\Kernel\Persistence\TransactionManager;
+use think\facade\Db;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
 use PeanutAdmin\NotificationSms\Package;
 use PeanutAdmin\NotificationSms\Persistence\NotificationRepository;
@@ -23,7 +23,6 @@ final readonly class SmsTaskHandler implements TaskHandler
 {
     public function __construct(
         private NotificationRepository $repository,
-        private TransactionManager $transactions,
         private SmsRecipientResolver $recipients,
         private SmsProvider $provider,
     ) {}
@@ -43,7 +42,7 @@ final readonly class SmsTaskHandler implements TaskHandler
         }
         $outboxKey = $this->outboxKey($execution);
         try {
-            $dispatch = $this->transactions->run(
+            $dispatch = Db::transaction(
                 fn(): SmsDispatch => $this->repository->beginSms($execution->tenantId, $outboxKey, $execution->jobKey),
             );
         } catch (NotificationException $exception) {
@@ -68,7 +67,7 @@ final readonly class SmsTaskHandler implements TaskHandler
             throw NotificationException::invalid('SMS_RECIPIENT_CHANGED');
         }
         try {
-            $rateAllowed = $this->transactions->run(
+            $rateAllowed = Db::transaction(
                 fn(): bool => $this->repository->reserveSmsRate($dispatch->tenantId, $dispatch->recipientDigest()),
             );
         } catch (Throwable) {
@@ -104,7 +103,7 @@ final readonly class SmsTaskHandler implements TaskHandler
             throw new RetryableTaskException('SMS_PROVIDER_UNAVAILABLE');
         }
         try {
-            $this->transactions->run(function () use ($dispatch, $receipt): void {
+            Db::transaction(function () use ($dispatch, $receipt): void {
                 $this->repository->completeSms($dispatch, $receipt);
             });
         } catch (Throwable) {
@@ -126,7 +125,7 @@ final readonly class SmsTaskHandler implements TaskHandler
     private function recordFailure(SmsDispatch $dispatch, string $safeCode, bool $retryable): void
     {
         try {
-            $this->transactions->run(function () use ($dispatch, $safeCode, $retryable): void {
+            Db::transaction(function () use ($dispatch, $safeCode, $retryable): void {
                 $this->repository->failSms($dispatch, $safeCode, $retryable);
             });
         } catch (Throwable) {

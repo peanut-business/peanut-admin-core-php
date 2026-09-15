@@ -12,15 +12,15 @@ use PeanutAdmin\ImportExport\Application\OperationRecord;
 use PeanutAdmin\ImportExport\Contract\RowIssue;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
-use think\db\exception\PDOException;
-use think\db\PDOConnection;
+use Throwable;
+use think\db\BaseQuery;
+use think\facade\Db;
 
-final readonly class ImportExportStore
+final class ImportExportStore
 {
     private TenantColumnScope $tenantScope;
 
     public function __construct(
-        private PDOConnection $connection,
         TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
         ?int $instanceTenantId = null,
     ) {
@@ -44,42 +44,23 @@ final readonly class ImportExportStore
     ): OperationRecord {
         $this->assertStorageMode();
         $created = false;
-        $sql = sprintf(
-            <<<'SQL'
-INSERT INTO pa_import_export_operation (
-  operation_key, %screated_by_member_id, provider_key, direction,
-  input_file_key, schema_revision, mapping_json, idempotency_key_hash,
-  request_hash, retention_until, created_at, updated_at
-) VALUES (
-  :operation_key, %s:member_id, :provider_key, :direction,
-  :input_file_key, :schema_revision, :mapping_json, :idempotency_hash,
-  :request_hash, TIMESTAMPADD(DAY, :retention_days, UTC_TIMESTAMP(3)),
-  UTC_TIMESTAMP(3), UTC_TIMESTAMP(3)
-)
-SQL,
-            $this->tenantScope->whenTenant('tenant_id, '),
-            $this->tenantScope->whenTenant(':tenant_id, '),
-        );
         try {
-            $this->connection->execute($sql, $this->tenantScope->bindings($tenantId, [
-                'operation_key' => $operationKey,
-                'member_id' => $memberId,
-                'provider_key' => $providerKey,
-                'direction' => $direction,
-                'input_file_key' => $inputFileKey,
-                'schema_revision' => $schemaRevision,
-                'mapping_json' => $this->json($mapping),
-                'idempotency_hash' => $idempotencyKeyHash,
-                'request_hash' => $requestHash,
-                'retention_days' => $retentionDays,
+            $id = (int) Db::name('import_export_operation')->insertGetId($this->tenantData($tenantId, [
+                'operation_key' => $operationKey, 'created_by_member_id' => $memberId,
+                'provider_key' => $providerKey, 'direction' => $direction, 'input_file_key' => $inputFileKey,
+                'schema_revision' => $schemaRevision, 'mapping_json' => $this->json($mapping),
+                'idempotency_key_hash' => $idempotencyKeyHash, 'request_hash' => $requestHash,
+                'retention_until' => Db::raw("TIMESTAMPADD(DAY, {$retentionDays}, UTC_TIMESTAMP(3))"),
+                'created_at' => Db::raw('UTC_TIMESTAMP(3)'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
             ]));
-            $id = $this->lastInsertId();
             $created = true;
-        } catch (PDOException $exception) {
-            if (!$this->isDuplicate($exception)) {
+        } catch (Throwable $exception) {
+            if ((string) $exception->getCode() !== '23000') {
                 throw $exception;
             }
-            $existing = $this->byIdempotency($tenantId, $memberId, $direction, $providerKey, $idempotencyKeyHash, true);
+            $existing = $this->byIdempotency(
+                $tenantId, $memberId, $direction, $providerKey, $idempotencyKeyHash, true,
+            );
             if ($existing === null || !hash_equals((string) $existing['request_hash'], $requestHash)) {
                 throw ImportExportException::conflict();
             }
@@ -92,23 +73,21 @@ SQL,
         if (!$created && !hash_equals((string) $row['schema_revision'], $schemaRevision)) {
             throw ImportExportException::schemaMismatch();
         }
+
         return $this->map($row, $tenantId);
     }
 
     public function attachJob(int $tenantId, string $operationKey, string $jobKey): OperationRecord
     {
         $this->assertStorageMode();
-        $this->byKey($tenantId, $operationKey, false);
-        $this->connection->execute(sprintf(<<<'SQL'
-UPDATE pa_import_export_operation
-SET task_job_key = :job_key, revision = revision + 1, updated_at = UTC_TIMESTAMP(3)
-WHERE %s
-  AND (task_job_key IS NULL OR task_job_key = :job_key_check)
-SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'queued'")), $this->tenantScope->bindings($tenantId, [
-            'job_key' => $jobKey,
-            'job_key_check' => $jobKey,
-            'operation_key' => $operationKey,
-        ]));
+        $this->byKey($tenantId, $operationKey);
+        $this->query('import_export_operation', $tenantId)->where('operation_key', $operationKey)
+            ->where('status', 'queued')->where(function ($query) use ($jobKey): void {
+                $query->whereNull('task_job_key')->whereOr('task_job_key', $jobKey);
+            })->update([
+                'task_job_key' => $jobKey, 'revision' => Db::raw('revision + 1'),
+                'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ]);
         $row = $this->byKey($tenantId, $operationKey, true);
         if ($row === null) {
             throw ImportExportException::notFound();
@@ -116,6 +95,7 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
         if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])) {
             throw ImportExportException::stateConflict();
         }
+
         return $this->map($row, $tenantId);
     }
 
@@ -126,50 +106,38 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
         if ($page < 1 || $page > 1_000_000 || $pageSize < 1 || $pageSize > 100) {
             throw ImportExportException::invalid();
         }
-        $parameters = $this->tenantScope->bindings($tenantId, ['status' => $status]);
-        $count = $this->one(
-            'SELECT COUNT(*) AS aggregate FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('status = :status'),
-            $parameters,
-        );
-        $rows = $this->connection->query(
-            'SELECT * FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('status = :status')
-            . sprintf(' ORDER BY id DESC LIMIT %d OFFSET %d', $pageSize, ($page - 1) * $pageSize),
-            $parameters,
-        );
+        $query = $this->query('import_export_operation', $tenantId)->where('status', $status);
+        $total = (int) (clone $query)->count();
+
         return [
             'items' => array_values(array_map(
                 fn(array $row): OperationRecord => $this->map($row, $tenantId),
-                $rows,
+                $query->order('id', 'desc')->page($page, $pageSize)->select()->toArray(),
             )),
-            'page' => $page,
-            'page_size' => $pageSize,
-            'total' => (int) ($count['aggregate'] ?? 0),
+            'page' => $page, 'page_size' => $pageSize, 'total' => $total,
         ];
     }
 
     public function get(int $tenantId, string $operationKey): OperationRecord
     {
         $this->assertStorageMode();
-        $row = $this->byKey($tenantId, $operationKey, false);
+        $row = $this->byKey($tenantId, $operationKey);
         if ($row === null) {
             throw ImportExportException::notFound();
         }
+
         return $this->map($row, $tenantId);
     }
 
     public function resultFile(int $tenantId, string $fileKey): OperationRecord
     {
         $this->assertStorageMode();
-        $row = $this->one(
-            'SELECT * FROM pa_import_export_operation WHERE '
-            . $this->tenantScope->where("result_file_key = :file_key AND status = 'succeeded' AND retention_until > UTC_TIMESTAMP(3)")
-            . ' LIMIT 1',
-            $this->tenantScope->bindings($tenantId, ['file_key' => $fileKey]),
-        );
+        $row = $this->query('import_export_operation', $tenantId)->where('result_file_key', $fileKey)
+            ->where('status', 'succeeded')->where('retention_until', '>', Db::raw('UTC_TIMESTAMP(3)'))->find();
         if ($row === null) {
             throw ImportExportException::fileUnavailable();
         }
-        $this->tenantScope->tenantId($row, $tenantId);
+
         return $this->map($row, $tenantId);
     }
 
@@ -184,23 +152,15 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
         if (!in_array($row['status'], ['queued', 'running'], true) || (int) $row['revision'] !== $revision) {
             throw ImportExportException::stateConflict();
         }
-        $affected = $this->connection->execute(
-            "UPDATE pa_import_export_operation SET status = :status, completed_at = IF(:completion_status = 'cancelled', UTC_TIMESTAMP(3), NULL), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id"
-            . $this->tenantScope->andWhere() . ' AND revision = :revision',
-            $this->tenantScope->bindings($tenantId, [
-                'status' => $next,
-                'completion_status' => $next,
-                'id' => $row['id'],
-                'revision' => $revision,
-            ]),
-        );
-        if ($affected !== 1) {
+        if ($this->query('import_export_operation', $tenantId)->where('id', (int) $row['id'])
+            ->where('revision', $revision)->update([
+                'status' => $next, 'completed_at' => $next === 'cancelled' ? Db::raw('UTC_TIMESTAMP(3)') : null,
+                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ]) !== 1) {
             throw ImportExportException::stateConflict();
         }
-        return $this->map(
-            $this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal(),
-            $tenantId,
-        );
+
+        return $this->map($this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal(), $tenantId);
     }
 
     public function beginAttempt(int $tenantId, string $operationKey, string $jobKey, int $attempt): OperationRecord
@@ -210,99 +170,80 @@ SQL, $this->tenantScope->where("operation_key = :operation_key AND status = 'que
         if ($row === null) {
             throw ImportExportException::notFound();
         }
-        if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key']) || $attempt < 1 || $attempt > 10 || $attempt <= (int) $row['attempt_number'] || !in_array($row['status'], ['queued', 'running'], true)) {
+        if (!is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])
+            || $attempt < 1 || $attempt > 10 || $attempt <= (int) $row['attempt_number']
+            || !in_array($row['status'], ['queued', 'running'], true)) {
             throw ImportExportException::stateConflict();
         }
-        $affected = $this->connection->execute(
-            "UPDATE pa_import_export_operation SET status = 'running', attempt_number = :attempt, last_error_code = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id"
-            . $this->tenantScope->andWhere() . " AND attempt_number < :attempt_fence AND status IN ('queued','running')",
-            $this->tenantScope->bindings($tenantId, [
-                'attempt' => $attempt,
-                'attempt_fence' => $attempt,
-                'id' => $row['id'],
-            ]),
-        );
-        if ($affected !== 1) {
+        if ($this->query('import_export_operation', $tenantId)->where('id', (int) $row['id'])
+            ->where('attempt_number', '<', $attempt)->whereIn('status', ['queued', 'running'])->update([
+                'status' => 'running', 'attempt_number' => $attempt, 'last_error_code' => null,
+                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ]) !== 1) {
             throw ImportExportException::stateConflict();
         }
-        return $this->map(
-            $this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal(),
-            $tenantId,
-        );
+
+        return $this->map($this->byId($tenantId, (int) $row['id'], true) ?? throw ImportExportException::internal(), $tenantId);
     }
 
-    public function checkpointProgressOrCancel(int $tenantId, int $operationId, string $jobKey, int $attempt, int $processed, int $accepted, int $rejected): OperationRecord
-    {
+    public function checkpointProgressOrCancel(
+        int $tenantId,
+        int $operationId,
+        string $jobKey,
+        int $attempt,
+        int $processed,
+        int $accepted,
+        int $rejected,
+    ): OperationRecord {
         $this->assertStorageMode();
         if ($processed < 0 || $processed > 100000 || $accepted < 0 || $rejected < 0 || $accepted + $rejected > $processed) {
             throw ImportExportException::internal();
         }
         $row = $this->byId($tenantId, $operationId, true);
         if ($row === null || !is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])
-            || (int) $row['attempt_number'] !== $attempt || !in_array($row['status'], ['running', 'cancel_requested'], true)
-        ) {
+            || (int) $row['attempt_number'] !== $attempt || !in_array($row['status'], ['running', 'cancel_requested'], true)) {
             throw ImportExportException::stateConflict();
         }
         $cancelled = $row['status'] === 'cancel_requested';
         if (!$cancelled && (int) $row['processed_rows'] === $processed
-            && (int) $row['accepted_rows'] === $accepted && (int) $row['rejected_rows'] === $rejected
-        ) {
+            && (int) $row['accepted_rows'] === $accepted && (int) $row['rejected_rows'] === $rejected) {
             return $this->map($row, $tenantId);
         }
-        $affected = $this->connection->execute(sprintf(<<<'SQL'
-UPDATE pa_import_export_operation
-SET status = :status,
-    processed_rows = :processed,
-    accepted_rows = :accepted,
-    rejected_rows = :rejected,
-    total_rows = IF(:cancelled = 1, :processed_total, total_rows),
-    result_file_key = IF(:cancelled_result_file = 1, NULL, result_file_key),
-    error_file_key = IF(:cancelled_error_file = 1, NULL, error_file_key),
-    last_error_code = IF(:cancelled_error = 1, NULL, last_error_code),
-    completed_at = IF(:cancelled_completion = 1, UTC_TIMESTAMP(3), completed_at),
-    revision = revision + 1,
-    updated_at = UTC_TIMESTAMP(3)
-WHERE id = :id%s AND task_job_key = :job_key
-  AND attempt_number = :attempt AND status = :expected_status
-SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($tenantId, [
-            'status' => $cancelled ? 'cancelled' : 'running',
-            'processed' => $processed,
-            'accepted' => $accepted,
-            'rejected' => $rejected,
-            'cancelled' => $cancelled ? 1 : 0,
-            'processed_total' => $processed,
-            'cancelled_result_file' => $cancelled ? 1 : 0,
-            'cancelled_error_file' => $cancelled ? 1 : 0,
-            'cancelled_error' => $cancelled ? 1 : 0,
-            'cancelled_completion' => $cancelled ? 1 : 0,
-            'id' => $operationId,
-            'job_key' => $jobKey,
-            'attempt' => $attempt,
-            'expected_status' => $row['status'],
-        ]));
-        if ($affected !== 1) {
+        $changes = [
+            'status' => $cancelled ? 'cancelled' : 'running', 'processed_rows' => $processed,
+            'accepted_rows' => $accepted, 'rejected_rows' => $rejected,
+            'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+        ];
+        if ($cancelled) {
+            $changes += [
+                'total_rows' => $processed, 'result_file_key' => null, 'error_file_key' => null,
+                'last_error_code' => null, 'completed_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ];
+        }
+        if ($this->query('import_export_operation', $tenantId)->where('id', $operationId)
+            ->where('task_job_key', $jobKey)->where('attempt_number', $attempt)->where('status', $row['status'])
+            ->update($changes) !== 1) {
             throw ImportExportException::stateConflict();
         }
-        return $this->map(
-            $this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal(),
-            $tenantId,
-        );
+
+        return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal(), $tenantId);
     }
 
     public function addRowIssue(int $tenantId, int $operationId, int $rowNumber, RowIssue $issue): void
     {
         $this->assertStorageMode();
-        $this->byId($tenantId, $operationId, false);
-        $this->connection->execute(sprintf(
-            'INSERT IGNORE INTO pa_import_export_row_error (%s`operation_id`, `row_number`, `column_key`, `error_code`, `occurred_at`) VALUES (%s:operation_id, :row_number, :column_key, :error_code, UTC_TIMESTAMP(3))',
-            $this->tenantScope->whenTenant('`tenant_id`, '),
-            $this->tenantScope->whenTenant(':tenant_id, '),
-        ), $this->tenantScope->bindings($tenantId, [
-            'operation_id' => $operationId,
-            'row_number' => $rowNumber,
-            'column_key' => $issue->columnKey,
-            'error_code' => $issue->code,
-        ]));
+        $this->byId($tenantId, $operationId);
+        try {
+            Db::name('import_export_row_error')->insert($this->tenantData($tenantId, [
+                'operation_id' => $operationId, 'row_number' => $rowNumber,
+                'column_key' => $issue->columnKey, 'error_code' => $issue->code,
+                'occurred_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ]));
+        } catch (Throwable $exception) {
+            if ((string) $exception->getCode() !== '23000') {
+                throw $exception;
+            }
+        }
     }
 
     /** @return list<array{row_number: int, column_key: string|null, error_code: string}> */
@@ -312,52 +253,54 @@ SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($tenantId, [
         if ($limit < 1 || $limit > 10000) {
             throw ImportExportException::invalid();
         }
-        $this->byId($tenantId, $operationId, false);
-        $rows = $this->connection->query(
-            'SELECT `row_number`, `column_key`, `error_code` FROM pa_import_export_row_error WHERE '
-            . $this->tenantScope->where('operation_id = :operation_id')
-            . sprintf(' ORDER BY `row_number`, `id` LIMIT %d', $limit),
-            $this->tenantScope->bindings($tenantId, ['operation_id' => $operationId]),
-        );
-        return array_values(array_map(static fn(array $row): array => ['row_number' => (int) $row['row_number'], 'column_key' => is_string($row['column_key']) ? $row['column_key'] : null, 'error_code' => (string) $row['error_code']], $rows));
+        $this->byId($tenantId, $operationId);
+        $rows = $this->query('import_export_row_error', $tenantId)->where('operation_id', $operationId)
+            ->order('row_number')->order('id')->limit($limit)->field('row_number,column_key,error_code')->select()->toArray();
+
+        return array_values(array_map(static fn(array $row): array => [
+            'row_number' => (int) $row['row_number'],
+            'column_key' => is_string($row['column_key']) ? $row['column_key'] : null,
+            'error_code' => (string) $row['error_code'],
+        ], $rows));
     }
 
-    public function finish(int $tenantId, int $operationId, string $jobKey, int $attempt, string $status, ?string $resultFileKey, ?string $errorFileKey, int $totalRows, ?string $errorCode = null): OperationRecord
-    {
+    public function finish(
+        int $tenantId,
+        int $operationId,
+        string $jobKey,
+        int $attempt,
+        string $status,
+        ?string $resultFileKey,
+        ?string $errorFileKey,
+        int $totalRows,
+        ?string $errorCode = null,
+    ): OperationRecord {
         $this->assertStorageMode();
-        if (!in_array($status, ['succeeded', 'failed', 'cancelled'], true) || $totalRows < 0 || $totalRows > 100000 || ($status === 'succeeded' && $errorCode !== null) || ($status === 'failed' && preg_match('/^[A-Z][A-Z0-9_]{2,63}$/D', (string) $errorCode) !== 1)) {
+        if (!in_array($status, ['succeeded', 'failed', 'cancelled'], true) || $totalRows < 0 || $totalRows > 100000
+            || ($status === 'succeeded' && $errorCode !== null)
+            || ($status === 'failed' && preg_match('/^[A-Z][A-Z0-9_]{2,63}$/D', (string) $errorCode) !== 1)) {
             throw ImportExportException::internal();
         }
         $row = $this->byId($tenantId, $operationId, true);
         if ($row === null || !is_string($row['task_job_key']) || !hash_equals($jobKey, $row['task_job_key'])
-            || (int) $row['attempt_number'] !== $attempt || !in_array($row['status'], ['running', 'cancel_requested'], true)
-        ) {
+            || (int) $row['attempt_number'] !== $attempt || !in_array($row['status'], ['running', 'cancel_requested'], true)) {
             throw ImportExportException::stateConflict();
         }
         $cancelled = $row['status'] === 'cancel_requested';
-        $affected = $this->connection->execute(
-            'UPDATE pa_import_export_operation SET status = :status, result_file_key = :result_file_key, error_file_key = :error_file_key, total_rows = :total_rows, last_error_code = :error_code, completed_at = UTC_TIMESTAMP(3), revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE id = :id'
-            . $this->tenantScope->andWhere()
-            . ' AND task_job_key = :job_key AND attempt_number = :attempt AND status = :expected_status',
-            $this->tenantScope->bindings($tenantId, [
+        if ($this->query('import_export_operation', $tenantId)->where('id', $operationId)
+            ->where('task_job_key', $jobKey)->where('attempt_number', $attempt)->where('status', $row['status'])
+            ->update([
                 'status' => $cancelled ? 'cancelled' : $status,
                 'result_file_key' => $cancelled ? null : $resultFileKey,
-                'error_file_key' => $cancelled ? null : $errorFileKey,
-                'total_rows' => $totalRows,
-                'error_code' => $cancelled ? null : $errorCode,
-                'id' => $operationId,
-                'job_key' => $jobKey,
-                'attempt' => $attempt,
-                'expected_status' => $row['status'],
-            ]),
-        );
-        if ($affected !== 1) {
+                'error_file_key' => $cancelled ? null : $errorFileKey, 'total_rows' => $totalRows,
+                'last_error_code' => $cancelled ? null : $errorCode,
+                'completed_at' => Db::raw('UTC_TIMESTAMP(3)'), 'revision' => Db::raw('revision + 1'),
+                'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ]) !== 1) {
             throw ImportExportException::stateConflict();
         }
-        return $this->map(
-            $this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal(),
-            $tenantId,
-        );
+
+        return $this->map($this->byId($tenantId, $operationId, true) ?? throw ImportExportException::internal(), $tenantId);
     }
 
     public function expireDue(int $limit = 100): int
@@ -366,57 +309,68 @@ SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($tenantId, [
         if ($limit < 1 || $limit > 1000) {
             throw ImportExportException::invalid();
         }
-        $row = $this->one('SELECT * FROM pa_import_export_operation ORDER BY id LIMIT 1');
-        if (is_array($row)) {
-            $this->tenantScope->assertStorageRow($row);
+        $sample = Db::name('import_export_operation')->order('id')->find();
+        if ($sample !== null) {
+            $this->tenantScope->assertStorageRow($sample);
         }
-        return $this->connection->execute(sprintf("UPDATE pa_import_export_operation SET status = 'expired', result_file_key = NULL, error_file_key = NULL, revision = revision + 1, updated_at = UTC_TIMESTAMP(3) WHERE status IN ('succeeded','failed','cancelled') AND retention_until <= UTC_TIMESTAMP(3) ORDER BY id LIMIT %d", $limit));
+
+        return Db::name('import_export_operation')->whereIn('status', ['succeeded', 'failed', 'cancelled'])
+            ->where('retention_until', '<=', Db::raw('UTC_TIMESTAMP(3)'))->order('id')->limit($limit)->update([
+                'status' => 'expired', 'result_file_key' => null, 'error_file_key' => null,
+                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ]);
     }
 
     /** @return array<string, mixed>|null */
-    private function byIdempotency(int $tenantId, int $memberId, string $direction, string $providerKey, string $hash, bool $lock): ?array
-    {
-        $sql = 'SELECT * FROM pa_import_export_operation WHERE '
-            . $this->tenantScope->where('created_by_member_id = :member_id AND direction = :direction AND provider_key = :provider_key AND idempotency_key_hash = :hash')
-            . ($lock ? ' FOR UPDATE' : '');
-        $row = $this->one($sql, $this->tenantScope->bindings($tenantId, [
-            'member_id' => $memberId,
-            'direction' => $direction,
-            'provider_key' => $providerKey,
-            'hash' => $hash,
-        ]));
-        if (is_array($row)) {
-            $this->tenantScope->tenantId($row, $tenantId);
+    private function byIdempotency(
+        int $tenantId,
+        int $memberId,
+        string $direction,
+        string $providerKey,
+        string $hash,
+        bool $lock,
+    ): ?array {
+        $query = $this->query('import_export_operation', $tenantId)->where('created_by_member_id', $memberId)
+            ->where('direction', $direction)->where('provider_key', $providerKey)->where('idempotency_key_hash', $hash);
+        if ($lock) {
+            $query->lock(true);
         }
-        return is_array($row) ? $row : null;
+
+        return $this->scopedRow($query->find(), $tenantId);
     }
 
     /** @return array<string, mixed>|null */
-    private function byKey(int $tenantId, string $operationKey, bool $lock): ?array
+    private function byKey(int $tenantId, string $operationKey, bool $lock = false): ?array
     {
-        $row = $this->one(
-            'SELECT * FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('operation_key = :operation_key')
-            . ($lock ? ' FOR UPDATE' : ''),
-            $this->tenantScope->bindings($tenantId, ['operation_key' => $operationKey]),
-        );
-        if (is_array($row)) {
-            $this->tenantScope->tenantId($row, $tenantId);
+        $query = $this->query('import_export_operation', $tenantId)->where('operation_key', $operationKey);
+        if ($lock) {
+            $query->lock(true);
         }
-        return is_array($row) ? $row : null;
+
+        return $this->scopedRow($query->find(), $tenantId);
     }
 
     /** @return array<string, mixed>|null */
-    private function byId(int $tenantId, int $id, bool $lock): ?array
+    private function byId(int $tenantId, int $id, bool $lock = false): ?array
     {
-        $row = $this->one(
-            'SELECT * FROM pa_import_export_operation WHERE ' . $this->tenantScope->where('id = :id')
-            . ($lock ? ' FOR UPDATE' : ''),
-            $this->tenantScope->bindings($tenantId, ['id' => $id]),
-        );
-        if (is_array($row)) {
+        $query = $this->query('import_export_operation', $tenantId)->where('id', $id);
+        if ($lock) {
+            $query->lock(true);
+        }
+
+        return $this->scopedRow($query->find(), $tenantId);
+    }
+
+    /** @param array<string, mixed>|null $row
+     * @return array<string, mixed>|null
+     */
+    private function scopedRow(?array $row, int $tenantId): ?array
+    {
+        if ($row !== null) {
             $this->tenantScope->tenantId($row, $tenantId);
         }
-        return is_array($row) ? $row : null;
+
+        return $row;
     }
 
     /** @param array<string, mixed> $row */
@@ -435,29 +389,18 @@ SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($tenantId, [
                 throw ImportExportException::internal();
             }
         }
+
         return new OperationRecord(
-            (int) $row['id'],
-            (string) $row['operation_key'],
-            $this->tenantScope->tenantId($row, $logicalTenantId),
-            (int) $row['created_by_member_id'],
-            (string) $row['provider_key'],
-            (string) $row['direction'],
-            (string) $row['status'],
-            is_string($row['input_file_key']) ? $row['input_file_key'] : null,
+            (int) $row['id'], (string) $row['operation_key'], $this->tenantScope->tenantId($row, $logicalTenantId),
+            (int) $row['created_by_member_id'], (string) $row['provider_key'], (string) $row['direction'],
+            (string) $row['status'], is_string($row['input_file_key']) ? $row['input_file_key'] : null,
             is_string($row['result_file_key']) ? $row['result_file_key'] : null,
             is_string($row['error_file_key']) ? $row['error_file_key'] : null,
-            is_string($row['task_job_key']) ? $row['task_job_key'] : null,
-            (string) $row['schema_revision'],
-            $mapping,
-            (int) $row['processed_rows'],
-            (int) $row['accepted_rows'],
-            (int) $row['rejected_rows'],
-            (int) $row['total_rows'],
-            (int) $row['attempt_number'],
-            (int) $row['revision'],
+            is_string($row['task_job_key']) ? $row['task_job_key'] : null, (string) $row['schema_revision'],
+            $mapping, (int) $row['processed_rows'], (int) $row['accepted_rows'], (int) $row['rejected_rows'],
+            (int) $row['total_rows'], (int) $row['attempt_number'], (int) $row['revision'],
             is_string($row['last_error_code']) ? $row['last_error_code'] : null,
-            $this->time((string) $row['retention_until']),
-            $this->time((string) $row['created_at']),
+            $this->time((string) $row['retention_until']), $this->time((string) $row['created_at']),
             $this->time((string) $row['updated_at']),
             is_string($row['completed_at']) ? $this->time($row['completed_at']) : null,
         );
@@ -479,40 +422,33 @@ SQL, $this->tenantScope->andWhere()), $this->tenantScope->bindings($tenantId, [
         if (!$time instanceof DateTimeImmutable) {
             throw ImportExportException::internal();
         }
+
         return $time->format('Y-m-d\TH:i:s.v\Z');
     }
 
-    private function lastInsertId(): int
+    private function query(string $table, int $tenantId): BaseQuery
     {
-        $id = $this->one('SELECT LAST_INSERT_ID() AS id')['id'] ?? null;
-        if ((!is_int($id) && !(is_string($id) && ctype_digit($id))) || (int) $id < 1) {
-            throw ImportExportException::internal();
+        $this->tenantScope->assertTenantId($tenantId);
+        $query = Db::name($table);
+        if ($this->tenantScope->usesTenantColumn()) {
+            $query->where('tenant_id', $tenantId);
         }
-        return (int) $id;
+
+        return $query;
     }
 
-    /**
-     * @param array<string, mixed> $parameters
-     * @return array<string, mixed>|null
+    /** @param array<string, mixed> $data
+     * @return array<string, mixed>
      */
-    private function one(string $sql, array $parameters = []): ?array
+    private function tenantData(int $tenantId, array $data): array
     {
-        $row = $this->connection->query($sql, $parameters)[0] ?? null;
-        return is_array($row) ? $row : null;
-    }
+        $this->tenantScope->assertTenantId($tenantId);
 
-    private function isDuplicate(PDOException $exception): bool
-    {
-        $error = $exception->getData()['PDO Error Info'] ?? [];
-        return (string) ($error['SQLSTATE'] ?? $exception->getCode()) === '23000'
-            && (int) ($error['Driver Error Code'] ?? 0) === 1062;
+        return $this->tenantScope->usesTenantColumn() ? ['tenant_id' => $tenantId, ...$data] : $data;
     }
 
     private function assertStorageMode(): void
     {
-        $this->tenantScope->assertStorageMode($this->connection->connect(), [
-            'pa_import_export_operation',
-            'pa_import_export_row_error',
-        ]);
+        $this->tenantScope->assertStorageMode(['pa_import_export_operation', 'pa_import_export_row_error']);
     }
 }

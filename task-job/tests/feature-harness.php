@@ -13,7 +13,7 @@ use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
-use PeanutAdmin\Kernel\Persistence\ThinkPhp\ThinkPhpTransactionManager;
+use think\facade\Db;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Application\TaskJobService;
 use PeanutAdmin\TaskJob\Database\Schema;
@@ -225,14 +225,12 @@ SQL)->fetchColumn();
     $codec = new TrustedEnvelopeCodec('task-job-harness-signing-key-32-bytes-minimum');
     $registry = new TaskSubmissionRegistry([new HarnessProvider(), new HarnessProvider('test.missing', 'test.missing')]);
     $connection = ThinkPhpTestConnection::fromPdo($pdo);
-    $transactions = new ThinkPhpTransactionManager($connection);
     $repository = new TaskJobStore(
-        $connection,
         $mode,
         $mode === TenantPersistenceMode::InstanceScoped ? 101 : null,
     );
-    $publisher = new TrustedJobPublisher($repository, $transactions, $registry, $codec);
-    $admin = new TaskJobService($repository, $transactions);
+    $publisher = new TrustedJobPublisher($repository, $registry, $codec);
+    $admin = new TaskJobService($repository);
     $producer101 = context(101, 'test.message', 'send', 501);
     $producer202 = context(202, 'test.message', 'send', 502);
 
@@ -262,27 +260,27 @@ SQL)->fetchColumn();
     expectProblem('TASK_PERMISSION_DENIED', fn() => $admin->list(context(101, TaskJobService::RESOURCE_KEY, 'manage'), 'queued', 1, 20), 'read permission operation');
 
     $handler = new HarnessHandler();
-    $worker = new LocalWorker(101, 'worker-local-01', $repository, $transactions, new TaskHandlerRegistry([$handler]), new JobHandlerAdapter($codec, new HarnessRevalidator()), 30);
+    $worker = new LocalWorker(101, 'worker-local-01', $repository, new TaskHandlerRegistry([$handler]), new JobHandlerAdapter($codec, new HarnessRevalidator()), 30);
     assertSame('queued', $worker->runOnce(), 'retryable failure schedules retry');
     $pdo->exec("UPDATE pa_task_job SET available_at = UTC_TIMESTAMP(3) WHERE job_key = " . $pdo->quote($job->jobKey));
     assertSame('succeeded', $worker->runOnce(), 'bounded retry succeeds');
     assertSame(2, $handler->calls, 'handler called twice');
 
     $stale = $publisher->publish($producer101, 'test.echo', ['message' => 'lease'], 'idem-lease');
-    $claim = $transactions->run(fn() => $repository->claim(101, 'worker-stale', 30));
+    $claim = Db::transaction(fn() => $repository->claim(101, 'worker-stale', 30));
     assertSame($stale->jobKey, $claim?->jobKey, 'atomic claim returns queued job');
     $secondPdo = new PDO("mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4", $user, $password, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false]);
     $secondConnection = ThinkPhpTestConnection::fromPdo($secondPdo);
-    assertSame(null, (new ThinkPhpTransactionManager($secondConnection))->run(fn() => (new TaskJobStore(
-        $secondConnection,
+    assertSame(null, Db::transaction(fn() => (new TaskJobStore(
         $mode,
         $mode === TenantPersistenceMode::InstanceScoped ? 101 : null,
     ))->claim(101, 'worker-other', 30)), 'claimed job is excluded from a second worker');
+    ThinkPhpTestConnection::fromPdo($pdo);
     $pdo->exec("UPDATE pa_task_job SET lease_expires_at = TIMESTAMPADD(SECOND, -1, UTC_TIMESTAMP(3)) WHERE job_key = " . $pdo->quote($stale->jobKey));
-    $recovered = $transactions->run(fn() => $repository->claim(101, 'worker-recovery', 30));
+    $recovered = Db::transaction(fn() => $repository->claim(101, 'worker-recovery', 30));
     assertSame(2, $recovered?->attemptNumber, 'expired lease is recovered as a new attempt');
-    expectProblem('TASK_STATE_CONFLICT', fn() => $transactions->run(fn() => $repository->succeed($claim)), 'stale lease token is fenced');
-    $transactions->run(fn() => $repository->succeed($recovered));
+    expectProblem('TASK_STATE_CONFLICT', fn() => Db::transaction(fn() => $repository->succeed($claim)), 'stale lease token is fenced');
+    Db::transaction(fn() => $repository->succeed($recovered));
 
     foreach (['tenant', 'account', 'member', 'resource', 'operation', 'targets'] as $drift) {
         $driftJob = $publisher->publish($producer101, 'test.echo', ['message' => 'drift-' . $drift], 'idem-drift-' . $drift);
@@ -291,7 +289,6 @@ SQL)->fetchColumn();
             101,
             'worker-drift-' . $drift,
             $repository,
-            $transactions,
             new TaskHandlerRegistry([$handler]),
             new JobHandlerAdapter($codec, new HarnessRevalidator($drift)),
             30,
@@ -311,7 +308,6 @@ SQL)->fetchColumn();
         101,
         'worker-target-order',
         $repository,
-        $transactions,
         new TaskHandlerRegistry([$successHandler]),
         new JobHandlerAdapter($codec, new HarnessRevalidator('reorder_targets')),
         30,
@@ -322,27 +318,27 @@ SQL)->fetchColumn();
 
     $payloadCorrupt = $publisher->publish($producer101, 'test.echo', ['message' => 'integrity'], 'idem-payload-integrity');
     $pdo->exec("UPDATE pa_task_job SET payload_json = JSON_OBJECT('message', 'tampered') WHERE job_key = " . $pdo->quote($payloadCorrupt->jobKey));
-    expectProblem('TASK_INTERNAL_ERROR', fn() => $transactions->run(fn() => $repository->claim(101, 'worker-payload-corrupt', 30)), 'payload digest corruption fails claim');
+    expectProblem('TASK_INTERNAL_ERROR', fn() => Db::transaction(fn() => $repository->claim(101, 'worker-payload-corrupt', 30)), 'payload digest corruption fails claim');
     assertSame('queued', $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $payloadCorrupt->jobKey)->status, 'payload corruption does not claim job');
     $pdo->exec("UPDATE pa_task_job SET payload_json = JSON_OBJECT('message', 'integrity') WHERE job_key = " . $pdo->quote($payloadCorrupt->jobKey));
-    $payloadClaim = $transactions->run(fn() => $repository->claim(101, 'worker-payload-repaired', 30));
+    $payloadClaim = Db::transaction(fn() => $repository->claim(101, 'worker-payload-repaired', 30));
     assertSame($payloadCorrupt->jobKey, $payloadClaim?->jobKey, 'repaired payload is claimable');
-    $transactions->run(fn() => $repository->succeed($payloadClaim));
+    Db::transaction(fn() => $repository->succeed($payloadClaim));
 
     $attemptCorrupt = $publisher->publish($producer101, 'test.echo', ['message' => 'attempt-integrity'], 'idem-attempt-integrity');
-    $attemptClaim = $transactions->run(fn() => $repository->claim(101, 'worker-attempt-corrupt', 30));
+    $attemptClaim = Db::transaction(fn() => $repository->claim(101, 'worker-attempt-corrupt', 30));
     assertSame($attemptCorrupt->jobKey, $attemptClaim?->jobKey, 'attempt corruption fixture claimed');
     $pdo->exec("UPDATE pa_task_job SET lease_expires_at = TIMESTAMPADD(SECOND, -1, UTC_TIMESTAMP(3)) WHERE id = {$attemptClaim->id}");
     $pdo->exec("UPDATE pa_task_job_attempt SET lease_token_hash = REPEAT('b', 64) WHERE job_id = {$attemptClaim->id} AND attempt_number = {$attemptClaim->attemptNumber}");
-    expectProblem('TASK_INTERNAL_ERROR', fn() => $transactions->run(fn() => $repository->claim(101, 'worker-attempt-mismatch', 30)), 'job and attempt lease digest mismatch fails recovery');
+    expectProblem('TASK_INTERNAL_ERROR', fn() => Db::transaction(fn() => $repository->claim(101, 'worker-attempt-mismatch', 30)), 'job and attempt lease digest mismatch fails recovery');
     assertSame('running', $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $attemptCorrupt->jobKey)->status, 'attempt mismatch does not recover job');
     $pdo->exec("UPDATE pa_task_job_attempt attempt JOIN pa_task_job job ON job.id = attempt.job_id SET attempt.lease_token_hash = job.lease_token_hash WHERE job.id = {$attemptClaim->id} AND attempt.attempt_number = {$attemptClaim->attemptNumber}");
-    $attemptRecovered = $transactions->run(fn() => $repository->claim(101, 'worker-attempt-repaired', 30));
+    $attemptRecovered = Db::transaction(fn() => $repository->claim(101, 'worker-attempt-repaired', 30));
     assertSame(2, $attemptRecovered?->attemptNumber, 'matching lease digests allow expired recovery');
-    $transactions->run(fn() => $repository->succeed($attemptRecovered));
+    Db::transaction(fn() => $repository->succeed($attemptRecovered));
 
     $missing = $publisher->publish($producer101, 'test.missing', ['message' => 'missing'], 'idem-missing');
-    $missingWorker = new LocalWorker(101, 'worker-missing', $repository, $transactions, new TaskHandlerRegistry(), new JobHandlerAdapter($codec, new HarnessRevalidator()), 30);
+    $missingWorker = new LocalWorker(101, 'worker-missing', $repository, new TaskHandlerRegistry(), new JobHandlerAdapter($codec, new HarnessRevalidator()), 30);
     assertSame('dead', $missingWorker->runOnce(), 'unknown handler fails closed');
     assertSame('TASK_HANDLER_UNAVAILABLE', $admin->detail(context(101, TaskJobService::RESOURCE_KEY, 'read'), $missing->jobKey)->lastErrorCode, 'handler error is stable and redacted');
 
@@ -361,8 +357,7 @@ SQL)->fetchColumn();
         $attemptsBeforeMismatch = (int) $pdo->query('SELECT COUNT(*) FROM pa_task_job_attempt')->fetchColumn();
         expectRuntime(
             'TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH',
-            fn() => $transactions->run(fn() => (new TaskJobStore(
-                $connection,
+            fn() => Db::transaction(fn() => (new TaskJobStore(
                 TenantPersistenceMode::InstanceScoped,
                 101,
             ))->claim(101, 'worker-schema-mismatch', 30)),

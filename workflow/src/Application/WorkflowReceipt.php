@@ -96,15 +96,12 @@ final readonly class WorkflowReceipt
             'workflow.publish-definition',
             'workflow.retire-definition',
         ], true);
-        if (!is_int($value['definition_id']) || $value['definition_id'] < 1) {
+        if (!is_int($value['definition_id'])) {
             throw WorkflowException::internal();
         }
         if ($definitionOperation) {
-            if (($value['operation'] === 'workflow.save-draft'
-                    && $value['definition_version'] !== null
-                    && (!is_int($value['definition_version']) || $value['definition_version'] < 1))
-                || ($value['operation'] !== 'workflow.save-draft'
-                    && (!is_int($value['definition_version']) || $value['definition_version'] < 1))) {
+            if ($value['operation'] !== 'workflow.save-draft'
+                && !is_int($value['definition_version'])) {
                 throw WorkflowException::internal();
             }
             if ($value['instance_key'] !== null
@@ -116,7 +113,6 @@ final readonly class WorkflowReceipt
                 throw WorkflowException::internal();
             }
         } elseif (!is_int($value['definition_version'])
-            || $value['definition_version'] < 1
             || !is_string($value['instance_key'])
             || preg_match('/^instance_[0-9a-f]{32}$/D', $value['instance_key']) !== 1
             || !is_string($value['instance_status'])
@@ -124,9 +120,7 @@ final readonly class WorkflowReceipt
             || !is_string($value['current_node_key'])
             || preg_match('/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/D', $value['current_node_key']) !== 1
             || !is_int($value['instance_revision'])
-            || $value['instance_revision'] < 1
-            || !is_int($value['event_sequence'])
-            || $value['event_sequence'] < 1) {
+            || !is_int($value['event_sequence'])) {
             throw WorkflowException::internal();
         }
         if ($value['operation'] === 'workflow.start-instance'

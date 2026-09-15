@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\ArtifactRevision\Workflow;
 
-use PeanutAdmin\ArtifactRevision\Persistence\ArtifactRevisionRepository;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Workflow\Adapter\WorkflowSubjectRevisionResolver;
 use PeanutAdmin\Workflow\Application\WorkflowException;
@@ -14,7 +13,7 @@ use UnexpectedValueException;
 final readonly class ArtifactWorkflowSubjectRevisionResolver implements WorkflowSubjectRevisionResolver
 {
     public function __construct(
-        private ArtifactRevisionRepository $repository,
+        private ArtifactSubjectRevisionReader $repository,
     ) {}
 
     public function resolve(
@@ -66,7 +65,7 @@ final readonly class ArtifactWorkflowSubjectRevisionResolver implements Workflow
         string $subjectType,
         string $subjectKey,
     ): void {
-        $targets = array_values($context->targets);
+        $targets = $context->targets;
         $target = $targets[0] ?? null;
         if ($context->tenantContext->tenantId < 1
             || $context->tenantContext->memberId < 1
