@@ -10,7 +10,11 @@ use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Authorization\Application\AdminAccessException;
 use PeanutAdmin\Kernel\Authorization\Application\PageRequest;
+use PeanutAdmin\Kernel\Persistence\Model\Department;
+use PeanutAdmin\Kernel\Persistence\Model\Tenant;
+use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use Throwable;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class DepartmentAdminService
@@ -22,7 +26,7 @@ final readonly class DepartmentAdminService
     /** @return array{items: list<array<string, mixed>>, total: int} */
     public function list(int $tenantId, PageRequest $page): array
     {
-        $query = Db::name('department')->where('tenant_id', $tenantId);
+        $query = Department::where('tenant_id', $tenantId);
         $total = (int) (clone $query)->count();
         $rows = $query->field('id,parent_id,code,name,sort_order,status,revision')
             ->order('sort_order')->order('id')->limit($page->offset(), $page->pageSize)->select()->toArray();
@@ -33,8 +37,8 @@ final readonly class DepartmentAdminService
     /** @return array<string, mixed> */
     public function get(int $tenantId, int $departmentId): array
     {
-        $row = Db::name('department')->where('tenant_id', $tenantId)->where('id', $departmentId)
-            ->field('id,parent_id,code,name,sort_order,status,revision')->find();
+        $row = Department::where('tenant_id', $tenantId)->where('id', $departmentId)
+            ->field('id,parent_id,code,name,sort_order,status,revision')->find()?->toArray();
 
         return $row === null ? throw AdminAccessException::notFound() : $this->normalize($row);
     }
@@ -56,7 +60,7 @@ final readonly class DepartmentAdminService
                 }
             }
             $now = $this->now();
-            $departmentId = (int) Db::name('department')->insertGetId([
+            $departmentId = (int) Department::insertGetId([
                 'tenant_id' => $actor->tenantId,
                 'parent_id' => $parentId,
                 'code' => $code,
@@ -88,12 +92,12 @@ final readonly class DepartmentAdminService
             $department = $this->requireDepartment($actor->tenantId, $departmentId, true);
             $this->assertRevision($department, $expectedRevision);
             $now = $this->now();
-            if (Db::name('department')->where('tenant_id', $actor->tenantId)->where('id', $departmentId)
+            if (Department::where('tenant_id', $actor->tenantId)->where('id', $departmentId)
                 ->where('revision', $expectedRevision)->update([
                     'code' => $code,
                     'name' => $name,
                     'sort_order' => $sortOrder,
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -130,10 +134,10 @@ final readonly class DepartmentAdminService
                 throw AdminAccessException::invalid('DEPARTMENT_DEPTH_EXCEEDED', 'Department depth cannot exceed 10.');
             }
             $now = $this->now();
-            if (Db::name('department')->where('tenant_id', $actor->tenantId)->where('id', $departmentId)
+            if (Department::where('tenant_id', $actor->tenantId)->where('id', $departmentId)
                 ->where('revision', $expectedRevision)->update([
                     'parent_id' => $newParentId,
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -154,9 +158,9 @@ final readonly class DepartmentAdminService
             if ($department['status'] === 'archived') {
                 throw AdminAccessException::conflict('DEPARTMENT_ALREADY_ARCHIVED', 'The department is already archived.');
             }
-            $childCount = Db::name('department')->where('tenant_id', $actor->tenantId)
+            $childCount = Department::where('tenant_id', $actor->tenantId)
                 ->where('parent_id', $departmentId)->where('status', '<>', 'archived')->count();
-            $memberCount = Db::name('tenant_member')->where('tenant_id', $actor->tenantId)
+            $memberCount = TenantMember::where('tenant_id', $actor->tenantId)
                 ->where('primary_department_id', $departmentId)
                 ->whereIn('status', ['pending', 'active', 'suspended'])->count();
             if ((int) $childCount !== 0 || (int) $memberCount !== 0) {
@@ -166,11 +170,11 @@ final readonly class DepartmentAdminService
                 );
             }
             $now = $this->now();
-            if (Db::name('department')->where('tenant_id', $actor->tenantId)->where('id', $departmentId)
+            if (Department::where('tenant_id', $actor->tenantId)->where('id', $departmentId)
                 ->where('revision', $expectedRevision)->update([
                     'status' => 'archived',
                     'archived_at' => $now,
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => $now,
                 ]) !== 1) {
                 throw AdminAccessException::revisionMismatch();
@@ -185,12 +189,12 @@ final readonly class DepartmentAdminService
     /** @return array<string, mixed> */
     private function requireDepartment(int $tenantId, int $departmentId, bool $forUpdate): array
     {
-        $query = Db::name('department')->where('tenant_id', $tenantId)->where('id', $departmentId);
+        $query = Department::where('tenant_id', $tenantId)->where('id', $departmentId);
         if ($forUpdate) {
             $query->lock(true);
         }
 
-        return $query->find() ?? throw AdminAccessException::notFound();
+        return $query->find()?->toArray() ?? throw AdminAccessException::notFound();
     }
 
     private function requireActive(int $tenantId, int $departmentId, bool $forUpdate): void
@@ -210,7 +214,7 @@ final readonly class DepartmentAdminService
 
     private function lockTenant(int $tenantId): void
     {
-        if (Db::name('tenant')->where('id', $tenantId)->where('status', 'active')->lock(true)->value('id') === null) {
+        if (Tenant::where('id', $tenantId)->where('status', 'active')->lock(true)->value('id') === null) {
             throw new AdminAccessException('TENANT_STATUS_INVALID', 403, 'The tenant is not active.');
         }
     }
@@ -220,7 +224,7 @@ final readonly class DepartmentAdminService
         $depth = 0;
         $current = $departmentId;
         while ($current !== 0 && $depth <= self::MAX_DEPTH) {
-            $parent = Db::name('department')->where('tenant_id', $tenantId)->where('id', $current)->value('parent_id');
+            $parent = Department::where('tenant_id', $tenantId)->where('id', $current)->value('parent_id');
             ++$depth;
             $current = $parent === null ? 0 : (int) $parent;
         }
@@ -234,7 +238,7 @@ final readonly class DepartmentAdminService
         $frontier = [$departmentId];
         while ($frontier !== [] && $depth <= self::MAX_DEPTH) {
             ++$depth;
-            $frontier = array_map('intval', Db::name('department')->where('tenant_id', $tenantId)
+            $frontier = array_map('intval', Department::where('tenant_id', $tenantId)
                 ->whereIn('parent_id', $frontier)->column('id'));
         }
 
@@ -248,7 +252,7 @@ final readonly class DepartmentAdminService
             if (in_array($possibleDescendantId, $frontier, true)) {
                 return true;
             }
-            $frontier = array_map('intval', Db::name('department')->where('tenant_id', $tenantId)
+            $frontier = array_map('intval', Department::where('tenant_id', $tenantId)
                 ->whereIn('parent_id', $frontier)->column('id'));
         }
 
@@ -273,8 +277,8 @@ final readonly class DepartmentAdminService
 
     private function bumpTenant(int $tenantId, string $now): void
     {
-        Db::name('tenant')->where('id', $tenantId)->update([
-            'authorization_revision' => Db::raw('authorization_revision + 1'),
+        Tenant::where('id', $tenantId)->update([
+            'authorization_revision' => new Raw('authorization_revision + 1'),
             'updated_at' => $now,
         ]);
     }
