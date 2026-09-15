@@ -13,10 +13,17 @@ use PeanutAdmin\IntegrationSecurity\Application\SessionDevice;
 use PeanutAdmin\IntegrationSecurity\Application\WebhookAttemptRecord;
 use PeanutAdmin\IntegrationSecurity\Application\WebhookDeliveryRecord;
 use PeanutAdmin\IntegrationSecurity\Application\WebhookEndpoint;
+use PeanutAdmin\IntegrationSecurity\Persistence\Model\IntegrationMachineIdentityRecord;
+use PeanutAdmin\IntegrationSecurity\Persistence\Model\IntegrationSecurityEventRecord;
+use PeanutAdmin\IntegrationSecurity\Persistence\Model\IntegrationWebhookAttemptRecord;
 use PeanutAdmin\IntegrationSecurity\Persistence\Model\IntegrationWebhookDeliveryRecord;
+use PeanutAdmin\IntegrationSecurity\Persistence\Model\IntegrationWebhookEndpointRecord;
 use PeanutAdmin\IntegrationSecurity\Webhook\TrustedWebhookEvent;
 use PeanutAdmin\IntegrationSecurity\Webhook\WebhookDelivery;
 use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Persistence\Model\TenantSession;
+use PeanutAdmin\Kernel\Persistence\Model\TenantSessionToken;
+use think\db\Raw;
 use think\facade\Db;
 
 final readonly class ThinkPhpIntegrationSecurityRepository implements IntegrationSecurityRepository
@@ -36,7 +43,7 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
             $context, $identityKey, $familyKey, $name, $scopes, $tokenPrefix, $tokenDigest, $tokenLastFour, $expiresAt,
         ): MachineIdentity {
             $now = new DateTimeImmutable('now');
-            Db::name('integration_machine_identity')->insert([
+            IntegrationMachineIdentityRecord::insert([
                 'tenant_id' => $context->tenantId, 'identity_key' => $identityKey, 'family_key' => $familyKey,
                 'name' => $name, 'scopes_json' => $this->json($scopes), 'token_prefix' => $tokenPrefix,
                 'token_digest' => $tokenDigest, 'token_last_four' => $tokenLastFour,
@@ -54,14 +61,14 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
 
     public function machines(int $tenantId): array
     {
-        return array_values(array_map($this->machineRow(...), Db::name('integration_machine_identity')
-            ->where('tenant_id', $tenantId)->order('id', 'desc')->select()->toArray()));
+        return array_values(array_map($this->machineRow(...), IntegrationMachineIdentityRecord::where('tenant_id', $tenantId)
+            ->order('id', 'desc')->select()->toArray()));
     }
 
     public function machineByDigest(string $tokenDigest): ?array
     {
-        $row = Db::name('integration_machine_identity')->where('token_digest', $tokenDigest)
-            ->field('tenant_id,identity_key,scopes_json,status,expires_at')->find();
+        $row = IntegrationMachineIdentityRecord::where('token_digest', $tokenDigest)
+            ->field('tenant_id,identity_key,scopes_json,status,expires_at')->find()?->toArray();
         if ($row === null) {
             return null;
         }
@@ -75,7 +82,7 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
 
     public function touchMachine(string $tokenDigest, DateTimeImmutable $now): void
     {
-        Db::name('integration_machine_identity')->where('token_digest', $tokenDigest)->where('status', 'active')->update([
+        IntegrationMachineIdentityRecord::where('token_digest', $tokenDigest)->where('status', 'active')->update([
             'last_used_at' => $this->format($now), 'updated_at' => $this->format($now),
         ]);
     }
@@ -104,14 +111,14 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
                 throw IntegrationSecurityException::conflict();
             }
             $now = new DateTimeImmutable('now');
-            if (Db::name('integration_machine_identity')->where('id', (int) $current['id'])
+            if (IntegrationMachineIdentityRecord::where('id', (int) $current['id'])
                 ->where('status', 'active')->where('revision', $expectedRevision)->update([
                     'status' => 'rotated', 'rotated_at' => $this->format($now),
-                    'revision' => Db::raw('revision + 1'), 'updated_at' => $this->format($now),
+                    'revision' => new Raw('revision + 1'), 'updated_at' => $this->format($now),
                 ]) !== 1) {
                 throw IntegrationSecurityException::conflict();
             }
-            Db::name('integration_machine_identity')->insert([
+            IntegrationMachineIdentityRecord::insert([
                 'tenant_id' => $context->tenantId, 'identity_key' => $successorKey,
                 'family_key' => $current['family_key'], 'name' => $name, 'scopes_json' => $this->json($scopes),
                 'token_prefix' => $tokenPrefix, 'token_digest' => $tokenDigest, 'token_last_four' => $tokenLastFour,
@@ -140,10 +147,10 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
                 throw IntegrationSecurityException::conflict();
             }
             $now = new DateTimeImmutable('now');
-            if (Db::name('integration_machine_identity')->where('id', (int) $row['id'])
+            if (IntegrationMachineIdentityRecord::where('id', (int) $row['id'])
                 ->where('status', 'active')->where('revision', $expectedRevision)->update([
                     'status' => 'revoked', 'revoked_at' => $this->format($now),
-                    'revision' => Db::raw('revision + 1'), 'updated_at' => $this->format($now),
+                    'revision' => new Raw('revision + 1'), 'updated_at' => $this->format($now),
                 ]) !== 1) {
                 throw IntegrationSecurityException::conflict();
             }
@@ -168,7 +175,7 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
             $context, $endpointKey, $name, $url, $events, $secretCiphertext, $secretKeyId,
         ): WebhookEndpoint {
             $now = new DateTimeImmutable('now');
-            Db::name('integration_webhook_endpoint')->insert([
+            IntegrationWebhookEndpointRecord::insert([
                 'tenant_id' => $context->tenantId, 'endpoint_key' => $endpointKey, 'name' => $name,
                 'url' => $url, 'events_json' => $this->json($events), 'secret_ciphertext' => $secretCiphertext,
                 'secret_key_id' => $secretKeyId, 'created_by_member_id' => $context->memberId,
@@ -186,8 +193,8 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
 
     public function endpoints(int $tenantId): array
     {
-        return array_values(array_map($this->endpointRow(...), Db::name('integration_webhook_endpoint')
-            ->where('tenant_id', $tenantId)->order('id', 'desc')->select()->toArray()));
+        return array_values(array_map($this->endpointRow(...), IntegrationWebhookEndpointRecord::where('tenant_id', $tenantId)
+            ->order('id', 'desc')->select()->toArray()));
     }
 
     public function rotateEndpointSecret(
@@ -207,10 +214,10 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
             if ($row['status'] !== 'active' || (int) $row['revision'] !== $expectedRevision) {
                 throw IntegrationSecurityException::conflict();
             }
-            if (Db::name('integration_webhook_endpoint')->where('id', (int) $row['id'])
+            if (IntegrationWebhookEndpointRecord::where('id', (int) $row['id'])
                 ->where('status', 'active')->where('revision', $expectedRevision)->update([
                     'secret_ciphertext' => $secretCiphertext, 'secret_key_id' => $secretKeyId,
-                    'revision' => Db::raw('revision + 1'), 'updated_at' => $this->format(new DateTimeImmutable('now')),
+                    'revision' => new Raw('revision + 1'), 'updated_at' => $this->format(new DateTimeImmutable('now')),
                 ]) !== 1) {
                 throw IntegrationSecurityException::conflict();
             }
@@ -233,14 +240,14 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
                 throw IntegrationSecurityException::conflict();
             }
             $now = $this->format(new DateTimeImmutable('now'));
-            if (Db::name('integration_webhook_endpoint')->where('id', (int) $row['id'])
+            if (IntegrationWebhookEndpointRecord::where('id', (int) $row['id'])
                 ->where('status', 'active')->where('revision', $expectedRevision)->update([
                     'status' => 'disabled', 'disabled_at' => $now,
-                    'revision' => Db::raw('revision + 1'), 'updated_at' => $now,
+                    'revision' => new Raw('revision + 1'), 'updated_at' => $now,
                 ]) !== 1) {
                 throw IntegrationSecurityException::conflict();
             }
-            Db::name('integration_webhook_delivery')->where('tenant_id', $context->tenantId)
+            IntegrationWebhookDeliveryRecord::where('tenant_id', $context->tenantId)
                 ->where('endpoint_id', (int) $row['id'])->whereIn('status', ['pending', 'retryable'])->update([
                     'status' => 'permanent_failed', 'last_error_code' => 'WEBHOOK_ENDPOINT_DISABLED', 'updated_at' => $now,
                 ]);
@@ -254,7 +261,7 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
 
     public function activeEndpointKeysForEvent(int $tenantId, string $eventType): array
     {
-        $rows = Db::name('integration_webhook_endpoint')->where('tenant_id', $tenantId)->where('status', 'active')
+        $rows = IntegrationWebhookEndpointRecord::where('tenant_id', $tenantId)->where('status', 'active')
             ->order('id')->field('endpoint_key,events_json')->select()->toArray();
 
         return array_values(array_map(
@@ -275,9 +282,9 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
         }
         $payload = $event->canonicalPayload();
         $digest = hash('sha256', $payload);
-        $existing = Db::name('integration_webhook_delivery')->where('tenant_id', $tenantId)
+        $existing = IntegrationWebhookDeliveryRecord::where('tenant_id', $tenantId)
             ->where('endpoint_id', (int) $endpoint['id'])->where('event_key', $event->eventKey)->lock(true)
-            ->field('delivery_key,event_type,payload_sha256')->find();
+            ->field('delivery_key,event_type,payload_sha256')->find()?->toArray();
         if ($existing !== null) {
             if (!hash_equals((string) $existing['event_type'], $event->eventType)
                 || !hash_equals((string) $existing['payload_sha256'], $digest)) {
@@ -287,7 +294,7 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
             return (string) $existing['delivery_key'];
         }
         $deliveryKey = 'delivery_' . bin2hex(random_bytes(16));
-        Db::name('integration_webhook_delivery')->insert([
+        IntegrationWebhookDeliveryRecord::insert([
             'tenant_id' => $tenantId, 'endpoint_id' => $endpoint['id'], 'delivery_key' => $deliveryKey,
             'event_key' => $event->eventKey, 'event_type' => $event->eventType, 'payload_json' => $payload,
             'payload_sha256' => $digest, 'available_at' => $this->format($now),
@@ -309,18 +316,18 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
         }
 
         return Db::transaction(function () use ($tenantId, $leaseDigest, $leaseSeconds, $now): ?WebhookDelivery {
-            $expired = Db::name('integration_webhook_delivery')->where('tenant_id', $tenantId)
+            $expired = IntegrationWebhookDeliveryRecord::where('tenant_id', $tenantId)
                 ->where('status', 'delivering')->where('lease_expires_at', '<=', $this->format($now))
                 ->order('id')->lock(true)->field('id,attempt_count')->select()->toArray();
             foreach ($expired as $lease) {
                 $attempt = (int) $lease['attempt_count'];
                 $status = $attempt < 8 ? 'retryable' : 'permanent_failed';
-                Db::name('integration_webhook_attempt')->insert([
+                IntegrationWebhookAttemptRecord::insert([
                     'tenant_id' => $tenantId, 'delivery_id' => $lease['id'], 'attempt_number' => $attempt,
                     'outcome' => $status, 'response_status' => null, 'error_code' => 'WEBHOOK_LEASE_EXPIRED',
                     'duration_ms' => 0, 'attempted_at' => $this->format($now),
                 ]);
-                Db::name('integration_webhook_delivery')->where('tenant_id', $tenantId)
+                IntegrationWebhookDeliveryRecord::where('tenant_id', $tenantId)
                     ->where('id', (int) $lease['id'])->where('status', 'delivering')->update([
                         'status' => $status, 'lease_digest' => null, 'lease_expires_at' => null,
                         'last_error_code' => 'WEBHOOK_LEASE_EXPIRED', 'available_at' => $this->format($now),
@@ -334,12 +341,12 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
                 ->whereNotNull('delivery.payload_json')->where('endpoint.status', 'active')
                 ->order('delivery.available_at')->order('delivery.id')->lock('FOR UPDATE SKIP LOCKED')
                 ->field(['delivery.*', 'endpoint.endpoint_key', 'endpoint.url', 'endpoint.secret_ciphertext', 'endpoint.secret_key_id'])
-                ->find();
+                ->find()?->toArray();
             if ($row === null) {
                 return null;
             }
             $attempt = (int) $row['attempt_count'] + 1;
-            if (Db::name('integration_webhook_delivery')->where('id', (int) $row['id'])
+            if (IntegrationWebhookDeliveryRecord::where('id', (int) $row['id'])
                 ->where('tenant_id', $tenantId)->whereIn('status', ['pending', 'retryable'])->update([
                     'status' => 'delivering', 'attempt_count' => $attempt, 'lease_digest' => $leaseDigest,
                     'lease_expires_at' => $this->format($now->modify('+' . $leaseSeconds . ' seconds')),
@@ -390,14 +397,14 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
             throw IntegrationSecurityException::invalid();
         }
         Db::transaction(function () use ($delivery, $status, $errorCode, $statusCode, $durationMs, $now, $retryable): void {
-            $current = Db::name('integration_webhook_delivery')->where('tenant_id', $delivery->tenantId)
-                ->where('id', $delivery->id)->lock(true)->field('status,attempt_count,lease_digest')->find();
+            $current = IntegrationWebhookDeliveryRecord::where('tenant_id', $delivery->tenantId)
+                ->where('id', $delivery->id)->lock(true)->field('status,attempt_count,lease_digest')->find()?->toArray();
             if ($current === null || $current['status'] !== 'delivering'
                 || (int) $current['attempt_count'] !== $delivery->attemptNumber
                 || !hash_equals((string) $current['lease_digest'], $delivery->leaseDigest)) {
                 throw IntegrationSecurityException::conflict();
             }
-            Db::name('integration_webhook_attempt')->insert([
+            IntegrationWebhookAttemptRecord::insert([
                 'tenant_id' => $delivery->tenantId, 'delivery_id' => $delivery->id,
                 'attempt_number' => $delivery->attemptNumber, 'outcome' => $status,
                 'response_status' => $statusCode, 'error_code' => $errorCode,
@@ -406,7 +413,7 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
             $available = $retryable
                 ? $now->modify('+' . min(300, 5 * (2 ** max(0, $delivery->attemptNumber - 1))) . ' seconds')
                 : $now;
-            Db::name('integration_webhook_delivery')->where('tenant_id', $delivery->tenantId)
+            IntegrationWebhookDeliveryRecord::where('tenant_id', $delivery->tenantId)
                 ->where('id', $delivery->id)->update([
                     'status' => $status, 'lease_digest' => null, 'lease_expires_at' => null,
                     'last_status_code' => $statusCode, 'last_error_code' => $errorCode,
@@ -420,13 +427,13 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
     public function purgeExpiredDeliveryData(DateTimeImmutable $payloadCutoff, DateTimeImmutable $evidenceCutoff): array
     {
         return Db::transaction(function () use ($payloadCutoff, $evidenceCutoff): array {
-            $payloads = Db::name('integration_webhook_delivery')->whereNotNull('payload_json')
+            $payloads = IntegrationWebhookDeliveryRecord::whereNotNull('payload_json')
                 ->where('payload_expires_at', '<=', $this->format($payloadCutoff))
                 ->whereIn('status', ['delivered', 'permanent_failed'])->update(['payload_json' => null]);
-            $deliveryIds = Db::name('integration_webhook_delivery')->whereIn('status', ['delivered', 'permanent_failed'])
+            $deliveryIds = IntegrationWebhookDeliveryRecord::whereIn('status', ['delivered', 'permanent_failed'])
                 ->where('updated_at', '<=', $this->format($evidenceCutoff))->column('id');
-            $attempts = $deliveryIds === [] ? 0 : Db::name('integration_webhook_attempt')->whereIn('delivery_id', $deliveryIds)->delete();
-            $deliveries = $deliveryIds === [] ? 0 : Db::name('integration_webhook_delivery')->whereIn('id', $deliveryIds)->delete();
+            $attempts = $deliveryIds === [] ? 0 : IntegrationWebhookAttemptRecord::whereIn('delivery_id', $deliveryIds)->delete();
+            $deliveries = $deliveryIds === [] ? 0 : IntegrationWebhookDeliveryRecord::whereIn('id', $deliveryIds)->delete();
 
             return ['payloads_cleared' => $payloads, 'attempts_deleted' => $attempts, 'deliveries_deleted' => $deliveries];
         });
@@ -462,12 +469,12 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
         int $page,
         int $pageSize,
     ): IntegrationSecurityPage {
-        $deliveryId = Db::name('integration_webhook_delivery')->where('tenant_id', $tenantId)
+        $deliveryId = IntegrationWebhookDeliveryRecord::where('tenant_id', $tenantId)
             ->where('delivery_key', $deliveryKey)->value('id');
         if ($deliveryId === null) {
             return new IntegrationSecurityPage([], $page, $pageSize, 0);
         }
-        $query = Db::name('integration_webhook_attempt')->where('tenant_id', $tenantId)->where('delivery_id', $deliveryId);
+        $query = IntegrationWebhookAttemptRecord::where('tenant_id', $tenantId)->where('delivery_id', $deliveryId);
         $total = (int) (clone $query)->count();
         $rows = $query->order('attempt_number', 'desc')->page($page, $pageSize)
             ->field('attempt_number,outcome,response_status,error_code,duration_ms,attempted_at')->select()->toArray();
@@ -484,31 +491,31 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
     public function sessionDevices(int $tenantId, int $accountId, string $currentSessionKey): array
     {
         return array_values(array_map(fn(array $row): SessionDevice => $this->sessionRow($row, $currentSessionKey),
-            Db::name('tenant_session')->where('tenant_id', $tenantId)->where('account_id', $accountId)
+            TenantSession::where('tenant_id', $tenantId)->where('account_id', $accountId)
                 ->order('last_seen_at', 'desc')->order('id', 'desc')->select()->toArray()));
     }
 
     public function revokeOwnSession(TenantContext $context, string $sessionKey): SessionDevice
     {
         return Db::transaction(function () use ($context, $sessionKey): SessionDevice {
-            $row = Db::name('tenant_session')->where('tenant_id', $context->tenantId)
-                ->where('account_id', $context->accountId)->where('session_key', $sessionKey)->lock(true)->find();
+            $row = TenantSession::where('tenant_id', $context->tenantId)
+                ->where('account_id', $context->accountId)->where('session_key', $sessionKey)->lock(true)->find()?->toArray();
             if ($row === null) {
                 throw IntegrationSecurityException::sessionNotFound();
             }
             if ($row['status'] === 'active') {
                 $now = $this->format(new DateTimeImmutable('now'));
-                Db::name('tenant_session')->where('id', (int) $row['id'])->where('status', 'active')->update([
+                TenantSession::where('id', (int) $row['id'])->where('status', 'active')->update([
                     'status' => 'revoked', 'revoked_at' => $now,
                     'revoke_reason' => 'user_device_revoked', 'updated_at' => $now,
                 ]);
-                Db::name('tenant_session_token')->where('session_id', (int) $row['id'])->where('status', 'active')
+                TenantSessionToken::where('session_id', (int) $row['id'])->where('status', 'active')
                     ->update(['status' => 'revoked', 'revoked_at' => $now]);
                 $this->audit($context, 'tenant.integration.session_revoked', 'session', $sessionKey, [
                     'current' => hash_equals($context->sessionKey, $sessionKey),
                 ]);
             }
-            $updated = Db::name('tenant_session')->where('id', (int) $row['id'])->find()
+            $updated = TenantSession::where('id', (int) $row['id'])->find()?->toArray()
                 ?? throw IntegrationSecurityException::sessionNotFound();
 
             return $this->sessionRow($updated, $context->sessionKey);
@@ -518,23 +525,23 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
     /** @return array<string, mixed>|null */
     private function machineByKey(int $tenantId, string $identityKey, bool $lock = false): ?array
     {
-        $query = Db::name('integration_machine_identity')->where('tenant_id', $tenantId)->where('identity_key', $identityKey);
+        $query = IntegrationMachineIdentityRecord::where('tenant_id', $tenantId)->where('identity_key', $identityKey);
         if ($lock) {
             $query->lock(true);
         }
 
-        return $query->find();
+        return $query->find()?->toArray();
     }
 
     /** @return array<string, mixed>|null */
     private function endpointByKey(int $tenantId, string $endpointKey, bool $lock = false): ?array
     {
-        $query = Db::name('integration_webhook_endpoint')->where('tenant_id', $tenantId)->where('endpoint_key', $endpointKey);
+        $query = IntegrationWebhookEndpointRecord::where('tenant_id', $tenantId)->where('endpoint_key', $endpointKey);
         if ($lock) {
             $query->lock(true);
         }
 
-        return $query->find();
+        return $query->find()?->toArray();
     }
 
     /** @param array<string, mixed> $row */
@@ -600,7 +607,7 @@ final readonly class ThinkPhpIntegrationSecurityRepository implements Integratio
         if (count($metadata) > 8) {
             throw IntegrationSecurityException::invalid();
         }
-        Db::name('integration_security_event')->insert([
+        IntegrationSecurityEventRecord::insert([
             'tenant_id' => $context->tenantId, 'event_key' => $eventKey,
             'actor_member_id' => $context->memberId, 'target_type' => $targetType,
             'target_key_hash' => hash('sha256', $targetKey), 'metadata_json' => $this->json($metadata),
