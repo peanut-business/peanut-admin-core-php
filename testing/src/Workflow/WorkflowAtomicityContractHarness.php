@@ -134,6 +134,9 @@ final class WorkflowAtomicityContractHarness
     private function inTransaction(PDOConnection $connection): bool
     {
         $pdo = $connection->getPdo();
+        if ($pdo === false) {
+            return false;
+        }
         if (!$pdo instanceof PDO) {
             throw new LogicException('Workflow atomicity verification cannot inspect the framework transaction.');
         }
