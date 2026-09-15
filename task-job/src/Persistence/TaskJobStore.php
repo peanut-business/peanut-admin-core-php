@@ -12,9 +12,12 @@ use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\TaskJob\Application\JobRecord;
 use PeanutAdmin\TaskJob\Application\TaskJobException;
 use PeanutAdmin\TaskJob\Execution\JobClaim;
+use PeanutAdmin\TaskJob\Persistence\Model\TaskJobAttemptRecord;
+use PeanutAdmin\TaskJob\Persistence\Model\TaskJobEventRecord;
+use PeanutAdmin\TaskJob\Persistence\Model\TaskJobRecord;
 use Throwable;
 use think\db\BaseQuery;
-use think\facade\Db;
+use think\db\Raw;
 
 final class TaskJobStore
 {
@@ -48,12 +51,12 @@ final class TaskJobStore
             'payload_json' => $payloadJson, 'payload_hash' => hash('sha256', $payloadJson),
             'trusted_envelope' => $trustedEnvelope, 'idempotency_key_hash' => $idempotencyKeyHash,
             'request_hash' => $requestHash, 'status' => 'queued', 'max_attempts' => $maxAttempts,
-            'available_at' => Db::raw("TIMESTAMPADD(SECOND, {$initialDelaySeconds}, UTC_TIMESTAMP(3))"),
+            'available_at' => new Raw("TIMESTAMPADD(SECOND, {$initialDelaySeconds}, UTC_TIMESTAMP(3))"),
             'created_by_member_id' => $memberId,
-            'created_at' => Db::raw('UTC_TIMESTAMP(3)'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'created_at' => new Raw('UTC_TIMESTAMP(3)'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]);
         try {
-            $id = (int) Db::name('task_job')->insertGetId($data);
+            $id = (int) TaskJobRecord::insertGetId($data);
             $created = true;
         } catch (Throwable $exception) {
             if ($idempotencyKeyHash === null || (string) $exception->getCode() !== '23000') {
@@ -118,8 +121,8 @@ final class TaskJobStore
         }
         if ($this->query('task_job', $tenantId)->where('job_key', $jobKey)->where('status', 'queued')
             ->where('revision', $revision)->update([
-                'status' => 'cancelled', 'completed_at' => Db::raw('UTC_TIMESTAMP(3)'),
-                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'status' => 'cancelled', 'completed_at' => new Raw('UTC_TIMESTAMP(3)'),
+                'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw TaskJobException::stateConflict();
         }
@@ -137,10 +140,10 @@ final class TaskJobStore
         }
         if ($this->query('task_job', $tenantId)->where('job_key', $jobKey)->where('status', 'dead')
             ->where('revision', $revision)->where('attempt_count', '<', 10)->update([
-                'status' => 'queued', 'max_attempts' => Db::raw('attempt_count + 1'),
-                'available_at' => Db::raw('UTC_TIMESTAMP(3)'), 'last_error_code' => null,
-                'completed_at' => null, 'revision' => Db::raw('revision + 1'),
-                'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'status' => 'queued', 'max_attempts' => new Raw('attempt_count + 1'),
+                'available_at' => new Raw('UTC_TIMESTAMP(3)'), 'last_error_code' => null,
+                'completed_at' => null, 'revision' => new Raw('revision + 1'),
+                'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw TaskJobException::stateConflict();
         }
@@ -154,8 +157,8 @@ final class TaskJobStore
         $this->assertStorageMode();
         $this->recoverExpired($tenantId);
         $row = $this->query('task_job', $tenantId)->where('status', 'queued')
-            ->where('available_at', '<=', Db::raw('UTC_TIMESTAMP(3)'))->order('priority', 'desc')->order('id')
-            ->lock('FOR UPDATE SKIP LOCKED')->find();
+            ->where('available_at', '<=', new Raw('UTC_TIMESTAMP(3)'))->order('priority', 'desc')->order('id')
+            ->lock('FOR UPDATE SKIP LOCKED')->find()?->toArray();
         if ($row === null) {
             return null;
         }
@@ -169,14 +172,14 @@ final class TaskJobStore
         if ($this->query('task_job', $tenantId)->where('id', (int) $row['id'])->where('status', 'queued')->update([
             'status' => 'running', 'attempt_count' => $attempt, 'lease_owner_hash' => $workerHash,
             'lease_token_hash' => $leaseHash,
-            'lease_expires_at' => Db::raw("TIMESTAMPADD(SECOND, {$leaseSeconds}, UTC_TIMESTAMP(3))"),
-            'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'lease_expires_at' => new Raw("TIMESTAMPADD(SECOND, {$leaseSeconds}, UTC_TIMESTAMP(3))"),
+            'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]) !== 1) {
             throw TaskJobException::stateConflict();
         }
-        Db::name('task_job_attempt')->insert($this->tenantData($tenantId, [
+        TaskJobAttemptRecord::insert($this->tenantData($tenantId, [
             'job_id' => $row['id'], 'attempt_number' => $attempt, 'worker_id_hash' => $workerHash,
-            'lease_token_hash' => $leaseHash, 'status' => 'running', 'started_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'lease_token_hash' => $leaseHash, 'status' => 'running', 'started_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]));
         $this->insertEvent($tenantId, (int) $row['id'], 'tenant.task.claimed', null, ['attempt' => $attempt]);
 
@@ -191,9 +194,9 @@ final class TaskJobStore
         $this->assertStorageMode();
         if ($this->query('task_job', $claim->tenantId)->where('id', $claim->id)->where('status', 'running')
             ->where('lease_token_hash', hash('sha256', $claim->leaseToken))
-            ->where('lease_expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'))->update([
-                'lease_expires_at' => Db::raw("TIMESTAMPADD(SECOND, {$leaseSeconds}, UTC_TIMESTAMP(3))"),
-                'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            ->where('lease_expires_at', '>', new Raw('UTC_TIMESTAMP(3)'))->update([
+                'lease_expires_at' => new Raw("TIMESTAMPADD(SECOND, {$leaseSeconds}, UTC_TIMESTAMP(3))"),
+                'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw TaskJobException::stateConflict();
         }
@@ -204,7 +207,7 @@ final class TaskJobStore
         $this->assertStorageMode();
         $job = $this->rowById($claim->tenantId, $claim->id);
         $attempt = $this->query('task_job_attempt', $claim->tenantId)->where('job_id', $claim->id)
-            ->where('attempt_number', $claim->attemptNumber)->where('status', 'running')->find();
+            ->where('attempt_number', $claim->attemptNumber)->where('status', 'running')->find()?->toArray();
         $leaseHash = hash('sha256', $claim->leaseToken);
         if ($job === null || $attempt === null || $job['status'] !== 'running'
             || (int) $job['attempt_count'] !== $claim->attemptNumber
@@ -255,17 +258,17 @@ final class TaskJobStore
             ->where('attempt_number', $claim->attemptNumber)->where('status', 'running')
             ->where('lease_token_hash', $leaseHash)->update([
                 'status' => $attemptStatus, 'error_code' => $errorCode,
-                'completed_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'completed_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw TaskJobException::stateConflict();
         }
         if ($this->query('task_job', $claim->tenantId)->where('id', $claim->id)->where('status', 'running')
-            ->where('lease_token_hash', $leaseHash)->where('lease_expires_at', '>', Db::raw('UTC_TIMESTAMP(3)'))->update([
+            ->where('lease_token_hash', $leaseHash)->where('lease_expires_at', '>', new Raw('UTC_TIMESTAMP(3)'))->update([
                 'status' => $jobStatus,
-                'available_at' => Db::raw('TIMESTAMPADD(SECOND, ' . ($canRetry ? $backoffSeconds : 0) . ', UTC_TIMESTAMP(3))'),
+                'available_at' => new Raw('TIMESTAMPADD(SECOND, ' . ($canRetry ? $backoffSeconds : 0) . ', UTC_TIMESTAMP(3))'),
                 'lease_owner_hash' => null, 'lease_token_hash' => null, 'lease_expires_at' => null,
                 'last_error_code' => $errorCode, 'completed_at' => $jobStatus === 'queued' ? null : $this->now(),
-                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw TaskJobException::stateConflict();
         }
@@ -285,10 +288,10 @@ final class TaskJobStore
     private function recoverExpired(int $tenantId): void
     {
         $rows = $this->query('task_job', $tenantId)->where('status', 'running')
-            ->where('lease_expires_at', '<=', Db::raw('UTC_TIMESTAMP(3)'))->order('id')->lock(true)->select()->toArray();
+            ->where('lease_expires_at', '<=', new Raw('UTC_TIMESTAMP(3)'))->order('id')->lock(true)->select()->toArray();
         foreach ($rows as $row) {
             $attempt = $this->query('task_job_attempt', $tenantId)->where('job_id', (int) $row['id'])
-                ->where('attempt_number', (int) $row['attempt_count'])->where('status', 'running')->lock(true)->find();
+                ->where('attempt_number', (int) $row['attempt_count'])->where('status', 'running')->lock(true)->find()?->toArray();
             if ($attempt === null || !is_string($row['lease_token_hash']) || !is_string($attempt['lease_token_hash'])
                 || !hash_equals($row['lease_token_hash'], $attempt['lease_token_hash'])) {
                 throw TaskJobException::internal();
@@ -298,17 +301,17 @@ final class TaskJobStore
                 ->where('attempt_number', (int) $row['attempt_count'])->where('status', 'running')
                 ->where('lease_token_hash', $row['lease_token_hash'])->update([
                     'status' => 'abandoned', 'error_code' => 'TASK_LEASE_EXPIRED',
-                    'completed_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                    'completed_at' => new Raw('UTC_TIMESTAMP(3)'),
                 ]) !== 1) {
                 throw TaskJobException::internal();
             }
             if ($this->query('task_job', $tenantId)->where('id', (int) $row['id'])->where('status', 'running')
                 ->where('lease_token_hash', $row['lease_token_hash'])
-                ->where('lease_expires_at', '<=', Db::raw('UTC_TIMESTAMP(3)'))->update([
-                    'status' => $dead ? 'dead' : 'queued', 'available_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                ->where('lease_expires_at', '<=', new Raw('UTC_TIMESTAMP(3)'))->update([
+                    'status' => $dead ? 'dead' : 'queued', 'available_at' => new Raw('UTC_TIMESTAMP(3)'),
                     'lease_owner_hash' => null, 'lease_token_hash' => null, 'lease_expires_at' => null,
                     'last_error_code' => 'TASK_LEASE_EXPIRED', 'completed_at' => $dead ? $this->now() : null,
-                    'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                    'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
                 ]) !== 1) {
                 throw TaskJobException::stateConflict();
             }
@@ -325,7 +328,7 @@ final class TaskJobStore
         if ($lock) {
             $query->lock(true);
         }
-        $row = $query->find();
+        $row = $query->find()?->toArray();
         if ($row !== null) {
             $this->tenantScope->tenantId($row, $tenantId);
         }
@@ -340,7 +343,7 @@ final class TaskJobStore
         if ($lock) {
             $query->lock(true);
         }
-        $row = $query->find();
+        $row = $query->find()?->toArray();
         if ($row !== null) {
             $this->tenantScope->tenantId($row, $tenantId);
         }
@@ -356,9 +359,9 @@ final class TaskJobStore
         } catch (JsonException) {
             throw TaskJobException::internal();
         }
-        Db::name('task_job_event')->insert($this->tenantData($tenantId, [
+        TaskJobEventRecord::insert($this->tenantData($tenantId, [
             'job_id' => $jobId, 'event_key' => $event, 'actor_member_id' => $memberId,
-            'metadata_json' => $json, 'occurred_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'metadata_json' => $json, 'occurred_at' => new Raw('UTC_TIMESTAMP(3)'),
         ]));
     }
 
@@ -393,7 +396,7 @@ final class TaskJobStore
             $query->lock(true);
         }
 
-        return $query->find();
+        return $query->find()?->toArray();
     }
 
     /** @param array<string, mixed> $row */
@@ -468,7 +471,12 @@ final class TaskJobStore
     private function query(string $table, int $tenantId): BaseQuery
     {
         $this->tenantScope->assertTenantId($tenantId);
-        $query = Db::name($table);
+        $query = match ($table) {
+            'task_job' => TaskJobRecord::where([]),
+            'task_job_attempt' => TaskJobAttemptRecord::where([]),
+            'task_job_event' => TaskJobEventRecord::where([]),
+            default => throw TaskJobException::internal(),
+        };
         if ($this->tenantScope->usesTenantColumn()) {
             $query->where('tenant_id', $tenantId);
         }

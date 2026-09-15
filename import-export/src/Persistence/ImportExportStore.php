@@ -10,11 +10,13 @@ use JsonException;
 use PeanutAdmin\ImportExport\Application\ImportExportException;
 use PeanutAdmin\ImportExport\Application\OperationRecord;
 use PeanutAdmin\ImportExport\Contract\RowIssue;
+use PeanutAdmin\ImportExport\Persistence\Model\ImportExportOperationRecord;
+use PeanutAdmin\ImportExport\Persistence\Model\ImportExportRowErrorRecord;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use Throwable;
 use think\db\BaseQuery;
-use think\facade\Db;
+use think\db\Raw;
 
 final class ImportExportStore
 {
@@ -45,13 +47,13 @@ final class ImportExportStore
         $this->assertStorageMode();
         $created = false;
         try {
-            $id = (int) Db::name('import_export_operation')->insertGetId($this->tenantData($tenantId, [
+            $id = (int) ImportExportOperationRecord::insertGetId($this->tenantData($tenantId, [
                 'operation_key' => $operationKey, 'created_by_member_id' => $memberId,
                 'provider_key' => $providerKey, 'direction' => $direction, 'input_file_key' => $inputFileKey,
                 'schema_revision' => $schemaRevision, 'mapping_json' => $this->json($mapping),
                 'idempotency_key_hash' => $idempotencyKeyHash, 'request_hash' => $requestHash,
-                'retention_until' => Db::raw("TIMESTAMPADD(DAY, {$retentionDays}, UTC_TIMESTAMP(3))"),
-                'created_at' => Db::raw('UTC_TIMESTAMP(3)'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'retention_until' => new Raw("TIMESTAMPADD(DAY, {$retentionDays}, UTC_TIMESTAMP(3))"),
+                'created_at' => new Raw('UTC_TIMESTAMP(3)'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]));
             $created = true;
         } catch (Throwable $exception) {
@@ -85,8 +87,8 @@ final class ImportExportStore
             ->where('status', 'queued')->where(function ($query) use ($jobKey): void {
                 $query->whereNull('task_job_key')->whereOr('task_job_key', $jobKey);
             })->update([
-                'task_job_key' => $jobKey, 'revision' => Db::raw('revision + 1'),
-                'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'task_job_key' => $jobKey, 'revision' => new Raw('revision + 1'),
+                'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]);
         $row = $this->byKey($tenantId, $operationKey, true);
         if ($row === null) {
@@ -133,7 +135,7 @@ final class ImportExportStore
     {
         $this->assertStorageMode();
         $row = $this->query('import_export_operation', $tenantId)->where('result_file_key', $fileKey)
-            ->where('status', 'succeeded')->where('retention_until', '>', Db::raw('UTC_TIMESTAMP(3)'))->find();
+            ->where('status', 'succeeded')->where('retention_until', '>', new Raw('UTC_TIMESTAMP(3)'))->find()?->toArray();
         if ($row === null) {
             throw ImportExportException::fileUnavailable();
         }
@@ -154,8 +156,8 @@ final class ImportExportStore
         }
         if ($this->query('import_export_operation', $tenantId)->where('id', (int) $row['id'])
             ->where('revision', $revision)->update([
-                'status' => $next, 'completed_at' => $next === 'cancelled' ? Db::raw('UTC_TIMESTAMP(3)') : null,
-                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'status' => $next, 'completed_at' => $next === 'cancelled' ? new Raw('UTC_TIMESTAMP(3)') : null,
+                'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw ImportExportException::stateConflict();
         }
@@ -178,7 +180,7 @@ final class ImportExportStore
         if ($this->query('import_export_operation', $tenantId)->where('id', (int) $row['id'])
             ->where('attempt_number', '<', $attempt)->whereIn('status', ['queued', 'running'])->update([
                 'status' => 'running', 'attempt_number' => $attempt, 'last_error_code' => null,
-                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw ImportExportException::stateConflict();
         }
@@ -212,12 +214,12 @@ final class ImportExportStore
         $changes = [
             'status' => $cancelled ? 'cancelled' : 'running', 'processed_rows' => $processed,
             'accepted_rows' => $accepted, 'rejected_rows' => $rejected,
-            'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+            'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
         ];
         if ($cancelled) {
             $changes += [
                 'total_rows' => $processed, 'result_file_key' => null, 'error_file_key' => null,
-                'last_error_code' => null, 'completed_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'last_error_code' => null, 'completed_at' => new Raw('UTC_TIMESTAMP(3)'),
             ];
         }
         if ($this->query('import_export_operation', $tenantId)->where('id', $operationId)
@@ -234,10 +236,10 @@ final class ImportExportStore
         $this->assertStorageMode();
         $this->byId($tenantId, $operationId);
         try {
-            Db::name('import_export_row_error')->insert($this->tenantData($tenantId, [
+            ImportExportRowErrorRecord::insert($this->tenantData($tenantId, [
                 'operation_id' => $operationId, 'row_number' => $rowNumber,
                 'column_key' => $issue->columnKey, 'error_code' => $issue->code,
-                'occurred_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'occurred_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]));
         } catch (Throwable $exception) {
             if ((string) $exception->getCode() !== '23000') {
@@ -294,8 +296,8 @@ final class ImportExportStore
                 'result_file_key' => $cancelled ? null : $resultFileKey,
                 'error_file_key' => $cancelled ? null : $errorFileKey, 'total_rows' => $totalRows,
                 'last_error_code' => $cancelled ? null : $errorCode,
-                'completed_at' => Db::raw('UTC_TIMESTAMP(3)'), 'revision' => Db::raw('revision + 1'),
-                'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'completed_at' => new Raw('UTC_TIMESTAMP(3)'), 'revision' => new Raw('revision + 1'),
+                'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]) !== 1) {
             throw ImportExportException::stateConflict();
         }
@@ -309,15 +311,15 @@ final class ImportExportStore
         if ($limit < 1 || $limit > 1000) {
             throw ImportExportException::invalid();
         }
-        $sample = Db::name('import_export_operation')->order('id')->find();
+        $sample = ImportExportOperationRecord::order('id')->find()?->toArray();
         if ($sample !== null) {
             $this->tenantScope->assertStorageRow($sample);
         }
 
-        return Db::name('import_export_operation')->whereIn('status', ['succeeded', 'failed', 'cancelled'])
-            ->where('retention_until', '<=', Db::raw('UTC_TIMESTAMP(3)'))->order('id')->limit($limit)->update([
+        return ImportExportOperationRecord::whereIn('status', ['succeeded', 'failed', 'cancelled'])
+            ->where('retention_until', '<=', new Raw('UTC_TIMESTAMP(3)'))->order('id')->limit($limit)->update([
                 'status' => 'expired', 'result_file_key' => null, 'error_file_key' => null,
-                'revision' => Db::raw('revision + 1'), 'updated_at' => Db::raw('UTC_TIMESTAMP(3)'),
+                'revision' => new Raw('revision + 1'), 'updated_at' => new Raw('UTC_TIMESTAMP(3)'),
             ]);
     }
 
@@ -336,7 +338,7 @@ final class ImportExportStore
             $query->lock(true);
         }
 
-        return $this->scopedRow($query->find(), $tenantId);
+        return $this->scopedRow($query->find()?->toArray(), $tenantId);
     }
 
     /** @return array<string, mixed>|null */
@@ -347,7 +349,7 @@ final class ImportExportStore
             $query->lock(true);
         }
 
-        return $this->scopedRow($query->find(), $tenantId);
+        return $this->scopedRow($query->find()?->toArray(), $tenantId);
     }
 
     /** @return array<string, mixed>|null */
@@ -358,7 +360,7 @@ final class ImportExportStore
             $query->lock(true);
         }
 
-        return $this->scopedRow($query->find(), $tenantId);
+        return $this->scopedRow($query->find()?->toArray(), $tenantId);
     }
 
     /** @param array<string, mixed>|null $row
@@ -429,7 +431,11 @@ final class ImportExportStore
     private function query(string $table, int $tenantId): BaseQuery
     {
         $this->tenantScope->assertTenantId($tenantId);
-        $query = Db::name($table);
+        $query = match ($table) {
+            'import_export_operation' => ImportExportOperationRecord::where([]),
+            'import_export_row_error' => ImportExportRowErrorRecord::where([]),
+            default => throw ImportExportException::internal(),
+        };
         if ($this->tenantScope->usesTenantColumn()) {
             $query->where('tenant_id', $tenantId);
         }
