@@ -10,6 +10,6 @@ final class SmsRateBucketRecord extends TenantModel
 {
     /** @var string */ protected $name = 'sms_rate_bucket';
     /** @var array<string, string> */ protected $type = [
-        'id' => 'integer', 'tenant_id' => 'integer', 'window_seconds' => 'integer', 'send_count' => 'integer',
+        'tenant_id' => 'integer', 'window_seconds' => 'integer', 'send_count' => 'integer',
     ];
 }

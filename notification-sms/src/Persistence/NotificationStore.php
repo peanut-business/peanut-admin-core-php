@@ -8,15 +8,21 @@ use DateTimeImmutable;
 use DateTimeZone;
 use JsonException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
+use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
 use PeanutAdmin\NotificationSms\Application\AttachmentReference;
 use PeanutAdmin\NotificationSms\Application\NotificationException;
 use PeanutAdmin\NotificationSms\Application\NotificationMessage;
 use PeanutAdmin\NotificationSms\Application\OutboxRecord;
 use PeanutAdmin\NotificationSms\Application\RecipientSnapshot;
+use PeanutAdmin\NotificationSms\Persistence\Model\NotificationAttachmentRecord;
+use PeanutAdmin\NotificationSms\Persistence\Model\NotificationEventRecord;
+use PeanutAdmin\NotificationSms\Persistence\Model\NotificationMessageRecord;
+use PeanutAdmin\NotificationSms\Persistence\Model\NotificationOutboxRecord;
+use PeanutAdmin\NotificationSms\Persistence\Model\NotificationTemplateRecord;
 use PeanutAdmin\NotificationSms\Persistence\Model\SmsRateBucketRecord;
 use PeanutAdmin\NotificationSms\Sms\SmsReceipt;
 use think\db\BaseQuery;
-use think\facade\Db;
+use think\db\Raw;
 
 /** Retains notification/outbox invariants while using ThinkPHP persistence. */
 final class NotificationStore implements NotificationRepository
@@ -38,7 +44,7 @@ final class NotificationStore implements NotificationRepository
             if ($expectedRevision !== null) {
                 throw NotificationException::conflict();
             }
-            Db::name('notification_template')->insert([
+            NotificationTemplateRecord::insert([
                 'tenant_id' => $context->tenantId,
                 'template_key' => $templateKey,
                 'name' => $name,
@@ -56,8 +62,7 @@ final class NotificationStore implements NotificationRepository
             if ($expectedRevision === null || (int) $existing['revision'] !== $expectedRevision) {
                 throw NotificationException::conflict();
             }
-            $updated = Db::name('notification_template')
-                ->where('tenant_id', $context->tenantId)
+            $updated = NotificationTemplateRecord::where('tenant_id', $context->tenantId)
                 ->where('template_key', $templateKey)
                 ->where('revision', $expectedRevision)
                 ->update([
@@ -66,7 +71,7 @@ final class NotificationStore implements NotificationRepository
                     'body_template' => $bodyTemplate,
                     'channels_json' => $this->json($channels),
                     'variable_keys_json' => $this->json($variables),
-                    'revision' => Db::raw('revision + 1'),
+                    'revision' => new Raw('revision + 1'),
                     'updated_at' => $now,
                 ]);
             if ($updated !== 1) {
@@ -108,7 +113,7 @@ final class NotificationStore implements NotificationRepository
         $this->assertTenantActor($context);
         $this->assertRecipientSnapshot($context->tenantId, $recipient);
         $now = $this->now();
-        $messageId = (int) Db::name('notification_message')->insertGetId([
+        $messageId = (int) NotificationMessageRecord::insertGetId([
             'message_key' => $messageKey,
             'tenant_id' => $context->tenantId,
             'template_key' => $template['template_key'],
@@ -127,7 +132,7 @@ final class NotificationStore implements NotificationRepository
             'archived_at' => null,
         ]);
         foreach ($attachments as $attachment) {
-            Db::name('notification_attachment')->insert([
+            NotificationAttachmentRecord::insert([
                 'tenant_id' => $context->tenantId,
                 'message_id' => $messageId,
                 'file_key' => $attachment->fileKey,
@@ -141,7 +146,7 @@ final class NotificationStore implements NotificationRepository
         $outbox = [];
         foreach ($template['channels'] as $channel) {
             $outboxKey = 'outbox_' . bin2hex(random_bytes(16));
-            Db::name('notification_outbox')->insert([
+            NotificationOutboxRecord::insert([
                 'outbox_key' => $outboxKey,
                 'tenant_id' => $context->tenantId,
                 'message_id' => $messageId,
@@ -169,8 +174,7 @@ final class NotificationStore implements NotificationRepository
 
     public function inbox(int $tenantId, int $memberId, string $status, int $page, int $pageSize): array
     {
-        $query = Db::name('notification_message')
-            ->where('tenant_id', $tenantId)
+        $query = NotificationMessageRecord::where('tenant_id', $tenantId)
             ->where('recipient_member_id', $memberId);
         if ($status !== 'all') {
             $query->where('status', $status);
@@ -209,8 +213,7 @@ final class NotificationStore implements NotificationRepository
             throw NotificationException::invalid();
         }
         $now = $this->now();
-        $updated = Db::name('notification_message')
-            ->where('id', $row['id'])
+        $updated = NotificationMessageRecord::where('id', $row['id'])
             ->where('tenant_id', $context->tenantId)
             ->where('recipient_member_id', $context->memberId)
             ->where('status', 'unread')
@@ -219,7 +222,7 @@ final class NotificationStore implements NotificationRepository
                 'status' => 'read',
                 'read_at' => $now,
                 'updated_at' => $now,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
             ]);
         if ($updated !== 1) {
             throw NotificationException::conflict();
@@ -246,13 +249,12 @@ final class NotificationStore implements NotificationRepository
                 'status' => $newStatus,
                 'read_at' => $row['read_at'] ?? $now,
                 'updated_at' => $now,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
             ];
             if ($newStatus === 'archived') {
                 $data['archived_at'] = $now;
             }
-            $updated = Db::name('notification_message')
-                ->where('id', $row['id'])
+            $updated = NotificationMessageRecord::where('id', $row['id'])
                 ->where('tenant_id', $context->tenantId)
                 ->where('recipient_member_id', $context->memberId)
                 ->where('revision', $row['revision'])
@@ -295,15 +297,14 @@ final class NotificationStore implements NotificationRepository
         if (!in_array($row['status'], ['pending', 'retryable'], true) || $row['dispatch_job_key'] !== null) {
             throw NotificationException::conflict();
         }
-        $updated = Db::name('notification_outbox')
-            ->where('id', $row['id'])
+        $updated = NotificationOutboxRecord::where('id', $row['id'])
             ->where('tenant_id', $tenantId)
             ->whereIn('status', ['pending', 'retryable'])
             ->whereNull('dispatch_job_key')
             ->update([
                 'status' => 'queued',
                 'dispatch_job_key' => $jobKey,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'updated_at' => $this->now(),
             ]);
         if ($updated !== 1) {
@@ -318,15 +319,14 @@ final class NotificationStore implements NotificationRepository
             return;
         }
         $now = $this->now();
-        $updated = Db::name('notification_outbox')
-            ->where('id', $row['id'])
+        $updated = NotificationOutboxRecord::where('id', $row['id'])
             ->where('tenant_id', $tenantId)
             ->whereIn('status', ['queued', 'processing'])
             ->update([
                 'status' => 'delivered',
                 'delivered_at' => $now,
                 'updated_at' => $now,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
             ]);
         if ($updated !== 1) {
             throw NotificationException::conflict();
@@ -344,14 +344,13 @@ final class NotificationStore implements NotificationRepository
         if (!in_array($row['status'], ['queued', 'retryable', 'processing'], true)) {
             throw NotificationException::conflict();
         }
-        $updated = Db::name('notification_outbox')
-            ->where('id', $row['id'])
+        $updated = NotificationOutboxRecord::where('id', $row['id'])
             ->where('tenant_id', $tenantId)
             ->whereIn('status', ['queued', 'retryable', 'processing'])
             ->update([
                 'status' => 'processing',
                 'updated_at' => $this->now(),
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
             ]);
         if ($updated !== 1) {
             throw NotificationException::conflict();
@@ -366,7 +365,7 @@ final class NotificationStore implements NotificationRepository
         $buckets = [];
         foreach ([['tenant', 60, 60], ['recipient:' . $recipientDigest, 3600, 5]] as [$key, $window, $limit]) {
             $query = SmsRateBucketRecord::where('tenant_id', $tenantId)->where('bucket_key', $key);
-            $row = (clone $query)->lock(true)->find();
+            $row = (clone $query)->lock(true)->find()?->toArray();
             if ($row === null) {
                 SmsRateBucketRecord::duplicate(['bucket_key'])->insert([
                     'tenant_id' => $tenantId,
@@ -376,7 +375,7 @@ final class NotificationStore implements NotificationRepository
                     'send_count' => 0,
                     'updated_at' => $this->date($now),
                 ]);
-                $row = (clone $query)->lock(true)->find();
+                $row = (clone $query)->lock(true)->find()?->toArray();
             }
             if (!is_array($row)) {
                 throw NotificationException::conflict();
@@ -393,7 +392,7 @@ final class NotificationStore implements NotificationRepository
             $buckets[] = [$key, $window, $started, $count + 1];
         }
         foreach ($buckets as [$key, $window, $started, $count]) {
-            Db::name('sms_rate_bucket')->where('tenant_id', $tenantId)->where('bucket_key', $key)->update([
+            SmsRateBucketRecord::where('tenant_id', $tenantId)->where('bucket_key', $key)->update([
                 'window_seconds' => $window,
                 'window_started_at' => $this->date($started),
                 'send_count' => $count,
@@ -414,8 +413,7 @@ final class NotificationStore implements NotificationRepository
             throw NotificationException::conflict();
         }
         $now = $this->now();
-        $updated = Db::name('notification_outbox')
-            ->where('id', $row['id'])
+        $updated = NotificationOutboxRecord::where('id', $row['id'])
             ->where('tenant_id', $dispatch->tenantId)
             ->where('status', 'processing')
             ->update([
@@ -426,7 +424,7 @@ final class NotificationStore implements NotificationRepository
                 'last_error_code' => null,
                 'delivered_at' => $now,
                 'updated_at' => $now,
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
             ]);
         if ($updated !== 1) {
             throw NotificationException::conflict();
@@ -446,15 +444,14 @@ final class NotificationStore implements NotificationRepository
         if ($row['status'] === 'delivered') {
             return;
         }
-        $updated = Db::name('notification_outbox')
-            ->where('id', $row['id'])
+        $updated = NotificationOutboxRecord::where('id', $row['id'])
             ->where('tenant_id', $dispatch->tenantId)
             ->where('status', 'processing')
             ->update([
                 'status' => $retryable ? 'retryable' : 'permanent_failed',
                 'last_error_code' => $safeCode,
                 'updated_at' => $this->now(),
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
             ]);
         if ($updated !== 1) {
             throw NotificationException::conflict();
@@ -467,20 +464,20 @@ final class NotificationStore implements NotificationRepository
     /** @return array<string, mixed>|null */
     private function templateRow(int $tenantId, string $templateKey, bool $lock): ?array
     {
-        return $this->find(Db::name('notification_template')->where('tenant_id', $tenantId)->where('template_key', $templateKey), $lock);
+        return $this->find(NotificationTemplateRecord::where('tenant_id', $tenantId)->where('template_key', $templateKey), $lock);
     }
 
     /** @return array<string, mixed>|null */
     private function messageRow(int $tenantId, int $memberId, string $messageKey, bool $lock): ?array
     {
-        return $this->find(Db::name('notification_message')->where('tenant_id', $tenantId)->where('recipient_member_id', $memberId)->where('message_key', $messageKey), $lock);
+        return $this->find(NotificationMessageRecord::where('tenant_id', $tenantId)->where('recipient_member_id', $memberId)->where('message_key', $messageKey), $lock);
     }
 
     /** @return array<string, mixed> */
     private function messageByInternalId(int $tenantId, int $id): array
     {
-        $row = Db::name('notification_message')->where('tenant_id', $tenantId)->where('id', $id)->find();
-        if (!is_array($row)) {
+        $row = NotificationMessageRecord::where('tenant_id', $tenantId)->where('id', $id)->find()?->toArray();
+        if ($row === null) {
             throw NotificationException::notFound();
         }
         return $row;
@@ -496,7 +493,7 @@ final class NotificationStore implements NotificationRepository
             static fn(array $item): AttachmentReference => new AttachmentReference(
                 (string) $item['file_key'], (string) $item['original_name'], (string) $item['media_type'], (int) $item['size_bytes'], (string) $item['sha256'],
             ),
-            Db::name('notification_attachment')->where('tenant_id', $tenantId)->where('message_id', $id)
+            NotificationAttachmentRecord::where('tenant_id', $tenantId)->where('message_id', $id)
                 ->field('file_key,original_name,media_type,size_bytes,sha256')->order('id')->select()->toArray(),
         ));
         return new NotificationMessage(
@@ -512,7 +509,7 @@ final class NotificationStore implements NotificationRepository
     /** @return array<string, mixed>|null */
     private function outboxRow(int $tenantId, string $outboxKey, bool $lock): ?array
     {
-        return $this->find(Db::name('notification_outbox')->where('tenant_id', $tenantId)->where('outbox_key', $outboxKey), $lock);
+        return $this->find(NotificationOutboxRecord::where('tenant_id', $tenantId)->where('outbox_key', $outboxKey), $lock);
     }
 
     /** @param array<string, mixed> $row */
@@ -535,7 +532,7 @@ final class NotificationStore implements NotificationRepository
 
     private function assertTenantActor(TenantContext $context): void
     {
-        $id = Db::name('tenant_member')->where('tenant_id', $context->tenantId)->where('id', $context->memberId)
+        $id = TenantMember::where('tenant_id', $context->tenantId)->where('id', $context->memberId)
             ->where('account_id', $context->accountId)->where('status', 'active')->value('id');
         if ($id === null) {
             throw NotificationException::denied();
@@ -544,7 +541,7 @@ final class NotificationStore implements NotificationRepository
 
     private function assertRecipientSnapshot(int $tenantId, RecipientSnapshot $recipient): void
     {
-        $accountId = Db::name('tenant_member')->where('tenant_id', $tenantId)->where('id', $recipient->memberId)
+        $accountId = TenantMember::where('tenant_id', $tenantId)->where('id', $recipient->memberId)
             ->where('status', 'active')->value('account_id');
         if ((!is_int($accountId) && !is_string($accountId)) || (int) $accountId !== $recipient->accountId) {
             throw NotificationException::recipientUnavailable();
@@ -554,7 +551,7 @@ final class NotificationStore implements NotificationRepository
     /** @param array<string, mixed> $metadata */
     private function event(int $tenantId, int $messageId, string $eventKey, ?int $actorMemberId, array $metadata): void
     {
-        Db::name('notification_event')->insert([
+        NotificationEventRecord::insert([
             'tenant_id' => $tenantId, 'message_id' => $messageId, 'event_key' => $eventKey,
             'actor_member_id' => $actorMemberId, 'metadata_json' => $this->json($metadata), 'occurred_at' => $this->now(),
         ]);
@@ -566,8 +563,7 @@ final class NotificationStore implements NotificationRepository
         if ($lock) {
             $query->lock(true);
         }
-        $row = $query->find();
-        return is_array($row) ? $row : null;
+        return $query->find()?->toArray();
     }
 
     private function now(): string
