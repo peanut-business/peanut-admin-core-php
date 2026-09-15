@@ -9,16 +9,15 @@ use PeanutAdmin\Kernel\Authorization\CorePermissionCatalog;
 use PeanutAdmin\Kernel\Authorization\EffectivePermissionSet;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperator;
 use PeanutAdmin\Kernel\Persistence\Model\PlatformOperatorRole;
-use think\facade\Db;
 
 final class ThinkPhpPlatformAuthorizationRepository implements PlatformAuthorizationRepository
 {
     public function revision(int $operatorId): string
     {
-        $operator = Db::name('platform_operator')
-            ->where('id', $operatorId)
+        $record = PlatformOperator::where('id', $operatorId)
             ->field('status,security_revision')
             ->find();
+        $operator = $record?->toArray();
         if ($operator === null) {
             return hash('sha256', "missing:{$operatorId}");
         }
