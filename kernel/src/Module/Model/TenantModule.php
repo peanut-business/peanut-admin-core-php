@@ -9,6 +9,7 @@ use PeanutAdmin\Kernel\Persistence\Model\TenantModel;
 final class TenantModule extends TenantModel
 {
     /** @var string */ protected $name = 'tenant_module';
+    /** @var string */ protected $dateFormat = 'Y-m-d H:i:s.v';
 
     /** @var array<string, string> */
     protected $type = [

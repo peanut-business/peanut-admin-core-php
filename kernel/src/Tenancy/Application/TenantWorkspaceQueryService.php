@@ -17,6 +17,7 @@ use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use RuntimeException;
 use think\db\Query;
 use think\db\Raw;
+use think\model\type\Json;
 
 final readonly class TenantWorkspaceQueryService
 {
@@ -156,10 +157,15 @@ final readonly class TenantWorkspaceQueryService
     /** @return array<string, bool|int|string|null> */
     private function auditMetadata(mixed $value): array
     {
+        if ($value instanceof Json) {
+            $value = $value->value();
+        }
         try {
-            $decoded = is_string($value) && $value !== ''
-                ? json_decode($value, true, 64, JSON_THROW_ON_ERROR)
-                : [];
+            $decoded = is_array($value)
+                ? $value
+                : (is_string($value) && $value !== ''
+                    ? json_decode($value, true, 64, JSON_THROW_ON_ERROR)
+                    : []);
         } catch (JsonException) {
             $decoded = [];
         }

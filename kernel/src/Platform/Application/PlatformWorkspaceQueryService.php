@@ -19,6 +19,7 @@ use PeanutAdmin\Kernel\Persistence\Model\PlatformRolePermission;
 use PeanutAdmin\Kernel\Persistence\Model\Tenant;
 use think\db\Query;
 use think\db\Raw;
+use think\model\type\Json;
 
 final readonly class PlatformWorkspaceQueryService
 {
@@ -240,9 +241,9 @@ final readonly class PlatformWorkspaceQueryService
         $fields = [
             'audit.id', 'audit.event_type', 'audit.action', 'audit.outcome', 'audit.reason_code',
             'audit.operator_id', 'audit.account_id',
-            'operator_label' => new Raw("COALESCE(operator.display_name, account.display_name, 'platform_system')"),
+            new Raw("COALESCE(operator.display_name, account.display_name, 'platform_system') AS operator_label"),
             'audit.target_type', 'audit.target_id',
-            'target_tenant_id' => new Raw("CASE WHEN audit.target_type = 'tenant' THEN audit.target_id ELSE NULL END"),
+            new Raw("CASE WHEN audit.target_type = 'tenant' THEN audit.target_id ELSE NULL END AS target_tenant_id"),
             'audit.request_id', 'audit.operation_id', 'audit.occurred_at' => 'created_at',
         ];
         if ($withMetadata) {
@@ -255,10 +256,15 @@ final readonly class PlatformWorkspaceQueryService
     /** @return array<string, bool|int|string|null> */
     private function auditMetadata(mixed $value): array
     {
+        if ($value instanceof Json) {
+            $value = $value->value();
+        }
         try {
-            $decoded = is_string($value) && $value !== ''
-                ? json_decode($value, true, 64, JSON_THROW_ON_ERROR)
-                : [];
+            $decoded = is_array($value)
+                ? $value
+                : (is_string($value) && $value !== ''
+                    ? json_decode($value, true, 64, JSON_THROW_ON_ERROR)
+                    : []);
         } catch (JsonException) {
             $decoded = [];
         }
