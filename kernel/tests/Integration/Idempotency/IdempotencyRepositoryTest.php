@@ -149,6 +149,7 @@ SQL)->fetchColumn());
         self::assertFalse($replay->created);
         self::assertSame('completed', $replay->status);
         self::assertSame(201, $replay->responseStatus);
+        self::assertSame(['data' => ['id' => '1']], $replay->responseBody);
 
         try {
             $repository->beginTenant($scope, $memberId, 'createWorkItem', $key, 'request-changed', $expires, $comparisonTime);

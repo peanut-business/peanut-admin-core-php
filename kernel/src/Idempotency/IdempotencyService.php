@@ -11,18 +11,25 @@ use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Idempotency\Model\PlatformIdempotencyRecord;
 use PeanutAdmin\Kernel\Idempotency\Model\TenantIdempotencyRecord as TenantRecordModel;
 use PeanutAdmin\Kernel\Persistence\Model\EditionTenantModel;
+use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use think\db\BaseQuery;
 use think\db\exception\PDOException;
 use think\Model;
+use think\model\type\Json;
 
 final readonly class IdempotencyService
 {
+    private TenantColumnScope $tenantScope;
+
     public function __construct(
         private TenantPersistenceMode $persistenceMode = TenantPersistenceMode::TenantScoped,
         private ?int $instanceTenantId = null,
-    ) {}
+    ) {
+        $this->tenantScope = new TenantColumnScope($persistenceMode, $instanceTenantId);
+        $this->tenantScope->assertRuntimeConfigured();
+    }
 
     public function beginTenant(
         TenantScope $scope,
@@ -33,6 +40,7 @@ final readonly class IdempotencyService
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
+        $this->assertStorageMode();
         return $this->begin(
             $this->tenantQuery($scope)->where('tenant_member_id', $memberId),
             new TenantRecordModel(),
@@ -58,6 +66,7 @@ final readonly class IdempotencyService
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
+        $this->assertStorageMode();
         return $this->begin(
             PlatformIdempotencyRecord::where('platform_operator_id', $operatorId),
             new PlatformIdempotencyRecord(),
@@ -80,6 +89,7 @@ final readonly class IdempotencyService
         ?string $resourceId = null,
     ): void
     {
+        $this->assertStorageMode();
         $this->storeOutcome(
             $this->tenantQuery($scope),
             $id,
@@ -100,6 +110,7 @@ final readonly class IdempotencyService
         ?string $resourceId = null,
     ): void
     {
+        $this->assertStorageMode();
         $this->storeOutcome(
             PlatformIdempotencyRecord::where([]),
             $id,
@@ -120,6 +131,7 @@ final readonly class IdempotencyService
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->storeOutcome(
             $this->tenantQuery($scope),
             $id,
@@ -139,6 +151,7 @@ final readonly class IdempotencyService
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
+        $this->assertStorageMode();
         $this->storeOutcome(
             PlatformIdempotencyRecord::where([]),
             $id,
@@ -170,9 +183,14 @@ final readonly class IdempotencyService
             throw new \InvalidArgumentException('Idempotency expiry must be later than the comparison time.');
         }
         $query->where('operation_key', $operationKey)->where('idempotency_key_hash', $key->hash);
-        $known = $query->lock(true)->find();
+        $known = (clone $query)->find();
         if ($known instanceof Model) {
-            return $this->existing($known->getData(), $requestHash);
+            $locked = (clone $query)->lock(true)->find();
+            if (!$locked instanceof Model) {
+                throw new \RuntimeException('Known idempotency record disappeared before it could be locked.');
+            }
+
+            return $this->existing($locked->getData(), $requestHash);
         }
 
         try {
@@ -206,7 +224,7 @@ final readonly class IdempotencyService
                 || (int) ($error['Driver Error Code'] ?? 0) !== 1062) {
                 throw $exception;
             }
-            $known = $query->lock(true)->find();
+            $known = (clone $query)->lock(true)->find();
             if (!$known instanceof Model) {
                 throw new \RuntimeException('Competing idempotency record could not be loaded.');
             }
@@ -250,13 +268,22 @@ final readonly class IdempotencyService
             throw new ApiException('IDEMPOTENCY_KEY_REUSED', 409, 'Idempotency key was reused with another request.');
         }
         $response = null;
-        if (is_string($row['response_body_json'] ?? null)) {
+        $storedResponse = $row['response_body_json'] ?? null;
+        if ($storedResponse instanceof Json) {
+            $storedResponse = $storedResponse->value();
+        }
+        if (is_string($storedResponse)) {
             try {
-                $decoded = json_decode($row['response_body_json'], true, 512, JSON_THROW_ON_ERROR);
-                $response = is_array($decoded) ? $decoded : null;
+                $storedResponse = json_decode($storedResponse, true, 512, JSON_THROW_ON_ERROR);
             } catch (JsonException) {
                 throw new ApiException('IDEMPOTENCY_RESPONSE_INVALID', 500, 'Stored idempotency response is invalid.');
             }
+        }
+        if ($storedResponse !== null) {
+            if (!is_array($storedResponse)) {
+                throw new ApiException('IDEMPOTENCY_RESPONSE_INVALID', 500, 'Stored idempotency response is invalid.');
+            }
+            $response = $storedResponse;
         }
 
         return new IdempotencyRecord(
@@ -279,6 +306,11 @@ final readonly class IdempotencyService
             $this->persistenceMode,
             $this->instanceTenantId,
         );
+    }
+
+    private function assertStorageMode(): void
+    {
+        $this->tenantScope->assertStorageMode(['pa_tenant_idempotency_record']);
     }
 
     private static function date(DateTimeImmutable $date): string
