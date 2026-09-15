@@ -27,10 +27,10 @@ final readonly class ModuleKey
     }
 
     /** @return non-empty-list<string> */
-    public function pascalSegments(): array
+    public function snakeSegments(): array
     {
         return array_map(
-            static fn(string $segment): string => implode('', array_map('ucfirst', explode('-', $segment))),
+            static fn(string $segment): string => str_replace('-', '_', $segment),
             explode('.', $this->value),
         );
     }

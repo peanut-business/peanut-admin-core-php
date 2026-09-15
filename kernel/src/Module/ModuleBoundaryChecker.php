@@ -158,10 +158,10 @@ final readonly class ModuleBoundaryChecker
                 break;
             }
         }
-        if ($owner === null || $owner === $moduleKey || !str_contains($reference, '\\Contracts\\')) {
+        if ($owner === null || $owner === $moduleKey || !str_contains($reference, '\\contracts\\')) {
             throw new ModuleException(
                 'MODULE_REGISTRY_CONFLICT',
-                "{$path} imports another module outside its registered Contracts API.",
+                "{$path} imports another module outside its registered contracts API.",
             );
         }
         if (!isset($dependencies[$owner])) {
@@ -180,7 +180,7 @@ final readonly class ModuleBoundaryChecker
 
     private function isDeclaredForeignKeyReference(string $path, string $literal, string $table): bool
     {
-        return str_contains($path, DIRECTORY_SEPARATOR . 'Database' . DIRECTORY_SEPARATOR)
+        return str_contains($path, DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR)
             && str_contains($literal, "REFERENCES `{$table}`");
     }
 

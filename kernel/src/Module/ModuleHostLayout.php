@@ -24,12 +24,12 @@ final readonly class ModuleHostLayout
 
     public function backendRelativePath(ModuleKey $key): string
     {
-        return $this->backendRoot . '/' . implode('/', $key->pascalSegments()) . '/';
+        return $this->backendRoot . '/' . implode('/', $key->snakeSegments()) . '/';
     }
 
     public function backendNamespace(ModuleKey $key): string
     {
-        return $this->backendNamespaceRoot . '\\' . implode('\\', $key->pascalSegments()) . '\\';
+        return $this->backendNamespaceRoot . '\\' . implode('\\', $key->snakeSegments()) . '\\';
     }
 
     public function backendNamespaceRoot(): string
