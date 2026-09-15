@@ -15,12 +15,16 @@ final class SettingDefinitionRecord extends Model
     /** @var array<string, string> */
     protected $type = [
         'id' => 'integer',
+        'schema_json' => 'string',
+        'default_json' => 'string',
         'required_flag' => 'integer',
         'secret_flag' => 'integer',
         'deployment_scope_flag' => 'integer',
         'tenant_scope_flag' => 'integer',
         'target_scope_flag' => 'integer',
         'revision' => 'integer',
+        'created_at' => 'string',
+        'updated_at' => 'string',
     ];
 
     public function deploymentValue(): HasOne

@@ -16,8 +16,13 @@ final class DeploymentSettingValue extends Model
     protected $type = [
         'id' => 'integer',
         'definition_id' => 'integer',
+        'value_json' => 'string',
         'revision' => 'integer',
         'updated_by_operator_id' => 'integer',
+        'effective_at' => 'string',
+        'expires_at' => 'string',
+        'created_at' => 'string',
+        'updated_at' => 'string',
     ];
 
     public function definition(): BelongsTo

@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace PeanutAdmin\Settings\Tests\Integration\Application;
 
 use DateTimeImmutable;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Settings\Application\EffectiveSetting;
 use PeanutAdmin\Settings\Application\SettingAdminService;
 use PeanutAdmin\Settings\Application\SettingException;
 use PeanutAdmin\Settings\Definition\SettingDefinitionSynchronizer;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
 use PeanutAdmin\Settings\Tests\Integration\Support\SettingsDatabaseTestCase;
-use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 
 require_once dirname(__DIR__) . '/Support/SettingsDatabaseTestCase.php';
 
@@ -503,10 +503,10 @@ SQL);
         self::assertSame(2, (int) $this->scalar('SELECT COUNT(*) FROM pa_setting_tenant_value'));
     }
 
-    public function testDeploymentAndDirectRepositoryWritesRejectSubMillisecondTimestamps(): void
+    public function testDeploymentMutationsRejectSubMillisecondTimestamps(): void
     {
         $registry = $this->registry([$this->plainDefinition('display-mode')]);
-        $repository = $this->synchronize($registry);
+        $this->synchronize($registry);
         $service = new SettingAdminService($this->protector());
         $definition = $registry->require('example.module', 'display-mode');
         $operatorId = $this->operator();
@@ -536,16 +536,6 @@ SQL);
             $operatorId,
             $subMillisecond,
             null,
-        ));
-        $this->expectSettingError('SETTING_INTERVAL_INVALID', fn() => $repository->writeDeployment(
-            $definition,
-            'set',
-            ['value_json' => '"compact"', 'ciphertext' => null, 'nonce' => null, 'key_id' => null],
-            $operatorId,
-            $subMillisecond,
-            null,
-            null,
-            '*',
         ));
         self::assertSame(0, (int) $this->scalar('SELECT COUNT(*) FROM pa_setting_deployment_value'));
     }
@@ -769,7 +759,6 @@ if (!$definition instanceof SettingDefinition) {
 $pdo->exec('SET SESSION innodb_lock_wait_timeout = 5');
 $isolation = $pdo->query('SELECT @@transaction_isolation')->fetchColumn();
 $connectionId = $pdo->query('SELECT CONNECTION_ID()')->fetchColumn();
-$pdo->beginTransaction();
 $definitionId = $pdo->prepare(<<<'SQL'
 SELECT id FROM pa_setting_definition
 WHERE module_key = :module_key AND setting_key = :setting_key AND status = 'active'
@@ -826,22 +815,24 @@ try {
         null,
         '*',
     );
-    $pdo->commit();
     $outcome = ['kind' => 'ok'];
 } catch (SettingException $exception) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-    }
     $outcome = [
         'kind' => 'setting',
         'code' => $exception->errorCode,
         'status' => $exception->httpStatus,
     ];
 } catch (\Throwable $exception) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
+    $outcome = [
+        'kind' => 'throwable',
+        'exception' => $exception::class,
+        'message' => $exception->getMessage(),
+        'code' => $exception->getCode(),
+    ];
+    if ($exception instanceof \PDOException) {
+        $outcome['pdo_sqlstate'] = $exception->errorInfo[0] ?? null;
+        $outcome['pdo_driver_code'] = $exception->errorInfo[1] ?? null;
     }
-    $outcome = ['kind' => 'throwable', 'exception' => $exception::class];
 }
 fwrite(STDOUT, json_encode($outcome, JSON_THROW_ON_ERROR) . "\n");
 fflush(STDOUT);

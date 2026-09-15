@@ -7,7 +7,9 @@ namespace PeanutAdmin\Settings\Tests\Integration\Support;
 use DateTimeImmutable;
 use PDO;
 use PDOException;
+use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Kernel\Api\RequestId;
+use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
 use PeanutAdmin\Kernel\Authorization\DataPermissionAdapter;
@@ -15,7 +17,6 @@ use PeanutAdmin\Kernel\Authorization\EffectivePermissionSet;
 use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationRepository;
-use PeanutAdmin\Kernel\Audit\AuditService;
 use PeanutAdmin\Kernel\Host\AuthorizedExternalOperation;
 use PeanutAdmin\Kernel\Host\ExternalHostConfiguration;
 use PeanutAdmin\Kernel\Host\ExternalOperationDefinition;
@@ -30,14 +31,10 @@ use PeanutAdmin\Kernel\Http\PermissionMiddleware;
 use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Module\CompiledModuleRegistry;
 use PeanutAdmin\Kernel\Module\ManifestDocument;
-use PeanutAdmin\Kernel\Module\ModuleGuard;
+use PeanutAdmin\Kernel\Module\ModuleAvailabilityService;
 use PeanutAdmin\Kernel\Module\ModuleHostLayout;
-use PeanutAdmin\Kernel\Module\ModuleInstallationRecord;
-use PeanutAdmin\Kernel\Module\ModuleRuntimeRepository;
-use PeanutAdmin\Kernel\Module\TenantModuleRecord;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationEvaluator;
 use PeanutAdmin\Kernel\Platform\Authorization\PlatformAuthorizationRepository;
-use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Settings\Definition\SettingDefinition;
 use PeanutAdmin\Settings\Definition\SettingDefinitionLoader;
 use PeanutAdmin\Settings\Definition\SettingDefinitionRegistry;
@@ -46,6 +43,7 @@ use PeanutAdmin\Settings\Tests\Integration\Schema\SettingsMigrationRunner;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use RuntimeException;
+use think\App;
 
 require_once dirname(__DIR__) . '/Schema/SettingsMigrationRunner.php';
 
@@ -79,6 +77,14 @@ abstract class SettingsDatabaseTestCase extends TestCase
         $this->createParentTables();
         $this->runner = new SettingsMigrationRunner($this->database);
         $this->runner->migrate();
+        $root = dirname(__DIR__, 6);
+        $app = new App($root . '/backend');
+        $cache = require $root . '/backend/config/cache.php';
+        if (!is_array($cache)) {
+            throw new RuntimeException('The backend cache configuration is invalid.');
+        }
+        $app->config->set($cache, 'cache');
+        $app->cache->clear();
         $connection = ThinkPhpTestConnection::fromPdo($this->database);
         $this->database = $connection->connect();
     }
@@ -256,7 +262,7 @@ abstract class SettingsDatabaseTestCase extends TestCase
                 ));
             },
         );
-        $host = $this->authorizationHost($operation, $dataPermission);
+        $host = $this->authorizationHost($tenant['tenant_id'], $operation, $dataPermission);
         $authorize = new ReflectionMethod(ExternalOperationHost::class, 'authorize');
         $authorize->setAccessible(true);
         $authorized = $authorize->invoke($host, $operation, $request);
@@ -297,6 +303,7 @@ abstract class SettingsDatabaseTestCase extends TestCase
     }
 
     private function authorizationHost(
+        int $tenantId,
         ExternalOperationDefinition $operation,
         DataPermissionAdapter $dataPermission,
     ): ExternalOperationHost {
@@ -315,22 +322,18 @@ abstract class SettingsDatabaseTestCase extends TestCase
             ManifestDocument::fromArray('backend/app/Modules/Example/Module', ['key' => 'example.module']),
             ManifestDocument::fromArray('backend/app/Modules/Other/Module', ['key' => 'other.module']),
         ], [], [], [], 'settings-host-revision');
-        $moduleRepository = new class implements ModuleRuntimeRepository {
-            public function installation(string $moduleKey): ModuleInstallationRecord
-            {
-                return new ModuleInstallationRecord($moduleKey, '1.0.0', 'active', 1, 'digest');
-            }
-
-            public function tenantModule(int $tenantId, string $moduleKey): TenantModuleRecord
-            {
-                return new TenantModuleRecord($tenantId, $moduleKey, 'enabled', null, null, 1);
-            }
-
-            public function enabledDependents(int $tenantId, string $moduleKey): array
-            {
-                return [];
-            }
-        };
+        $installation = $this->database->prepare(<<<'SQL'
+INSERT IGNORE INTO pa_module_installation (module_key, status)
+VALUES (:module_key, 'active')
+SQL);
+        $tenantModule = $this->database->prepare(<<<'SQL'
+INSERT IGNORE INTO pa_tenant_module (tenant_id, module_key, status)
+VALUES (:tenant_id, :module_key, 'enabled')
+SQL);
+        foreach (['example.module', 'other.module'] as $moduleKey) {
+            $installation->execute(['module_key' => $moduleKey]);
+            $tenantModule->execute(['tenant_id' => $tenantId, 'module_key' => $moduleKey]);
+        }
         $tenantRepository = new class ($operation->permission->permissionKeys) implements TenantAuthorizationRepository {
             /** @param list<string> $permissions */
             public function __construct(private array $permissions) {}
@@ -374,7 +377,7 @@ abstract class SettingsDatabaseTestCase extends TestCase
         return new ExternalOperationHost(
             $configuration,
             new TrustedContextAdapter($configuration),
-            new ModuleAvailabilityAdapter($registry, new ModuleGuard($moduleRepository)),
+            new ModuleAvailabilityAdapter($registry, new ModuleAvailabilityService()),
             new PermissionAdapter($permissions),
             new TypedTargetAdapter($dataPermission),
             new IdempotencyService(),
@@ -406,6 +409,24 @@ SQL);
 CREATE TABLE pa_platform_operator (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   PRIMARY KEY (id)
+) ENGINE=InnoDB
+SQL);
+        $this->database->exec(<<<'SQL'
+CREATE TABLE pa_module_installation (
+  module_key VARCHAR(96) NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  PRIMARY KEY (module_key)
+) ENGINE=InnoDB
+SQL);
+        $this->database->exec(<<<'SQL'
+CREATE TABLE pa_tenant_module (
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  module_key VARCHAR(96) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  effective_at DATETIME(3) NULL,
+  expires_at DATETIME(3) NULL,
+  PRIMARY KEY (tenant_id, module_key),
+  CONSTRAINT fk_test_tenant_module_tenant FOREIGN KEY (tenant_id) REFERENCES pa_tenant (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB
 SQL);
     }
