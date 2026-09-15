@@ -18,24 +18,28 @@ use PeanutAdmin\Kernel\Identity\AccountStatus;
 use PeanutAdmin\Kernel\Identity\CredentialStatus;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Membership\TenantMemberStatus;
+use PeanutAdmin\Kernel\Persistence\Model\Account;
+use PeanutAdmin\Kernel\Persistence\Model\AuthSecurityEvent;
 use PeanutAdmin\Kernel\Persistence\Model\Credential;
+use PeanutAdmin\Kernel\Persistence\Model\LoginChallenge;
 use PeanutAdmin\Kernel\Persistence\Model\TenantMember;
+use PeanutAdmin\Kernel\Persistence\Model\TenantSession;
 use PeanutAdmin\Kernel\Persistence\Model\TenantSessionToken;
 use PeanutAdmin\Kernel\Tenancy\TenantStatus;
-use think\facade\Db;
+use think\db\Raw;
 
 final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
 {
     public function failedLoginCountByIp(string $ipAddress, DateTimeImmutable $since): int
     {
-        return (int) Db::name('auth_security_event')->where('event_type', 'login_failed')
+        return (int) AuthSecurityEvent::where('event_type', 'login_failed')
             ->where('outcome', 'denied')->where('ip_address', $ipAddress)
             ->where('occurred_at', '>=', $this->format($since))->count();
     }
 
     public function failedLoginCountByIdentifier(string $identifierHmac, DateTimeImmutable $since): int
     {
-        return (int) Db::name('auth_security_event')->where('event_type', 'login_failed')
+        return (int) AuthSecurityEvent::where('event_type', 'login_failed')
             ->where('outcome', 'denied')->where('identifier_hmac', $identifierHmac)
             ->where('occurred_at', '>=', $this->format($since))->count();
     }
@@ -81,16 +85,16 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
                 : $credential->failedAttempts + 1;
             $lockedUntil = $attempts >= 5 ? $now->modify('+15 minutes') : null;
             $credentialLocked = $lockedUntil !== null;
-            Db::name('credential')->where('id', $credential->credentialId)->update([
+            Credential::where('id', $credential->credentialId)->update([
                 'failed_attempts' => $attempts,
                 'status' => $credentialLocked ? 'locked' : 'active',
                 'locked_until' => $lockedUntil === null ? null : $this->format($lockedUntil),
-                'revision' => Db::raw('revision + 1'),
+                'revision' => new Raw('revision + 1'),
                 'updated_at' => $this->format($now),
             ]);
             if ($credentialLocked) {
-                Db::name('account')->where('id', $credential->accountId)->update([
-                    'security_revision' => Db::raw('security_revision + 1'),
+                Account::where('id', $credential->accountId)->update([
+                    'security_revision' => new Raw('security_revision + 1'),
                     'updated_at' => $this->format($now),
                 ]);
             }
@@ -114,7 +118,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
             'status' => 'active',
             'failed_attempts' => 0,
             'locked_until' => null,
-            'revision' => Db::raw('revision + 1'),
+            'revision' => new Raw('revision + 1'),
             'last_used_at' => $this->format($now),
             'updated_at' => $this->format($now),
         ];
@@ -122,8 +126,8 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
             $data['secret_hash'] = $replacementSecretHash;
             $data['secret_changed_at'] = $this->format($now);
         }
-        Db::name('credential')->where('id', $credential->credentialId)->update($data);
-        Db::name('account')->where('id', $credential->accountId)->update([
+        Credential::where('id', $credential->credentialId)->update($data);
+        Account::where('id', $credential->accountId)->update([
             'last_login_at' => $this->format($now),
             'updated_at' => $this->format($now),
         ]);
@@ -140,7 +144,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
             ->field([
                 'tenant.id' => 'tenant_id', 'tenant.code' => 'tenant_code',
                 'tenant.display_name' => 'tenant_name', 'member.id' => 'member_id',
-                'member_display_name' => Db::raw('COALESCE(member.display_name, account.display_name)'),
+                'member_display_name' => new Raw('COALESCE(member.display_name, account.display_name)'),
             ])->order('tenant.id');
         if ($tenantCode !== null) {
             $query->where('tenant.code', $tenantCode);
@@ -167,7 +171,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
         DateTimeImmutable $expiresAt,
         DateTimeImmutable $now,
     ): void {
-        Db::name('login_challenge')->insert([
+        LoginChallenge::insert([
             'challenge_key' => $challengeKey,
             'token_hash' => $tokenHash,
             'account_id' => $accountId,
@@ -183,7 +187,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
 
     public function challengeByHash(string $tokenHash, bool $forUpdate = false): ?LoginChallengeRecord
     {
-        $query = Db::name('login_challenge')->where('token_hash', $tokenHash)->field(
+        $query = LoginChallenge::where('token_hash', $tokenHash)->field(
             'id,account_id,client_key,purpose,status,source_session_key,ip_address,user_agent_hash,expires_at',
         );
         if ($forUpdate) {
@@ -209,7 +213,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
 
     public function markChallengeUsed(int $challengeId, DateTimeImmutable $now): void
     {
-        if (Db::name('login_challenge')->where('id', $challengeId)->where('status', 'active')->update([
+        if (LoginChallenge::where('id', $challengeId)->where('status', 'active')->update([
             'status' => 'used',
             'used_at' => $this->format($now),
         ]) !== 1) {
@@ -241,7 +245,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
             throw new DomainException('Tenant session principal is unavailable.');
         }
         $idleExpiresAt = min($now->modify('+8 hours'), $tokens->refreshExpiresAt);
-        $sessionId = (int) Db::name('tenant_session')->insertGetId([
+        $sessionId = (int) TenantSession::insertGetId([
             'session_key' => $sessionKey,
             'tenant_id' => $choice->tenantId,
             'account_id' => (int) $principal['account_id'],
@@ -307,10 +311,10 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
         TenantTokenPair $tokens,
         DateTimeImmutable $now,
     ): void {
-        Db::name('tenant_session_token')->where('id', $refresh->tokenId)->where('status', 'active')->update([
+        TenantSessionToken::where('id', $refresh->tokenId)->where('status', 'active')->update([
             'status' => 'used', 'used_at' => $this->format($now),
         ]);
-        Db::name('tenant_session_token')->where('session_id', $refresh->sessionId)
+        TenantSessionToken::where('session_id', $refresh->sessionId)
             ->where('token_type', 'access')->where('status', 'active')->update([
                 'status' => 'revoked', 'revoked_at' => $this->format($now),
             ]);
@@ -318,10 +322,10 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
         $newRefreshId = $this->insertToken(
             $refresh->sessionId, 'refresh', $tokens->refresh->hash(), $tokens->refreshExpiresAt, $refresh->tokenId, $now,
         );
-        Db::name('tenant_session_token')->where('id', $refresh->tokenId)->update([
+        TenantSessionToken::where('id', $refresh->tokenId)->update([
             'replaced_by_token_id' => $newRefreshId,
         ]);
-        Db::name('tenant_session')->where('id', $refresh->sessionId)->update([
+        TenantSession::where('id', $refresh->sessionId)->update([
             'last_seen_at' => $this->format($now),
             'idle_expires_at' => $this->format(min($now->modify('+8 hours'), $refresh->absoluteExpiresAt)),
             'updated_at' => $this->format($now),
@@ -330,7 +334,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
 
     public function revokeSession(int $sessionId, string $reason, DateTimeImmutable $now): void
     {
-        Db::name('tenant_session')->where('id', $sessionId)->where('status', 'active')->update([
+        TenantSession::where('id', $sessionId)->where('status', 'active')->update([
             'status' => 'revoked', 'revoked_at' => $this->format($now),
             'revoke_reason' => $reason, 'updated_at' => $this->format($now),
         ]);
@@ -339,7 +343,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
 
     public function revokeSessionsForAccount(int $accountId, string $reason, DateTimeImmutable $now): void
     {
-        $sessionIds = Db::name('tenant_session')->where('account_id', $accountId)
+        $sessionIds = TenantSession::where('account_id', $accountId)
             ->where('status', 'active')->lock(true)->column('id');
         foreach ($sessionIds as $sessionId) {
             $this->revokeSession((int) $sessionId, $reason, $now);
@@ -348,7 +352,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
 
     public function revokeSessionByKey(string $sessionKey, string $reason, DateTimeImmutable $now): void
     {
-        $id = Db::name('tenant_session')->where('session_key', $sessionKey)->lock(true)->value('id');
+        $id = TenantSession::where('session_key', $sessionKey)->lock(true)->value('id');
         if ($id !== null) {
             $this->revokeSession((int) $id, $reason, $now);
         }
@@ -367,7 +371,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
         ?string $userAgentHash,
         DateTimeImmutable $now,
     ): void {
-        Db::name('auth_security_event')->insert([
+        AuthSecurityEvent::insert([
             'audience' => 'tenant', 'event_type' => $eventType, 'outcome' => $outcome,
             'reason_code' => $reasonCode, 'account_id' => $accountId, 'credential_id' => $credentialId,
             'session_key' => $sessionKey, 'identifier_hmac' => $identifierHmac, 'request_id' => $requestId,
@@ -397,7 +401,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
         ?int $parentTokenId,
         DateTimeImmutable $now,
     ): int {
-        return (int) Db::name('tenant_session_token')->insertGetId([
+        return (int) TenantSessionToken::insertGetId([
             'session_id' => $sessionId,
             'token_type' => $type,
             'token_hash' => $hash,
@@ -409,7 +413,7 @@ final class ThinkPhpTenantAuthRepository implements TenantAuthRepository
 
     private function revokeTokensForSession(int $sessionId, DateTimeImmutable $now): void
     {
-        Db::name('tenant_session_token')->where('session_id', $sessionId)->where('status', 'active')->update([
+        TenantSessionToken::where('session_id', $sessionId)->where('status', 'active')->update([
             'status' => 'revoked', 'revoked_at' => $this->format($now),
         ]);
     }
