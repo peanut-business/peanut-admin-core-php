@@ -4,3 +4,6 @@
 /coverage/
 .DS_Store
 *.log
+
+# Library dependency resolution is local; releases are versioned from composer.json
+/composer.lock
