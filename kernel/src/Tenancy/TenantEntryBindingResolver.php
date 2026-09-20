@@ -97,9 +97,10 @@ final readonly class TenantEntryBindingResolver
                 ->where('binding.client_key', $clientKey)
                 ->field([
                     'binding.tenant_id',
-                    'binding_status' => 'binding.status',
-                    'tenant_code' => 'tenant.code',
-                    'tenant_status' => 'tenant.status',
+                    // ThinkORM 以列名为键、结果别名为值；Host 绑定仍须同时校验绑定与租户状态。
+                    'binding.status' => 'binding_status',
+                    'tenant.code' => 'tenant_code',
+                    'tenant.status' => 'tenant_status',
                 ])
                 ->order('binding.id')
                 ->limit(2)
