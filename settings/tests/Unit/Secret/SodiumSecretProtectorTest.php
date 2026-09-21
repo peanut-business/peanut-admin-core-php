@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Settings\Tests\Unit\Secret;
 
-use PeanutAdmin\Settings\Application\SettingException;
+use PeanutAdmin\Settings\Secret\SecretProtectionException;
 use PeanutAdmin\Settings\Secret\SecretStorageContext;
 use PeanutAdmin\Settings\Secret\SodiumSecretProtector;
 use PHPUnit\Framework\TestCase;
@@ -62,7 +62,7 @@ final class SodiumSecretProtectorTest extends TestCase
                     $differentContext,
                 );
                 self::fail('Expected storage context authentication failure.');
-            } catch (SettingException $exception) {
+            } catch (SecretProtectionException $exception) {
                 self::assertSame('SETTING_SECRET_UNAVAILABLE', $exception->errorCode);
                 self::assertStringNotContainsString('bound-secret', $exception->getMessage());
             }
@@ -104,7 +104,7 @@ final class SodiumSecretProtectorTest extends TestCase
             try {
                 $protector->reveal($ciphertext, $nonce, $keyId, $context);
                 self::fail('Expected secret authentication failure.');
-            } catch (SettingException $exception) {
+            } catch (SecretProtectionException $exception) {
                 self::assertSame('SETTING_SECRET_UNAVAILABLE', $exception->errorCode);
                 self::assertStringNotContainsString('sensitive-value', $exception->getMessage());
                 self::assertStringNotContainsString($keyId, $exception->getMessage());
@@ -148,7 +148,7 @@ final class SodiumSecretProtectorTest extends TestCase
             try {
                 SodiumSecretProtector::fromJson($json, $active);
                 self::fail('Expected invalid key configuration to fail.');
-            } catch (SettingException $exception) {
+            } catch (SecretProtectionException $exception) {
                 self::assertSame('SETTING_SECRET_UNAVAILABLE', $exception->errorCode);
                 self::assertStringNotContainsString($valid, $exception->getMessage());
             }
@@ -167,8 +167,8 @@ final class SodiumSecretProtectorTest extends TestCase
             try {
                 $protector->protect($value, $context);
                 self::fail('Expected invalid plaintext to fail.');
-            } catch (SettingException $exception) {
-                self::assertSame('SETTING_VALUE_INVALID', $exception->errorCode);
+            } catch (SecretProtectionException $exception) {
+                self::assertSame('SETTING_SECRET_VALUE_INVALID', $exception->errorCode);
             }
         }
     }

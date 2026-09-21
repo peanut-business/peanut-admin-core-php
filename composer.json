@@ -23,33 +23,21 @@
   },
   "autoload": {
     "psr-4": {
-      "PeanutAdmin\\ArtifactRevision\\": "artifact-revision/src/",
       "PeanutAdmin\\DataPermission\\": "data-permission/src/",
-      "PeanutAdmin\\EntitlementQuota\\": "entitlement-quota/src/",
       "PeanutAdmin\\FileMedia\\": "file-media/src/",
-      "PeanutAdmin\\ImportExport\\": "import-export/src/",
       "PeanutAdmin\\IntegrationSecurity\\": "integration-security/src/",
       "PeanutAdmin\\Kernel\\": "kernel/src/",
-      "PeanutAdmin\\NotificationSms\\": "notification-sms/src/",
-      "PeanutAdmin\\OpsConsole\\": "ops-console/src/",
-      "PeanutAdmin\\ReferenceCodes\\": "reference-codes/src/",
-      "PeanutAdmin\\Settings\\": "settings/src/",
-      "PeanutAdmin\\TaskJob\\": "task-job/src/",
-      "PeanutAdmin\\Workflow\\": "workflow/src/"
+      "PeanutAdmin\\Settings\\": "settings/src/"
     }
   },
   "autoload-dev": {
     "psr-4": {
-      "PeanutAdmin\\ArtifactRevision\\Tests\\": "artifact-revision/tests/",
       "PeanutAdmin\\DataPermission\\Tests\\": "data-permission/tests/",
-      "PeanutAdmin\\EntitlementQuota\\Tests\\": "entitlement-quota/tests/",
       "PeanutAdmin\\FileMedia\\Tests\\": "file-media/tests/",
       "PeanutAdmin\\Kernel\\Tests\\": "kernel/tests/",
-      "PeanutAdmin\\ReferenceCodes\\Tests\\": "reference-codes/tests/",
       "PeanutAdmin\\Settings\\Tests\\": "settings/tests/",
       "PeanutAdmin\\Testing\\": "testing/src/",
-      "PeanutAdmin\\Testing\\Tests\\": "testing/tests/",
-      "PeanutAdmin\\Workflow\\Tests\\": "workflow/tests/"
+      "PeanutAdmin\\Testing\\Tests\\": "testing/tests/"
     }
   }
 }

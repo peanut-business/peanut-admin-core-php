@@ -7,7 +7,7 @@ namespace PeanutAdmin\Kernel\Host;
 use Closure;
 use InvalidArgumentException;
 use PeanutAdmin\Kernel\Api\ApiException;
-use PeanutAdmin\Kernel\Audit\AuditService;
+use PeanutAdmin\Kernel\Audit\AuditWriter;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 use PeanutAdmin\Kernel\Context\PlatformContext;
@@ -27,7 +27,7 @@ final readonly class ExternalOperationHost
         private PermissionAdapter $permissions,
         private TypedTargetAdapter $targets,
         private IdempotencyService $idempotency,
-        private AuditService $audit,
+        private AuditWriter $audit,
         private ProblemDetailsAdapter $problems,
     ) {}
 

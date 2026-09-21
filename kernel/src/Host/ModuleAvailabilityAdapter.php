@@ -9,14 +9,14 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Context\PlatformContext;
 use PeanutAdmin\Kernel\Module\CompiledModuleRegistry;
 use PeanutAdmin\Kernel\Module\ModuleException;
-use PeanutAdmin\Kernel\Module\ModuleAvailabilityService;
+use PeanutAdmin\Kernel\Module\ModuleAvailability;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 
 final readonly class ModuleAvailabilityAdapter
 {
     public function __construct(
         private CompiledModuleRegistry $registry,
-        private ModuleAvailabilityService $modules,
+        private ModuleAvailability $modules,
     ) {}
 
     public function assertAvailable(

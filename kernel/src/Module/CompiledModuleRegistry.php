@@ -28,4 +28,24 @@ final readonly class CompiledModuleRegistry
             $this->modules,
         );
     }
+
+    public function requireManifest(string $moduleKey): ManifestDocument
+    {
+        foreach ($this->modules as $manifest) {
+            if (($manifest->data['key'] ?? null) === $moduleKey) {
+                return $manifest;
+            }
+        }
+
+        throw new ModuleException('MODULE_NOT_INSTALLED', "Unknown module: {$moduleKey}");
+    }
+
+    /** Required foundations are deployment-managed and never have per-Tenant switches. */
+    public function isRequiredTenantFoundation(string $moduleKey): bool
+    {
+        $manifest = $this->requireManifest($moduleKey);
+
+        return ($manifest->data['lifecycle']['protected'] ?? false) === true
+            && ($manifest->data['tenant']['enableable'] ?? null) === false;
+    }
 }

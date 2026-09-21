@@ -8,31 +8,37 @@ use DateTimeImmutable;
 
 final class TokenIssuer
 {
+    public const CHALLENGE_PREFIX = 'pa_lc_';
+    public const TENANT_ACCESS_PREFIX = 'pa_tat_';
+    public const TENANT_REFRESH_PREFIX = 'pa_trt_';
+    public const PLATFORM_ACCESS_PREFIX = 'pa_pat_';
+    public const PLATFORM_REFRESH_PREFIX = 'pa_prt_';
+
     private const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
     public function challenge(): RawToken
     {
-        return $this->opaque('pa_lc_');
+        return $this->opaque(self::CHALLENGE_PREFIX);
     }
 
     public function tenantAccess(): RawToken
     {
-        return $this->opaque('pa_tat_');
+        return $this->opaque(self::TENANT_ACCESS_PREFIX);
     }
 
     public function tenantRefresh(): RawToken
     {
-        return $this->opaque('pa_trt_');
+        return $this->opaque(self::TENANT_REFRESH_PREFIX);
     }
 
     public function platformAccess(): RawToken
     {
-        return $this->opaque('pa_pat_');
+        return $this->opaque(self::PLATFORM_ACCESS_PREFIX);
     }
 
     public function platformRefresh(): RawToken
     {
-        return $this->opaque('pa_prt_');
+        return $this->opaque(self::PLATFORM_REFRESH_PREFIX);
     }
 
     public function key(DateTimeImmutable $time): string

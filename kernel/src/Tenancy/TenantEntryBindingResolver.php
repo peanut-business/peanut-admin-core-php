@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Tenancy;
 
 use PeanutAdmin\Kernel\Context\TenantSystemContext;
-use PeanutAdmin\Kernel\Persistence\Model\TenantEntryBinding;
 
 final readonly class TenantEntryBindingResolver
 {
@@ -16,6 +15,7 @@ final readonly class TenantEntryBindingResolver
     public function __construct(
         private ?\Closure $defaultSystem = null,
         private bool $bindingsEnabled = true,
+        private ?TenantEntryBindingLookup $lookup = null,
     ) {}
 
     public function loginTenantCode(object $request, string $clientKey, ?string $explicitTenantCode): ?string
@@ -90,38 +90,10 @@ final readonly class TenantEntryBindingResolver
         if (!$this->bindingsEnabled) {
             return null;
         }
-        try {
-            $rows = TenantEntryBinding::alias('binding')
-                ->join('tenant tenant', 'tenant.id = binding.tenant_id')
-                ->where('binding.host', $host)
-                ->where('binding.client_key', $clientKey)
-                ->field([
-                    'binding.tenant_id',
-                    // ThinkORM 以列名为键、结果别名为值；Host 绑定仍须同时校验绑定与租户状态。
-                    'binding.status' => 'binding_status',
-                    'tenant.code' => 'tenant_code',
-                    'tenant.status' => 'tenant_status',
-                ])
-                ->order('binding.id')
-                ->limit(2)
-                ->select()
-                ->toArray();
-        } catch (\Throwable $exception) {
-            throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE', 0, $exception);
-        }
-        if ($rows === []) {
-            return null;
-        }
-        if (count($rows) !== 1) {
+        if ($this->lookup === null) {
             throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
         }
-        $row = $rows[0];
-        $tenantId = (int) ($row['tenant_id'] ?? 0);
-        $tenantCode = trim((string) ($row['tenant_code'] ?? ''));
-        if (($row['binding_status'] ?? null) !== 'active' || ($row['tenant_status'] ?? null) !== 'active' || $tenantId < 1 || $tenantCode === '') {
-            throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
-        }
-        return ['tenant_id' => $tenantId, 'tenant_code' => $tenantCode];
+        return $this->lookup->binding($host, $clientKey);
     }
 
     private static function requestHost(object $request): string

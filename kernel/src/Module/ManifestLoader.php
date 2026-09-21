@@ -21,17 +21,30 @@ final class ManifestLoader
         }
 
         try {
-            $data = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+            $json = (string) file_get_contents($path);
+            $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+            $object = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
             throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid manifest JSON: {$path}");
         }
-        if (!is_array($data) || array_is_list($data)) {
+        if (!is_array($data) || array_is_list($data) || !is_object($object)) {
             throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest root must be an object.');
         }
 
-        $data['catalog'] = $this->loadCatalog($root, $data);
+        $catalog = $this->loadCatalog($root, $data);
+        $data['catalog'] = $catalog;
+        try {
+            $object->catalog = json_decode(
+                json_encode($catalog, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                false,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+        } catch (JsonException $exception) {
+            throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest catalog is not valid JSON.');
+        }
 
-        return ManifestDocument::fromArray($root, $data);
+        return ManifestDocument::fromDecodedJson($root, $data, $object);
     }
 
     /**

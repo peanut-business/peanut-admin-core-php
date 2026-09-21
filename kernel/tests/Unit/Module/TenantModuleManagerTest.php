@@ -77,6 +77,34 @@ final class TenantModuleManagerTest extends TestCase
         return new CompiledModuleRegistry([$target, $workItem], [], [], [], hash('sha256', $target->digest . '|' . $workItem->digest));
     }
 
+    public function testProtectedFoundationCannotBeEnabledOrDisabledAsAnOptionalTenantModule(): void
+    {
+        $manifest = $this->manifest('example.target');
+        $manifest['tenant']['enableable'] = false;
+        $manifest['lifecycle'] = ['protected' => true];
+        $document = ManifestDocument::fromArray('/tmp/example-target', $manifest);
+        $repository = new InMemoryTenantModuleMutationRepository();
+        $manager = new TenantModuleManager(
+            new CompiledModuleRegistry([$document], [], [], [], $document->digest),
+            $repository,
+            new class implements TenantModuleConfigValidator {
+                public function assertValid(ManifestDocument $manifest, array $config): void {}
+            },
+        );
+        foreach (['enable', 'disable'] as $operation) {
+            try {
+                $now = new DateTimeImmutable('2026-07-16T12:00:00Z');
+                $operation === 'enable'
+                    ? $manager->enable(9, 'example.target', [], $now)
+                    : $manager->disable(9, 'example.target', $now);
+                self::fail('A protected foundation must reject tenant lifecycle changes.');
+            } catch (ModuleException $exception) {
+                self::assertSame('MODULE_LIFECYCLE_PROTECTED', $exception->errorCode);
+            }
+        }
+        self::assertSame([], $repository->records);
+    }
+
     /**
      * @param list<string> $requires
      * @return array<string, mixed>
@@ -85,7 +113,7 @@ final class TenantModuleManagerTest extends TestCase
     {
         return [
             'key' => $key,
-            'tenant' => ['requires' => $requires],
+            'tenant' => ['enableable' => true, 'requires' => $requires],
         ];
     }
 }

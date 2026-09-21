@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Settings\Secret;
 
-use PeanutAdmin\Settings\Application\SettingException;
-
 final readonly class SecretStorageContext
 {
     private const AAD_PREFIX = 'peanut-admin/settings/secret/v2';
@@ -88,11 +86,8 @@ final readonly class SecretStorageContext
         }
     }
 
-    private static function unavailable(): SettingException
+    private static function unavailable(): SecretProtectionException
     {
-        return SettingException::unavailable(
-            'SETTING_SECRET_UNAVAILABLE',
-            'The setting secret protector is unavailable.',
-        );
+        return SecretProtectionException::unavailable();
     }
 }

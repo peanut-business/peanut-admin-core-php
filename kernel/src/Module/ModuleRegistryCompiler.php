@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Module;
 
-use PeanutAdmin\Kernel\Authorization\CorePermissionCatalog;
-
 final readonly class ModuleRegistryCompiler
 {
     private const CORE_CONDITIONS = [
@@ -21,6 +19,8 @@ final readonly class ModuleRegistryCompiler
      * @param list<string> $frontendComponents
      * @param list<string> $reservedTables
      * @param non-empty-list<string> $registeredClientKeys
+     * @param list<string> $reservedPermissions Authoritative host-owned permission keys.
+     * @param array<string,string> $reservedTableOwners Explicit owners allowed to retain historical business tables.
      */
     public function __construct(
         private ManifestSchemaValidator $schemaValidator,
@@ -31,6 +31,8 @@ final readonly class ModuleRegistryCompiler
         private ModuleHostLayout $layout,
         private array $reservedTables,
         private array $registeredClientKeys,
+        private array $reservedPermissions,
+        private array $reservedTableOwners = [],
     ) {}
 
     /** @param list<ManifestDocument> $documents */
@@ -62,7 +64,7 @@ final readonly class ModuleRegistryCompiler
         $targetOwners = [];
         $tableOwners = [];
         $permissionOwners = array_fill_keys(
-            [...CorePermissionCatalog::TENANT, ...CorePermissionCatalog::PLATFORM],
+            $this->reservedPermissions,
             'core',
         );
         $conditionOwners = array_fill_keys(self::CORE_CONDITIONS, 'core');
@@ -93,8 +95,12 @@ final readonly class ModuleRegistryCompiler
                 if (!is_string($table) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $table) !== 1) {
                     throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid owned table in {$key}.");
                 }
-                if (in_array($table, $this->reservedTables, true)) {
+                if (in_array($table, $this->reservedTables, true)
+                    && ($this->reservedTableOwners[$table] ?? null) !== $key) {
                     throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Reserved table cannot be owned by {$key}: {$table}");
+                }
+                if (isset($tableOwners[$table])) {
+                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Duplicate table ownership: {$table}");
                 }
                 $this->claim($tableOwners, $table, $key, 'table');
             }

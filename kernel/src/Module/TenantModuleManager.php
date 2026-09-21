@@ -30,6 +30,7 @@ final readonly class TenantModuleManager
             throw new ModuleException('MODULE_TENANT_DISABLED', 'Only an active tenant can enable a module.');
         }
         $manifest = $this->manifest($moduleKey);
+        $this->assertTenantManageable($manifest);
         $installation = $this->repository->installation($moduleKey);
         if ($installation === null) {
             throw new ModuleException('MODULE_NOT_INSTALLED', "Module {$moduleKey} is not installed.");
@@ -38,6 +39,16 @@ final readonly class TenantModuleManager
             throw new ModuleException('MODULE_INSTALLATION_FAILED', "Module {$moduleKey} is not active.");
         }
         foreach ($this->requires($manifest) as $required) {
+            if ($this->registry->isRequiredTenantFoundation($required)) {
+                $requiredInstallation = $this->repository->installation($required);
+                if ($requiredInstallation === null) {
+                    throw new ModuleException('MODULE_DEPENDENCY_MISSING', "Tenant requires installed foundation {$required}.");
+                }
+                if ($requiredInstallation->status !== 'active') {
+                    throw new ModuleException('MODULE_INSTALLATION_FAILED', "Required foundation {$required} is not active.");
+                }
+                continue;
+            }
             $record = $this->repository->tenantModule($tenantId, $required);
             if ($record === null || !$record->isEffective($now)) {
                 throw new ModuleException('MODULE_DEPENDENCY_MISSING', "Tenant requires enabled module {$required}.");
@@ -63,6 +74,7 @@ final readonly class TenantModuleManager
 
     public function disable(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord
     {
+        $this->assertTenantManageable($this->manifest($moduleKey));
         foreach ($this->registry->modules as $candidate) {
             if (!in_array($moduleKey, $this->requires($candidate), true)) {
                 continue;
@@ -86,6 +98,13 @@ final readonly class TenantModuleManager
             }
         }
         throw new ModuleException('MODULE_NOT_INSTALLED', "Unknown module: {$moduleKey}");
+    }
+
+    private function assertTenantManageable(ManifestDocument $manifest): void
+    {
+        if (($manifest->data['tenant']['enableable'] ?? false) !== true) {
+            throw new ModuleException('MODULE_LIFECYCLE_PROTECTED', 'This required module cannot be changed through tenant enable/disable.');
+        }
     }
 
     private function key(ManifestDocument $manifest): string

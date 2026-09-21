@@ -5,5 +5,5 @@
 .DS_Store
 *.log
 
-# Library dependency resolution is local; releases are versioned from composer.json
+# Library dependency resolution is local; Composer versions come from Git refs.
 /composer.lock

@@ -137,7 +137,13 @@ final readonly class ModuleBoundaryChecker
             }
             foreach ($this->tableCandidates($text) as $table) {
                 $owner = $this->registry->ownedTableOwners[$table] ?? null;
-                if ($owner !== $moduleKey && !$this->isDeclaredForeignKeyReference($path, $text, $table)) {
+                if ($owner !== $moduleKey && !$this->isDeclaredForeignKeyReference(
+                    $path,
+                    $text,
+                    $table,
+                    $owner,
+                    $dependencies,
+                )) {
                     throw new ModuleException(
                         'MODULE_REGISTRY_CONFLICT',
                         "{$path} references table {$table} owned by " . ($owner ?? 'no registered module') . '.',
@@ -211,10 +217,28 @@ final readonly class ModuleBoundaryChecker
         return str_starts_with(strtolower($reference) . '\\', strtolower($namespace));
     }
 
-    private function isDeclaredForeignKeyReference(string $path, string $literal, string $table): bool
+    /** @param array<string, true> $dependencies */
+    private function isDeclaredForeignKeyReference(
+        string $path,
+        string $literal,
+        string $table,
+        ?string $owner,
+        array $dependencies,
+    ): bool
     {
-        return str_contains($path, DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR)
-            && str_contains($literal, "REFERENCES `{$table}`");
+        $normalizedPath = strtolower(str_replace('\\', '/', $path));
+        $referencePattern = '/\bREFERENCES\s+`' . preg_quote($table, '/') . '`/i';
+        $withoutDeclaredReferences = preg_replace($referencePattern, '', $literal);
+
+        return $owner !== null
+            && isset($dependencies[$owner])
+            && str_contains($normalizedPath, '/database/')
+            && is_string($withoutDeclaredReferences)
+            && $withoutDeclaredReferences !== $literal
+            && preg_match(
+                '/(?<![a-z0-9_])' . preg_quote($table, '/') . '(?![a-z0-9_])/i',
+                $withoutDeclaredReferences,
+            ) !== 1;
     }
 
     /** @return list<string> */
@@ -225,7 +249,7 @@ final readonly class ModuleBoundaryChecker
             $this->managedTablePrefixes,
         ));
         preg_match_all(
-            '/(?<![a-z0-9_])(?:' . $prefixPattern . ')[a-z0-9_]*(?![a-z0-9_])/D',
+            '/(?<![a-z0-9_])(?:' . $prefixPattern . ')[a-z0-9_]*[a-z0-9](?![a-z0-9_])/D',
             $literal,
             $matches,
         );

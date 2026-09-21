@@ -302,6 +302,23 @@ final class ModuleRegistryCompilerTest extends TestCase
         });
     }
 
+    public function testHistoricalTableCanOnlyBeClaimedOnceByItsExplicitOwner(): void
+    {
+        $compiler = $this->compiler(
+            reservedTables: ['pa_tenant'],
+            reservedTableOwners: ['pa_tenant' => 'example.target'],
+        );
+        self::assertSame(['example.target'], $compiler->compile([
+            $this->manifest('example.target', ownedTables: ['pa_tenant']),
+        ])->moduleKeys());
+        $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($compiler): void {
+            $compiler->compile([$this->manifest('example.other', ownedTables: ['pa_tenant'])]);
+        });
+        $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($compiler): void {
+            $compiler->compile([$this->manifest('example.target', ownedTables: ['pa_tenant', 'pa_tenant'])]);
+        });
+    }
+
     public function testCompilerRejectsResourceProviderOwnedByAnotherModule(): void
     {
         $this->expectModuleCode('MODULE_CONTRACT_MISSING', function (): void {
@@ -399,6 +416,7 @@ final class ModuleRegistryCompilerTest extends TestCase
         ?ModuleHostLayout $layout = null,
         array $reservedTables = [],
         array $registeredClientKeys = ['admin-web', 'platform-web'],
+        array $reservedTableOwners = [],
     ): ModuleRegistryCompiler {
         $available = $availableContracts ?? [
             'provider.module',
@@ -446,6 +464,8 @@ final class ModuleRegistryCompilerTest extends TestCase
             $layout ?? $this->referenceLayout(),
             $reservedTables,
             $registeredClientKeys,
+            ['core.member.read'],
+            $reservedTableOwners,
         );
     }
 

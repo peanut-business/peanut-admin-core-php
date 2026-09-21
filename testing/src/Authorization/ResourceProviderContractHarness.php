@@ -23,6 +23,7 @@ final readonly class ResourceProviderContractHarness
         private TenantContext $context,
         private AuthorizationSqlTrace $trace,
         private string $resourceKey = 'fixture.record',
+        private ThinkPhpQueryConstraintApplier $constraints = new ThinkPhpQueryConstraintApplier(),
     ) {}
 
     /**
@@ -207,7 +208,7 @@ final readonly class ResourceProviderContractHarness
         ?string $namePrefix = null,
     ): Query {
         $query = $this->query('fixture_record')->alias('record');
-        (new ThinkPhpQueryConstraintApplier())->apply($query, $this->engine->queryConstraint(
+        $this->constraints->apply($query, $this->engine->queryConstraint(
             $this->context,
             $this->resourceKey,
             $operation,

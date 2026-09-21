@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PeanutAdmin\Settings\Secret;
 
 use JsonException;
-use PeanutAdmin\Settings\Application\SettingException;
 use Throwable;
 
 final readonly class SodiumSecretProtector implements SecretProtector
@@ -57,7 +56,7 @@ final readonly class SodiumSecretProtector implements SecretProtector
     public function protect(string $plaintext, SecretStorageContext $context): array
     {
         if ($plaintext === '' || strlen($plaintext) > 4096) {
-            throw SettingException::invalid('SETTING_VALUE_INVALID', 'A secret setting requires a non-empty bounded value.');
+            throw SecretProtectionException::invalidValue();
         }
         try {
             $nonce = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES);
@@ -107,12 +106,9 @@ final readonly class SodiumSecretProtector implements SecretProtector
         return $plaintext;
     }
 
-    private static function unavailable(): SettingException
+    private static function unavailable(): SecretProtectionException
     {
-        return SettingException::unavailable(
-            'SETTING_SECRET_UNAVAILABLE',
-            'The setting secret protector is unavailable.',
-        );
+        return SecretProtectionException::unavailable();
     }
 
     private static function hasDuplicateKeys(string $json): bool
