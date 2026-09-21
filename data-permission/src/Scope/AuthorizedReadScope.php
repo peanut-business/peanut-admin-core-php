@@ -24,11 +24,23 @@ final readonly class AuthorizedReadScope
         public string $action,
         public array $sources,
         public string $revision,
+        public array $requestedFields = [],
     ) {
         if (preg_match('/^[a-z][a-z0-9.-]{2,159}$/D', $capability) !== 1
             || preg_match('/^[a-z][a-z0-9.-]{1,63}$/D', $action) !== 1
             || $sources === [] || !array_is_list($sources) || $revision === '') {
             throw new \InvalidArgumentException('READ_SCOPE_INVALID');
+        }
+        if (!array_is_list($requestedFields)) {
+            throw new \InvalidArgumentException('READ_SCOPE_INVALID');
+        }
+        $requested = [];
+        foreach ($requestedFields as $field) {
+            if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $field) !== 1
+                || isset($requested[$field])) {
+                throw new \InvalidArgumentException('READ_SCOPE_INVALID');
+            }
+            $requested[$field] = true;
         }
         $seen = [];
         foreach ($sources as $source) {
@@ -36,6 +48,9 @@ final readonly class AuthorizedReadScope
                 throw new \InvalidArgumentException('READ_SCOPE_INVALID');
             }
             $seen[$source->tenantId] = true;
+            if (array_diff($requestedFields, $source->fields) !== []) {
+                throw new \InvalidArgumentException('READ_SCOPE_INVALID');
+            }
         }
     }
 
