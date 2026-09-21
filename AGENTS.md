@@ -1,13 +1,15 @@
-# Peanut Admin PHP Core development entry
+# peanut-admin-core-php development entry
 
-This repository owns the PHP technical kernel, Scope and module mechanisms, and ThinkPHP integration. Complete account/organization/file/task business features belong to the application repository's official modules. Do not import application business implementations into Core.
+PHP technical kernel, Scope, module mechanisms and ThinkPHP integration. Complete business services stay in the application modules. Do not import Code into Core.
 
 ## Mandatory documented rules
 
-The single project rule source is the authorized `peanut-business/peanut-admin-project` checkout. Before edits, resolve its actual path and read `AGENTS.md`, `project-rules/document-execution.md`, `project-rules/execution.md`, `project-rules/rule-index.json`, and the applicable source sections. In linked worktrees, verify the Git common directory and workspace mapping instead of assuming that `../` is the Project checkout.
+Resolve the actual authorized peanut-admin-project checkout; worktrees need Git common-dir/workspace mapping, not a guessed ../ path. Read its AGENTS, project-rules/document-execution.md, execution.md and applicable indexed sections. Missing authoritative rules means report and safe read-only inspection, not guessed implementation.
 
-Use Project's `scripts/docs-governance check` / `plan` and completed-receipt `verify` as documented. Do not copy private project documents or customer data into this public repository. If the authoritative checkout is unavailable, report the problem and do only safe read-only inspection; do not reconstruct policy from memory.
+Use Project `python3 scripts/docs-governance check`; optional `read --areas <areas>` locates sources. State relevant rules, changes, actual tests and untested items in the task/commit. No mandatory JSON reading attestations or self-certified compliance receipts. Real behavior is verified by tests and review, not metadata.
 
-Suspected errors or conflicts in effective rules must be presented to the user with evidence and a proposed change BEFORE altering the rule or implementing a conflicting result. Pause the affected slice, not unrelated work. Never weaken requirements or tests simply to obtain a pass. A proposal marked `reviewed_not_rejected` is not approved for implementation. Deletion candidates require explicit confirmation.
+Effective rules suspected wrong must be reported to the user BEFORE changing them or implementing conflicting behavior. Pause affected work only. APP-R01—APP-R17 remain reviewed but not approved as a group; declaration-style xxClass is a design, not an existing resolver.
 
-Develop on isolated feature worktrees, integrate validated work into `dev`, and push without rewriting history. `main`, tags, formal packages, releases, production and customer-data operations require their own authorization. Keep existing license/provenance and migration identities intact. A docs-only bootstrap change does not require repinning application dependency locks or rerunning unrelated product tests.
+User authorized confirmed obsolete/duplicate documentation and unused one-time tool cleanup after useful rules/open issues are absorbed. Delete originals and dead links, not history/redirect stubs. Preserve licenses, database migrations, live test fixtures, customer data and others' worktrees. Never weaken tests to hide regressions.
+
+Develop on isolated worktrees, integrate validated slices to dev without force and verify remote refs. main, tags, formal packages, production and customer data require separate authorization. Do not copy private Project rules into public repositories. Documentation-only commits do not require repinning runtime dependencies or unrelated product tests.
