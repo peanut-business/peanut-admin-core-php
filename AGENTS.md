@@ -1,15 +1,11 @@
-# peanut-admin-core-php development entry
+# peanut-admin-core-php
 
-PHP technical kernel, Scope, module mechanisms and ThinkPHP integration. Complete business services stay in the application modules. Do not import Code into Core.
+PHP technical kernel, Scope, module mechanisms and ThinkPHP integration; no complete business services or reverse imports from Code.
 
-## Mandatory documented rules
+Before editing, locate the authorized peanut-admin-project using Git common-dir/repos mapping; do not assume worktrees are adjacent. Read its AGENTS, execution protocol, STATUS/PLAN, and all relevant rule sections. Approval/implementation state lives only in Project, not copied here. Unavailable authoritative rules: report and limit to safe read-only inspection.
 
-Resolve the actual authorized peanut-admin-project checkout; worktrees need Git common-dir/workspace mapping, not a guessed ../ path. Read its AGENTS, project-rules/document-execution.md, execution.md and applicable indexed sections. Missing authoritative rules means report and safe read-only inspection, not guessed implementation.
+Use Project `docs-governance read --areas <areas>` to locate rules or `read --ids <ids> --content` for exact text; run `check` and affected behavior tests. Do not load entire handbook/API/migration data by default or file self-certified reading receipts. Rules suspected wrong: report evidence/impact and await the user's decision before changing semantics; pause only affected work.
 
-Use Project `python3 scripts/docs-governance check`; optional `read --areas <areas>` locates sources. State relevant rules, changes, actual tests and untested items in the task/commit. No mandatory JSON reading attestations or self-certified compliance receipts. Real behavior is verified by tests and review, not metadata.
+Isolated worktrees; preserve concurrent work; normal validated integration/push to dev, verify remote refs; never force/rewrite history. main, formal publication/deployment, real customer/financial data, paid plans, visibility and license changes require applicable authorization. No private rules, credentials or customer data in public repos.
 
-Effective rules suspected wrong must be reported to the user BEFORE changing them or implementing conflicting behavior. Pause affected work only. APP-R01—APP-R17 remain reviewed but not approved as a group; declaration-style xxClass is a design, not an existing resolver.
-
-User authorized confirmed obsolete/duplicate documentation and unused one-time tool cleanup after useful rules/open issues are absorbed. Delete originals and dead links, not history/redirect stubs. Preserve licenses, database migrations, live test fixtures, customer data and others' worktrees. Never weaken tests to hide regressions.
-
-Develop on isolated worktrees, integrate validated slices to dev without force and verify remote refs. main, tags, formal packages, production and customer data require separate authorization. Do not copy private Project rules into public repositories. Documentation-only commits do not require repinning runtime dependencies or unrelated product tests.
+Absorb useful rules/open issues before deleting confirmed duplicates or unused one-time tools; no archive/redirect stubs. Preserve live tests, migrations, licenses and others' resources. Docs-only changes neither prove runtime acceptance nor require repinning packages or unrelated product tests.
