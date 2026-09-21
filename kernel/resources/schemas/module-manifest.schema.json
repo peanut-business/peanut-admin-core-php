@@ -77,7 +77,17 @@
       "properties": {
         "entry": { "$ref": "#/$defs/relativePath" },
         "routes": { "$ref": "#/$defs/relativePath" },
-        "locales": { "$ref": "#/$defs/relativePath" }
+        "locales": { "$ref": "#/$defs/relativePath" },
+        "clients": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "admin-web": { "$ref": "#/$defs/frontendClient" },
+            "platform-web": { "$ref": "#/$defs/frontendClient" },
+            "pc-web": { "$ref": "#/$defs/frontendClient" },
+            "uniapp": { "$ref": "#/$defs/frontendClient" }
+          }
+        }
       }
     },
     "database": {
@@ -256,6 +266,14 @@
       "type": "string",
       "minLength": 1,
       "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "frontendClient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry"],
+      "properties": {
+        "entry": { "$ref": "#/$defs/relativePath" }
+      }
     }
   }
 }
