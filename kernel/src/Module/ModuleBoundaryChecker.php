@@ -47,7 +47,12 @@ final readonly class ModuleBoundaryChecker
             $contracts = is_array($manifest->data['contracts'] ?? null) ? $manifest->data['contracts'] : [];
             foreach ($contracts['exports'] ?? [] as $contract) {
                 if (is_string($contract)) {
-                    $exportOwners[ltrim($contract, '\\')] = $moduleKey;
+                    $name = ltrim($contract, '\\');
+                    $existingOwner = $exportOwners[$name] ?? null;
+                    if ($existingOwner !== null && $existingOwner !== $moduleKey) {
+                        throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Contract {$name} has multiple owners.");
+                    }
+                    $exportOwners[$name] = $moduleKey;
                 }
             }
         }
@@ -120,7 +125,10 @@ final readonly class ModuleBoundaryChecker
             if (in_array($type, [T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
                 $reference = ltrim($text, '\\');
                 $referenceOwner = $this->namespaceOwner($reference, $namespaceOwners);
-                if ($this->isWithinNamespace($reference, $this->layout->backendNamespaceRoot())
+                // Registered package prefixes can live outside the legacy host namespace root.
+                // Their cross-module references still require an explicit dependency and export.
+                if (($referenceOwner !== null
+                        || $this->isWithinNamespace($reference, $this->layout->backendNamespaceRoot()))
                     && $referenceOwner !== $moduleKey) {
                     $this->assertCrossModuleContract(
                         $path,
@@ -165,7 +173,9 @@ final readonly class ModuleBoundaryChecker
         array $dependencies,
         array $exportOwners,
     ): void {
-        if ($owner === null || $owner === $moduleKey || !str_contains($reference, '\\contracts\\')) {
+        if ($owner === null || $owner === $moduleKey
+            || (!$this->layout->hasExplicitBackendNamespace(ModuleKey::fromString($owner))
+                && !str_contains($reference, '\\contracts\\'))) {
             throw new ModuleException(
                 'MODULE_REGISTRY_CONFLICT',
                 "{$path} imports another module outside its registered contracts API.",
@@ -189,12 +199,15 @@ final readonly class ModuleBoundaryChecker
     private function registerNamespaceOwner(array &$namespaceOwners, string $namespace, string $moduleKey): void
     {
         $normalized = strtolower($namespace);
-        $existingOwner = $namespaceOwners[$normalized] ?? null;
-        if ($existingOwner !== null && $existingOwner !== $moduleKey) {
-            throw new ModuleException(
-                'MODULE_REGISTRY_CONFLICT',
-                "Module namespace {$namespace} is shared by {$existingOwner} and {$moduleKey}.",
-            );
+        foreach ($namespaceOwners as $existingNamespace => $existingOwner) {
+            if ($existingOwner !== $moduleKey
+                && (str_starts_with($normalized, $existingNamespace)
+                    || str_starts_with($existingNamespace, $normalized))) {
+                throw new ModuleException(
+                    'MODULE_REGISTRY_CONFLICT',
+                    "Module namespace {$namespace} overlaps an owner {$existingOwner}.",
+                );
+            }
         }
         $namespaceOwners[$normalized] = $moduleKey;
     }
