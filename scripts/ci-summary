@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+candidate=''
+declare -a checks=()
+for argument in "$@"; do
+  case "$argument" in
+    --candidate=*) candidate="${argument#--candidate=}" ;;
+    --check=*) checks+=("${argument#--check=}") ;;
+    *) echo "ci-summary: unknown argument: $argument" >&2; exit 2 ;;
+  esac
+done
+[[ "$candidate" =~ ^[0-9a-f]{40}$ && "${#checks[@]}" -gt 0 ]] || {
+  echo 'ci-summary: full candidate SHA and at least one check are required' >&2
+  exit 2
+}
+
+summary="${GITHUB_STEP_SUMMARY:-}"
+status=0
+write() {
+  printf '%s\n' "$1"
+  [[ -z "$summary" ]] || printf '%s\n' "$1" >>"$summary"
+}
+write '## PHP Core CI summary'
+write ''
+write "Candidate: \`${candidate}\`"
+write ''
+write '| Check | Result | Expected | Decision |'
+write '| --- | --- | --- | --- |'
+for record in "${checks[@]}"; do
+  IFS=':' read -r name result expected extra <<<"$record"
+  [[ -n "$name" && -n "$result" && -n "$expected" && -z "${extra:-}" ]] || {
+    echo "ci-summary: invalid check record: $record" >&2
+    exit 2
+  }
+  case "$result" in success|failure|cancelled|skipped) ;; *) echo "ci-summary: invalid result: $result" >&2; exit 2 ;; esac
+  decision='accepted'
+  if [[ "$expected" == 'false' && "$result" == 'skipped' ]]; then
+    decision='not applicable by classifier'
+  elif [[ "$expected" == 'false' && "$result" == 'success' ]]; then
+    decision='extra successful check'
+  elif [[ "$expected" == 'true' || "$expected" == 'required' ]]; then
+    if [[ "$result" != 'success' ]]; then
+      decision='required check did not succeed'
+      status=1
+    fi
+  else
+    decision='unexpected result'
+    status=1
+  fi
+  write "| ${name} | ${result} | ${expected} | ${decision} |"
+done
+write ''
+if [[ "$status" -ne 0 ]]; then
+  write 'PHP-CORE-CI-SUMMARY-001 failed.'
+  exit "$status"
+fi
+write 'PHP-CORE-CI-SUMMARY-001 passed.'

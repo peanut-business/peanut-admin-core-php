@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$ROOT"
+candidate="$(git rev-parse HEAD^{commit})"
+tree="$(git rev-parse HEAD^{tree})"
+php_files=0
+while IFS= read -r -d '' source; do
+  php -l "$source" >/dev/null
+  php_files=$((php_files + 1))
+done < <(git ls-files -z '*.php')
+[[ "$php_files" -gt 0 ]] || { echo 'ci-check: zero PHP source files discovered' >&2; exit 1; }
+
+test_roots=(data-permission/tests file-media/tests kernel/tests settings/tests testing/tests)
+for root in "${test_roots[@]}"; do
+  [[ -d "$root" ]] || { echo "ci-check: missing test root: $root" >&2; exit 1; }
+done
+discovery="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/peanut-phpunit-list.XXXXXX")"
+trap 'rm -f -- "$discovery"' EXIT
+set +e
+php vendor/bin/phpunit --no-configuration --bootstrap vendor/autoload.php \
+  --list-tests "${test_roots[@]}" >"$discovery" 2>&1
+discovery_status=$?
+set -e
+cat "$discovery"
+test_count="$(grep -c '^ - ' "$discovery" || true)"
+[[ "$discovery_status" -eq 0 && "$test_count" -gt 0 ]] || {
+  echo 'ci-check: PHPUnit discovery failed or selected zero tests' >&2
+  exit 1
+}
+
+php vendor/bin/phpunit --no-configuration --bootstrap vendor/autoload.php \
+  --fail-on-empty-test-suite --fail-on-risky "${test_roots[@]}"
+"$ROOT/scripts/verify-consumer"
+
+printf 'PHP-CORE-CI-001 passed: candidate=%s tree=%s php_files=%d discovered_tests=%d\n' \
+  "$candidate" "$tree" "$php_files" "$test_count"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  printf '## PHP Core qualification\n\n- Candidate: `%s`\n- Tree: `%s`\n- PHP files linted: %d\n- PHPUnit tests discovered: %d\n- Result: **passed**\n' \
+    "$candidate" "$tree" "$php_files" "$test_count" >>"$GITHUB_STEP_SUMMARY"
+fi

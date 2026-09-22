@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+candidate="$(git -C "$ROOT" rev-parse HEAD^{commit})"
+consumer="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/peanut-php-core-consumer.XXXXXX")"
+succeeded=0
+cleanup() {
+  if [[ "$succeeded" -eq 1 ]]; then
+    rm -rf -- "$consumer"
+  else
+    printf 'PHP Core consumer retained for diagnosis: %s\n' "$consumer" >&2
+  fi
+}
+trap cleanup EXIT
+
+composer --working-dir="$consumer" init --name=peanut-admin/ci-consumer --no-interaction >/dev/null
+composer --working-dir="$consumer" config repositories.core path "$ROOT"
+COMPOSER_MIRROR_PATH_REPOS=1 composer --working-dir="$consumer" require \
+  'peanut-admin/core:@dev' --no-interaction --no-progress --prefer-dist --no-scripts
+
+installed="$consumer/vendor/peanut-admin/core"
+[[ -d "$installed" && ! -L "$installed" ]] || {
+  echo 'verify-consumer: Core package was not installed as an isolated copy' >&2
+  exit 1
+}
+php -r '
+require $argv[1];
+$classes = array_slice($argv, 2);
+foreach ($classes as $class) {
+    if (!class_exists($class)) {
+        fwrite(STDERR, "missing public class: {$class}\n");
+        exit(1);
+    }
+}
+printf("PHP-CORE-CONSUMER-001 passed: %d public package namespaces\n", count($classes));
+' "$consumer/vendor/autoload.php" \
+  'PeanutAdmin\Kernel\Package' \
+  'PeanutAdmin\DataPermission\Package' \
+  'PeanutAdmin\FileMedia\Package' \
+  'PeanutAdmin\IntegrationSecurity\Webhook\WebhookDestination' \
+  'PeanutAdmin\Settings\Secret\SecretStorageContext'
+
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  printf -- '- Clean Composer consumer: passed (5 public namespaces)\n- Candidate: `%s`\n' "$candidate" >>"$GITHUB_STEP_SUMMARY"
+fi
+succeeded=1

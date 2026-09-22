@@ -6,7 +6,7 @@ namespace PeanutAdmin\Testing\Tests\Unit\Workflow;
 
 use LogicException;
 use PDO;
-use PeanutAdmin\App\Tests\Support\ThinkPhpTestConnection;
+use PeanutAdmin\Testing\Tests\Support\ThinkPhpTestConnection;
 use PeanutAdmin\Testing\Workflow\WorkflowAtomicityContractHarness;
 use PHPUnit\Framework\TestCase;
 use think\facade\Db;

@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: php-core-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runtime: ${{ steps.classify.outputs.runtime }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      baseline: ${{ steps.classify.outputs.baseline }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify impact without empty-green fallback
+        id: classify
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ '${{ github.event_name }}' == 'workflow_dispatch' ]]; then
+            echo 'runtime=true' >> "$GITHUB_OUTPUT"
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+            echo 'baseline=manual-full' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            base='${{ github.event.pull_request.base.sha }}'
+            head='${{ github.event.pull_request.head.sha }}'
+          else
+            base='${{ github.event.before }}'
+            head='${{ github.sha }}'
+          fi
+          changed="$(mktemp)"
+          if ! git rev-parse --verify "${base}^{commit}" >/dev/null 2>&1 \
+            || ! git rev-parse --verify "${head}^{commit}" >/dev/null 2>&1; then
+            echo 'runtime=true' >> "$GITHUB_OUTPUT"
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+            echo 'baseline=fallback-full' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            if ! git diff --name-only --no-renames "${base}...${head}" > "$changed"; then
+              echo 'runtime=true' >> "$GITHUB_OUTPUT"
+              echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+              echo 'baseline=fallback-full' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git diff --check "${base}...${head}"
+          else
+            if ! git diff --name-only --no-renames "$base" "$head" > "$changed"; then
+              echo 'runtime=true' >> "$GITHUB_OUTPUT"
+              echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+              echo 'baseline=fallback-full' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git diff --check "$base" "$head"
+          fi
+          [[ -s "$changed" ]] || { echo 'classification produced zero changed paths' >&2; exit 1; }
+          runtime=false
+          while IFS= read -r path; do
+            case "$path" in
+              *.md|LICENSE|*/LICENSE|NOTICE|CHANGELOG.md) ;;
+              *) runtime=true ;;
+            esac
+          done < "$changed"
+          echo "runtime=${runtime}" >> "$GITHUB_OUTPUT"
+          if [[ "$runtime" == true ]]; then echo 'docs_only=false' >> "$GITHUB_OUTPUT"; else echo 'docs_only=true' >> "$GITHUB_OUTPUT"; fi
+          echo 'baseline=explicit' >> "$GITHUB_OUTPUT"
+
+  core:
+    name: PHP Core qualification
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:2.10.2
+          coverage: none
+      - uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: ${{ runner.os }}-php83-${{ hashFiles('composer.json') }}
+      - name: Validate and install public package dependencies
+        run: |
+          composer validate --strict
+          composer install --no-interaction --no-progress --prefer-dist --no-scripts
+      - name: Run complete Core and clean-consumer qualification
+        run: ./scripts/ci-check
+
+  docs:
+    name: Documentation hygiene
+    needs: changes
+    if: needs.changes.outputs.docs_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: test -s README.md && test -s LICENSE
+
+  summary:
+    name: CI summary
+    if: always()
+    needs: [changes, core, docs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce selected results
+        run: |
+          ./scripts/ci-summary \
+            --candidate='${{ github.sha }}' \
+            --check='changes:${{ needs.changes.result }}:required' \
+            --check='core:${{ needs.core.result }}:${{ needs.changes.outputs.runtime || 'false' }}' \
+            --check='docs:${{ needs.docs.result }}:${{ needs.changes.outputs.docs_only || 'false' }}'
