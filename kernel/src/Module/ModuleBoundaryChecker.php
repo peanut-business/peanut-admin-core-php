@@ -237,8 +237,7 @@ final readonly class ModuleBoundaryChecker
         string $table,
         ?string $owner,
         array $dependencies,
-    ): bool
-    {
+    ): bool {
         $normalizedPath = strtolower(str_replace('\\', '/', $path));
         $referencePattern = '/\bREFERENCES\s+`' . preg_quote($table, '/') . '`/i';
         $withoutDeclaredReferences = preg_replace($referencePattern, '', $literal);

@@ -87,8 +87,7 @@ final readonly class IdempotencyService
         array $responseBody,
         ?string $resourceType = null,
         ?string $resourceId = null,
-    ): void
-    {
+    ): void {
         $this->assertStorageMode();
         $this->storeOutcome(
             $this->tenantQuery($scope),
@@ -108,8 +107,7 @@ final readonly class IdempotencyService
         array $responseBody,
         ?string $resourceType = null,
         ?string $resourceId = null,
-    ): void
-    {
+    ): void {
         $this->assertStorageMode();
         $this->storeOutcome(
             PlatformIdempotencyRecord::where([]),

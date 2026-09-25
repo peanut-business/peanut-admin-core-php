@@ -14,9 +14,7 @@ use think\db\connector\Sqlite;
 
 final class ThinkPhpTestConnection
 {
-    private function __construct()
-    {
-    }
+    private function __construct() {}
 
     public static function fromPdo(PDO $pdo): PDOConnection
     {
