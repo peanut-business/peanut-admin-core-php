@@ -8,16 +8,6 @@ use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Api\TypedTargetInput;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Authorization\DataPermissionAdapter;
-use PeanutAdmin\Kernel\Context\RequestedTargetSet;
-
-final readonly class TypedTargetAuthorization
-{
-    /** @param list<RequestedTargetSet> $targets */
-    public function __construct(
-        public ?object $queryConstraint,
-        public array $targets,
-    ) {}
-}
 
 final readonly class TypedTargetAdapter
 {
