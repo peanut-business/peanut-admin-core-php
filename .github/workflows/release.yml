@@ -1,0 +1,82 @@
+name: PHP Core release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: php-core-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'peanut-business/peanut-admin-core-php'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require an annotated release tag on the current main commit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo 'Expected a stable vX.Y.Z tag' >&2
+            exit 1
+          }
+          [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" == tag ]] || {
+            echo 'Release tag must be annotated' >&2
+            exit 1
+          }
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"
+          main_commit="$(git rev-parse refs/remotes/origin/main^{commit})"
+          [[ "$tag_commit" == "$main_commit" && "$tag_commit" == "$GITHUB_SHA" ]] || {
+            echo 'Release tag must point to the current main commit' >&2
+            exit 1
+          }
+          php -r '$package=json_decode(file_get_contents("composer.json"), true, 512, JSON_THROW_ON_ERROR); if (($package["name"] ?? null) !== "peanut-admin/core" || isset($package["version"])) exit(1);' || {
+            echo 'Unexpected Composer package identity or embedded version' >&2
+            exit 1
+          }
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:2.10.2
+          coverage: none
+      - name: Qualify tagged source
+        run: |
+          composer validate --strict
+          composer install --no-interaction --no-progress --prefer-dist --no-scripts
+          ./scripts/ci-check
+      - name: Confirm Packagist indexed this exact tag and source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expected_commit="$(git rev-parse HEAD)"
+          for attempt in {1..18}; do
+            if curl --fail --silent --show-error \
+              https://repo.packagist.org/p2/peanut-admin/core.json \
+              --output "$RUNNER_TEMP/packagist-core.json" \
+              && php -r '
+                $data=json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+                foreach ($data["packages"]["peanut-admin/core"] ?? [] as $package) {
+                  $source=preg_replace("/\\.git$/", "", rtrim($package["source"]["url"] ?? "", "/"));
+                  if (($package["version"] ?? null) === $argv[2]
+                    && ($package["source"]["reference"] ?? null) === $argv[3]
+                    && $source === "https://github.com/peanut-business/peanut-admin-core-php") exit(0);
+                }
+                exit(1);
+              ' "$RUNNER_TEMP/packagist-core.json" "$GITHUB_REF_NAME" "$expected_commit"; then
+              echo "Packagist resolved $GITHUB_REF_NAME to $expected_commit"
+              exit 0
+            fi
+            if [[ "$attempt" -lt 18 ]]; then sleep 20; fi
+          done
+          echo 'Packagist did not expose the exact tagged source; check its package source and GitHub hook' >&2
+          exit 1
