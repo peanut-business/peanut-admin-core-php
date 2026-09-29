@@ -29,6 +29,7 @@ jobs:
             echo 'Expected a vX.Y.Z or vX.Y.Z-rc.N tag' >&2
             exit 1
           }
+          git fetch --force --no-tags origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" == tag ]] || {
             echo 'Release tag must be annotated' >&2
             exit 1
