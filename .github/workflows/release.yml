@@ -73,7 +73,7 @@ jobs:
                     && $source === "https://github.com/peanut-business/peanut-admin-core-php") exit(0);
                 }
                 exit(1);
-              ' "$RUNNER_TEMP/packagist-core.json" "${GITHUB_REF_NAME#v}" "$expected_commit"; then
+              ' "$RUNNER_TEMP/packagist-core.json" "$GITHUB_REF_NAME" "$expected_commit"; then
               echo "Packagist resolved $GITHUB_REF_NAME to $expected_commit"
               exit 0
             fi
