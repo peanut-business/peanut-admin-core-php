@@ -3,6 +3,9 @@
   "description": "Peanut Admin technical kernel and ThinkPHP integration",
   "type": "library",
   "license": "Apache-2.0",
+  "support": {
+    "source": "https://github.com/peanut-business/peanut-admin-core-php"
+  },
   "require": {
     "ext-fileinfo": "*",
     "ext-json": "*",
