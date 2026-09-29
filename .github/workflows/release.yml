@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: php-core-release-${{ github.ref }}
@@ -25,8 +25,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-            echo 'Expected a stable vX.Y.Z tag' >&2
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.([1-9][0-9]*))?$ ]] || {
+            echo 'Expected a vX.Y.Z or vX.Y.Z-rc.N tag' >&2
             exit 1
           }
           [[ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" == tag ]] || {
@@ -72,7 +72,7 @@ jobs:
                     && $source === "https://github.com/peanut-business/peanut-admin-core-php") exit(0);
                 }
                 exit(1);
-              ' "$RUNNER_TEMP/packagist-core.json" "$GITHUB_REF_NAME" "$expected_commit"; then
+              ' "$RUNNER_TEMP/packagist-core.json" "${GITHUB_REF_NAME#v}" "$expected_commit"; then
               echo "Packagist resolved $GITHUB_REF_NAME to $expected_commit"
               exit 0
             fi
@@ -80,3 +80,23 @@ jobs:
           done
           echo 'Packagist did not expose the exact tagged source; check its package source and GitHub hook' >&2
           exit 1
+      - name: Publish GitHub Release after Packagist verification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          release_flags=()
+          if [[ "$GITHUB_REF_NAME" == *-rc.* ]]; then release_flags+=(--prerelease); fi
+          if gh release view "$GITHUB_REF_NAME" --json tagName,isDraft,isPrerelease \
+            > "$RUNNER_TEMP/release.json" 2>/dev/null; then
+            expected_prerelease=false
+            if [[ "$GITHUB_REF_NAME" == *-rc.* ]]; then expected_prerelease=true; fi
+            jq -e --arg tag "$GITHUB_REF_NAME" --argjson prerelease "$expected_prerelease" \
+              '.tagName == $tag and .isDraft == false and .isPrerelease == $prerelease' \
+              "$RUNNER_TEMP/release.json" >/dev/null
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag "${release_flags[@]}" \
+            --title "Peanut Admin PHP Core $GITHUB_REF_NAME" --generate-notes
