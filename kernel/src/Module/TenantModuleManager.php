@@ -14,7 +14,14 @@ final readonly class TenantModuleManager
         private TenantModuleMutationRepository $repository,
         private TenantModuleConfigValidator $configValidator,
         private array $hooks = [],
-    ) {}
+    ) {
+        foreach ($hooks as $moduleKey => $hook) {
+            if (!is_string($moduleKey) || !$hook instanceof TenantModuleEnableHook) {
+                throw new ModuleException('MODULE_HOOK_INVALID', 'Tenant module hooks must map module keys to TenantModuleEnableHook implementations.');
+            }
+            $this->assertTenantManageable($this->manifest($moduleKey));
+        }
+    }
 
     /** @param array<string, mixed> $config */
     public function enable(
@@ -56,7 +63,8 @@ final readonly class TenantModuleManager
         }
         $this->configValidator->assertValid($manifest, $config);
         $existing = $this->repository->tenantModule($tenantId, $moduleKey);
-        if ($existing !== null && $existing->isEffective($now)) {
+        if ($existing !== null && $existing->status === 'enabled'
+            && ($existing->expiresAt === null || $now < $existing->expiresAt)) {
             return $existing;
         }
         ($this->hooks[$moduleKey] ?? null)?->enable($tenantId, $config);
@@ -84,6 +92,10 @@ final readonly class TenantModuleManager
             if ($record !== null && $record->isEffective($now)) {
                 throw new ModuleException('MODULE_DEPENDENT_ACTIVE', "Enabled dependent blocks disable: {$dependentKey}");
             }
+        }
+        $existing = $this->repository->tenantModule($tenantId, $moduleKey);
+        if ($existing !== null && $existing->status === 'disabled') {
+            return $existing;
         }
         ($this->hooks[$moduleKey] ?? null)?->disable($tenantId);
 
