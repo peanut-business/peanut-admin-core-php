@@ -24,7 +24,7 @@ final readonly class TenantEntryBindingResolver
         if ($explicitTenantCode === '') {
             $explicitTenantCode = null;
         }
-        $binding = $this->binding(self::requestHost($request), $clientKey);
+        $binding = $this->binding($request, $clientKey);
         if ($binding === null) {
             return $explicitTenantCode;
         }
@@ -36,7 +36,7 @@ final readonly class TenantEntryBindingResolver
 
     public function boundTenantId(object $request, string $clientKey): ?int
     {
-        return $this->binding(self::requestHost($request), $clientKey)['tenant_id'] ?? null;
+        return $this->binding($request, $clientKey)['tenant_id'] ?? null;
     }
 
     public function assertTenantAccess(object $request, string $clientKey, int $tenantId): void
@@ -55,7 +55,7 @@ final readonly class TenantEntryBindingResolver
         if ($actor === '' || $operation === '' || $operationId === '') {
             throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
         }
-        $binding = $this->binding(self::requestHost($request), $clientKey);
+        $binding = $this->binding($request, $clientKey);
         if ($binding !== null) {
             return new TenantSystemContext($binding['tenant_id'], $actor, $operation, $operationId);
         }
@@ -80,9 +80,9 @@ final readonly class TenantEntryBindingResolver
     }
 
     /** @return array{tenant_id:int,tenant_code:string}|null */
-    private function binding(string $host, string $clientKey): ?array
+    private function binding(object $request, string $clientKey): ?array
     {
-        $host = self::normalizeHost($host);
+        $host = self::requestHost($request);
         $clientKey = trim($clientKey);
         if (preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $clientKey) !== 1) {
             throw new \DomainException('TENANT_ENTRY_CLIENT_INVALID');
@@ -93,7 +93,25 @@ final readonly class TenantEntryBindingResolver
         if ($this->lookup === null) {
             throw new \DomainException('TENANT_ENTRY_BINDING_UNAVAILABLE');
         }
-        return $this->lookup->binding($host, $clientKey);
+        if (!$request instanceof \think\Request) {
+            return $this->lookup->binding($host, $clientKey);
+        }
+
+        // Keep results on the actual HTTP request, never on a reusable service/process.
+        // Lookup object identity also isolates different instance-owned binding sources.
+        /** @var \WeakMap<TenantEntryBindingLookup,array<string,array{tenant_id:int,tenant_code:string}|null>> $cache */
+        $cache = $request->middleware(self::class);
+        if (!$cache instanceof \WeakMap) {
+            $cache = new \WeakMap();
+            $request->withMiddleware([self::class => $cache]);
+        }
+        $bindings = $cache[$this->lookup] ?? [];
+        $cacheKey = $host . "\0" . $clientKey;
+        if (!array_key_exists($cacheKey, $bindings)) {
+            $bindings[$cacheKey] = $this->lookup->binding($host, $clientKey);
+            $cache[$this->lookup] = $bindings;
+        }
+        return $bindings[$cacheKey];
     }
 
     private static function requestHost(object $request): string
