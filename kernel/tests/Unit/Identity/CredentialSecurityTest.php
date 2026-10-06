@@ -7,6 +7,7 @@ namespace PeanutAdmin\Kernel\Tests\Unit\Identity;
 use InvalidArgumentException;
 use PeanutAdmin\Kernel\Identity\EmailAddress;
 use PeanutAdmin\Kernel\Identity\PasswordHasher;
+use PeanutAdmin\Kernel\Identity\PasswordPolicy;
 use PHPUnit\Framework\TestCase;
 
 final class CredentialSecurityTest extends TestCase
@@ -38,22 +39,23 @@ final class CredentialSecurityTest extends TestCase
 
     public function testPasswordPolicyCanBeConfiguredByTheApplication(): void
     {
-        $hasher = new PasswordHasher(12, 128);
+        $policy = new PasswordPolicy(12, 128);
 
-        self::assertSame(12, $hasher->minimumLength());
-        self::assertSame(128, $hasher->maximumLength());
-        $hasher->assertValid('application-policy-password');
+        self::assertSame(12, $policy->minimumLength());
+        self::assertSame(128, $policy->maximumLength());
+        $policy->assertValid('application-policy-password');
+        self::assertNotEmpty((new PasswordHasher())->hash('short'));
 
         $this->expectException(\RuntimeException::class);
-        $hasher->hash('short');
+        $policy->assertValid('short');
     }
 
     public function testDefaultPasswordPolicyIsLooseForReusableCore(): void
     {
-        $hasher = new PasswordHasher();
+        $policy = new PasswordPolicy();
 
-        self::assertSame(PasswordHasher::DEFAULT_MINIMUM_LENGTH, $hasher->minimumLength());
-        self::assertSame(PasswordHasher::DEFAULT_MAXIMUM_LENGTH, $hasher->maximumLength());
-        self::assertNotEmpty($hasher->hash('eight888'));
+        self::assertSame(PasswordPolicy::DEFAULT_MINIMUM_LENGTH, $policy->minimumLength());
+        self::assertSame(PasswordPolicy::DEFAULT_MAXIMUM_LENGTH, $policy->maximumLength());
+        $policy->assertValid('eight888');
     }
 }
