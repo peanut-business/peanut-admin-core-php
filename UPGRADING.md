@@ -1,5 +1,11 @@
 # 升级到 5.0
 
+## 5.0.1：请求内租户入口查询
+
+`TenantEntryBindingResolver` 在真实 ThinkPHP `Request` 的 middleware 数据中缓存同一 host/client 的绑定命中和未命中；不同请求与不同 lookup 实例隔离，lookup 异常不缓存。普通提供 `host()` 的对象仍直接查询。租户冲突、输入校验、禁用绑定和默认上下文合同保持不变。长驻宿主必须为每次 HTTP 请求使用独立 Request，不能跨请求复用该对象。
+
+该修正没有数据库迁移或 Composer 依赖变化；`composer.json` 不嵌入版本，发行版本仍从精确 Git 标签取得。5.0.0 的公开记录与标签保持原样。
+
 5.0 将新密码输入策略与密码散列职责分离。该公开 API 变化不能作为 4.x 的兼容更新；实际公开版本以 GitHub/Packagist 对应标签为准。
 
 ## 密码策略与散列
