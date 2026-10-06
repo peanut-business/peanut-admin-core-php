@@ -41,7 +41,76 @@ final class TenantModuleManagerTest extends TestCase
         $manager->enable(9, 'example.work-item', ['valid' => true], $now);
 
         self::assertSame(1, $hook->enableCount);
+        self::assertSame(1, $repository->enableWriteCount);
         self::assertSame('enabled', $repository->tenantModule(9, 'example.work-item')?->status);
+    }
+
+    public function testRepeatedEnableBeforeEffectiveTimeDoesNotRunHookOrWrite(): void
+    {
+        $repository = new InMemoryTenantModuleMutationRepository();
+        $future = new DateTimeImmutable('2026-07-17T12:00:00Z');
+        $existing = new TenantModuleRecord(9, 'example.target', 'enabled', $future, null, 7);
+        $repository->records['example.target'] = $existing;
+        $hook = new RecordingEnableHook();
+        $manager = new TenantModuleManager(
+            $this->registry(),
+            $repository,
+            new class implements TenantModuleConfigValidator {
+                public function assertValid(ManifestDocument $manifest, array $config): void {}
+            },
+            ['example.target' => $hook],
+        );
+        $now = new DateTimeImmutable('2026-07-16T12:00:00Z');
+
+        self::assertSame($existing, $manager->enable(9, 'example.target', [], $now, effectiveAt: $future));
+        self::assertSame($existing, $manager->enable(9, 'example.target', [], $now, effectiveAt: $future));
+        self::assertSame(7, $repository->records['example.target']->authorizationRevision);
+        self::assertSame(0, $hook->enableCount);
+        self::assertSame(0, $repository->enableWriteCount);
+    }
+
+    public function testRepeatedDisableDoesNotRunHookOrWrite(): void
+    {
+        $repository = new InMemoryTenantModuleMutationRepository();
+        $existing = new TenantModuleRecord(9, 'example.target', 'disabled', null, null, 7);
+        $repository->records['example.target'] = $existing;
+        $hook = new RecordingEnableHook();
+        $manager = new TenantModuleManager(
+            $this->registry(),
+            $repository,
+            new class implements TenantModuleConfigValidator {
+                public function assertValid(ManifestDocument $manifest, array $config): void {}
+            },
+            ['example.target' => $hook],
+        );
+        $now = new DateTimeImmutable('2026-07-16T12:00:00Z');
+
+        self::assertSame($existing, $manager->disable(9, 'example.target', $now));
+        self::assertSame($existing, $manager->disable(9, 'example.target', $now));
+        self::assertSame(7, $repository->records['example.target']->authorizationRevision);
+        self::assertSame(0, $hook->disableCount);
+        self::assertSame(0, $repository->disableWriteCount);
+    }
+
+    public function testMalformedHookMapsAreRejectedBeforeLifecycleMutation(): void
+    {
+        $repository = new InMemoryTenantModuleMutationRepository();
+        foreach ([['example.target' => new \stdClass()], [0 => new RecordingEnableHook()]] as $hooks) {
+            try {
+                new TenantModuleManager(
+                    $this->registry(),
+                    $repository,
+                    new class implements TenantModuleConfigValidator {
+                        public function assertValid(ManifestDocument $manifest, array $config): void {}
+                    },
+                    $hooks,
+                );
+                self::fail('Malformed hook maps must be rejected.');
+            } catch (ModuleException $exception) {
+                self::assertSame('MODULE_HOOK_INVALID', $exception->errorCode);
+            }
+        }
+        self::assertSame([], $repository->records);
     }
 
     public function testDisableIsBlockedByAnEffectiveDependentAndPreservesData(): void
@@ -122,6 +191,8 @@ final class InMemoryTenantModuleMutationRepository implements TenantModuleMutati
 {
     /** @var array<string, TenantModuleRecord> */
     public array $records = [];
+    public int $enableWriteCount = 0;
+    public int $disableWriteCount = 0;
 
     public function tenantIsActive(int $tenantId): bool
     {
@@ -154,6 +225,7 @@ final class InMemoryTenantModuleMutationRepository implements TenantModuleMutati
         ?DateTimeImmutable $effectiveAt = null,
         ?DateTimeImmutable $expiresAt = null,
     ): TenantModuleRecord {
+        ++$this->enableWriteCount;
         return $this->records[$moduleKey] = new TenantModuleRecord(
             $tenantId,
             $moduleKey,
@@ -166,6 +238,7 @@ final class InMemoryTenantModuleMutationRepository implements TenantModuleMutati
 
     public function disable(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord
     {
+        ++$this->disableWriteCount;
         return $this->records[$moduleKey] = new TenantModuleRecord($tenantId, $moduleKey, 'disabled', null, null, 2);
     }
 }
@@ -173,11 +246,15 @@ final class InMemoryTenantModuleMutationRepository implements TenantModuleMutati
 final class RecordingEnableHook implements TenantModuleEnableHook
 {
     public int $enableCount = 0;
+    public int $disableCount = 0;
 
     public function enable(int $tenantId, array $config): void
     {
         ++$this->enableCount;
     }
 
-    public function disable(int $tenantId): void {}
+    public function disable(int $tenantId): void
+    {
+        ++$this->disableCount;
+    }
 }
