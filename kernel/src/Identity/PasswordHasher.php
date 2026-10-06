@@ -6,9 +6,9 @@ namespace PeanutAdmin\Kernel\Identity;
 
 use RuntimeException;
 
-final class PasswordHasher
+class PasswordHasher
 {
-    public const DEFAULT_MINIMUM_LENGTH = 8;
+    public const DEFAULT_MINIMUM_LENGTH = 6;
     public const DEFAULT_MAXIMUM_LENGTH = 1024;
 
     /** @var array{memory_cost: int, time_cost: int, threads: int} */

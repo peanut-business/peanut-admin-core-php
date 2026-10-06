@@ -6,7 +6,7 @@ namespace PeanutAdmin\Kernel\Auth;
 
 use DateTimeImmutable;
 
-final class TokenIssuer
+class TokenIssuer
 {
     public const CHALLENGE_PREFIX = 'pa_lc_';
     public const TENANT_ACCESS_PREFIX = 'pa_tat_';
