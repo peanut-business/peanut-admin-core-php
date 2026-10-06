@@ -6,6 +6,8 @@ namespace PeanutAdmin\Kernel\Identity;
 
 class PasswordHasher
 {
+    /** Technical input ceiling, independent of new-password requirements. */
+    public const MAXIMUM_INPUT_BYTES = 4096;
     /** @var array{memory_cost: int, time_cost: int, threads: int} */
     private const OPTIONS = [
         'memory_cost' => 65_536,
@@ -15,11 +17,17 @@ class PasswordHasher
 
     public function hash(string $plainPassword): string
     {
+        if (strlen($plainPassword) > self::MAXIMUM_INPUT_BYTES) {
+            throw new \RuntimeException('Password exceeds the hashing input ceiling.');
+        }
         return password_hash($plainPassword, PASSWORD_ARGON2ID, self::OPTIONS);
     }
 
     public function verify(string $plainPassword, string $hash): bool
     {
+        if (strlen($plainPassword) > self::MAXIMUM_INPUT_BYTES) {
+            return false;
+        }
         return password_verify($plainPassword, $hash);
     }
 

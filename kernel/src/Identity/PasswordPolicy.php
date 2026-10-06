@@ -17,7 +17,8 @@ class PasswordPolicy
         private int $minimumLength = self::DEFAULT_MINIMUM_LENGTH,
         private int $maximumLength = self::DEFAULT_MAXIMUM_LENGTH,
     ) {
-        if ($minimumLength < 1 || $maximumLength < $minimumLength) {
+        if ($minimumLength < 1 || $maximumLength < $minimumLength
+            || $maximumLength > PasswordHasher::MAXIMUM_INPUT_BYTES) {
             throw new InvalidArgumentException('Invalid password policy bounds.');
         }
     }
