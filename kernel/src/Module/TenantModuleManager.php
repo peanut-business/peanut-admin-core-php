@@ -6,6 +6,10 @@ namespace PeanutAdmin\Kernel\Module;
 
 use DateTimeImmutable;
 
+/**
+ * Applies tenant module lifecycle rules before writing the tenant's enablement record.
+ * The caller owns the transaction when a registered hook must be atomic with that write.
+ */
 final readonly class TenantModuleManager
 {
     /** @param array<string, TenantModuleEnableHook> $hooks */
@@ -23,7 +27,13 @@ final readonly class TenantModuleManager
         }
     }
 
-    /** @param array<string, mixed> $config */
+    /**
+     * Enables an installed module after checking tenant state, dependencies and configuration.
+     * An unexpired enabled record is returned unchanged and does not run the hook again.
+     *
+     * @param array<string, mixed> $config Module-specific configuration to validate and persist.
+     * @param string $source Audit origin for this lifecycle request.
+     */
     public function enable(
         int $tenantId,
         string $moduleKey,
@@ -80,6 +90,10 @@ final readonly class TenantModuleManager
         );
     }
 
+    /**
+     * Disables a module only when no currently effective tenant module depends on it.
+     * Repeating a disable for an already disabled record is idempotent.
+     */
     public function disable(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord
     {
         $this->assertTenantManageable($this->manifest($moduleKey));

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\FileMedia\Storage;
 
+/** Builds and checks the stable storage prefix that separates objects by tenant. */
 final class TenantObjectNamespace
 {
+    /** Returns a tenant-owned object directory from a validated relative directory. */
     public static function directory(int $tenantId, string $relativeDirectory): string
     {
         self::assertTenantId($tenantId);
@@ -19,6 +21,7 @@ final class TenantObjectNamespace
         return sprintf('tenants/v1/%d/%s', $tenantId, $relativeDirectory);
     }
 
+    /** Checks the tenant prefix after removing an optional leading `storage/` segment. */
     public static function ownsUri(int $tenantId, string $uri): bool
     {
         self::assertTenantId($tenantId);

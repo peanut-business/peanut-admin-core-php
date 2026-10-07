@@ -8,6 +8,10 @@ use DateTimeImmutable;
 use JsonException;
 use PeanutAdmin\FileMedia\Application\FileMediaException;
 
+/**
+ * Signs short-lived file-delivery claims and enforces their tenant, object and replay scope.
+ * Private delivery is restricted to single-use tokens with a maximum five-minute lifetime.
+ */
 final readonly class SignedDeliveryTokenService
 {
     public function __construct(
@@ -29,6 +33,7 @@ final readonly class SignedDeliveryTokenService
         int $ttlSeconds,
         ?string $tokenId = null,
     ): string {
+        // The visibility/replay combination is part of the signed claims, not a caller-side hint.
         $tokenId ??= bin2hex(random_bytes(16));
         if ($tenantId < 1 || preg_match('/^file_[0-9a-f]{32}$/D', $fileKey) !== 1
             || preg_match('/^[0-9a-f]{32}$/D', $tokenId) !== 1
@@ -72,6 +77,7 @@ final readonly class SignedDeliveryTokenService
         string $fileKey,
         DateTimeImmutable $now,
     ): array {
+        // Consume only after every claim is validated against the requested tenant and file.
         $claims = self::verifiedClaims($token, $this->secret);
         if ($claims['v'] !== 1 || $claims['tid'] !== $tenantId || $claims['fk'] !== $fileKey
             || !is_int($claims['iat']) || !is_int($claims['exp']) || !is_string($claims['jti'])

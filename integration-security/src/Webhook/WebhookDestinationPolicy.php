@@ -6,6 +6,10 @@ namespace PeanutAdmin\IntegrationSecurity\Webhook;
 
 use PeanutAdmin\IntegrationSecurity\Application\IntegrationSecurityException;
 
+/**
+ * Restricts webhook URLs to HTTPS destinations whose resolved addresses are all public.
+ * Transports must connect to the returned approved addresses to prevent a later DNS rebind.
+ */
 final readonly class WebhookDestinationPolicy
 {
     /** @var list<array{string,int}> */

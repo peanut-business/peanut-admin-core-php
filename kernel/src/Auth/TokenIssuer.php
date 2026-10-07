@@ -6,6 +6,7 @@ namespace PeanutAdmin\Kernel\Auth;
 
 use DateTimeImmutable;
 
+/** Issues purpose-tagged bearer credentials and time-sortable opaque keys. */
 class TokenIssuer
 {
     public const CHALLENGE_PREFIX = 'pa_lc_';
@@ -43,6 +44,7 @@ class TokenIssuer
 
     public function key(DateTimeImmutable $time): string
     {
+        // Keep ordering tied to the caller's clock while retaining random suffix entropy.
         $milliseconds = ((int) $time->format('U')) * 1000 + (int) $time->format('v');
         $bytes = substr(pack('J', $milliseconds), 2) . random_bytes(10);
         $bits = '00';
