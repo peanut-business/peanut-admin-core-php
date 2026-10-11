@@ -20,9 +20,10 @@ namespace OSS {
                 $this->calls[] = ['method' => __FUNCTION__, 'arguments' => func_get_args()];
             }
 
-            public function deleteObject(string $bucket, string $key): void
+            public function deleteObject(string $bucket, string $key): array
             {
                 $this->calls[] = ['method' => __FUNCTION__, 'arguments' => func_get_args()];
+                return ['x-oss-request-id' => 'oss-delete-contract'];
             }
 
             /** @param array<mixed> $options */
@@ -49,12 +50,13 @@ namespace Qcloud\Cos {
             }
 
             /** @param array<string, mixed> $request */
-            public function deleteObject(array $request): void
+            public function deleteObject(array $request): array
             {
                 $this->calls[] = ['method' => __FUNCTION__, 'arguments' => [$request]];
+                return ['RequestId' => 'cos-delete-contract'];
             }
 
-            public function download(string $bucket, string $key, string $target): void
+            public function download(string $bucket, string $key, string $target, array $options = []): void
             {
                 $this->calls[] = ['method' => __FUNCTION__, 'arguments' => func_get_args()];
             }
@@ -285,7 +287,7 @@ namespace PeanutAdmin\FileMedia\Tests\Unit\Storage {
                 $client->calls[1],
             );
             self::assertSame(
-                ['method' => 'download', 'arguments' => ['bucket-q', 'tenant/object.txt', '/host/download.txt']],
+                ['method' => 'download', 'arguments' => ['bucket-q', 'tenant/object.txt', '/host/download.txt', []]],
                 $client->calls[2],
             );
             self::assertNull($driver->localPath('tenant/object.txt'));
@@ -296,7 +298,7 @@ namespace PeanutAdmin\FileMedia\Tests\Unit\Storage {
             $auth = new Auth();
             $transport = new FakeStorageHttpTransport([
                 ['status' => 200, 'body' => '{"key":"tenant/object.txt"}'],
-                ['status' => 204, 'body' => ''],
+                ['status' => 204, 'body' => '', 'headers' => ['X-Reqid' => 'qiniu-delete-contract']],
                 ['status' => 200, 'body' => ''],
             ]);
             $driver = new QiniuStorageDriver($auth, 'bucket-7', '', 'https://private.example.test/', $transport);
