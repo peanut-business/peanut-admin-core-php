@@ -44,6 +44,7 @@
         }
       }
     },
+    "optional_dependencies": { "$ref": "#/properties/dependencies" },
     "lifecycle": {
       "type": "object",
       "additionalProperties": false,

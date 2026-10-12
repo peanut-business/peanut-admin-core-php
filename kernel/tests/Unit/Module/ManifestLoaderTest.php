@@ -40,6 +40,28 @@ final class ManifestLoaderTest extends TestCase
         self::assertFalse($this->schemaResult($document->object));
     }
 
+    public function testOptionalDependenciesUseTheRequiredDependencySchemaAndSurviveLoading(): void
+    {
+        $this->loadWithFrontend('{}');
+        $data = json_decode((string) file_get_contents($this->root . '/module.json'), true, 512, JSON_THROW_ON_ERROR);
+        $data['frontend'] = new \stdClass();
+        $data['optional_dependencies'] = [['module_key' => 'official.task', 'version' => '^1.0']];
+        file_put_contents($this->root . '/module.json', json_encode($data, JSON_THROW_ON_ERROR));
+        $document = (new ManifestLoader())->load($this->root);
+        self::assertSame($data['optional_dependencies'], $document->data['optional_dependencies']);
+        self::assertTrue($this->schemaResult($document->object));
+        foreach ([
+            [['module_key' => 'official.task']],
+            [['module_key' => 'bad module', 'version' => '*']],
+            [['module_key' => 'official.task', 'version' => '']],
+            [['module_key' => 'official.task', 'version' => '*', 'install' => true]],
+            (object) ['module_key' => 'official.task', 'version' => '*'],
+        ] as $invalid) {
+            $document->object->optional_dependencies = $invalid;
+            self::assertFalse($this->schemaResult($document->object));
+        }
+    }
+
     private function loadWithFrontend(string $frontend): object
     {
         $json = <<<'JSON'

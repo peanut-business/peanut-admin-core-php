@@ -72,7 +72,7 @@ final readonly class ModuleRegistryCompiler
         $menus = [];
         foreach ($ordered as $document) {
             $key = $this->string($document, 'key');
-            $dependencyKeys[$key] = $this->dependencyKeys($document);
+            $dependencyKeys[$key] = $this->dependencyKeys($document, $byKey);
             $catalog = $this->catalog($document);
             foreach ($catalog['target_types'] ?? [] as $target) {
                 $targetKey = $this->arrayString($target, 'key', $key);
@@ -168,7 +168,7 @@ final readonly class ModuleRegistryCompiler
             }
             $document = $byKey[$key] ?? throw new ModuleException('MODULE_DEPENDENCY_MISSING', "Missing module dependency: {$key}");
             $visiting[$key] = true;
-            foreach ($this->dependencies($document) as $dependency) {
+            foreach ($this->dependencies($document, $byKey) as $dependency) {
                 $dependencyKey = $this->arrayString($dependency, 'module_key', $key);
                 $dependencyDocument = $byKey[$dependencyKey] ?? throw new ModuleException(
                     'MODULE_DEPENDENCY_MISSING',
@@ -196,18 +196,28 @@ final readonly class ModuleRegistryCompiler
         return $ordered;
     }
 
-    /** @return list<array<string, mixed>> */
-    private function dependencies(ManifestDocument $document): array
+    /**
+     * @param array<string, ManifestDocument> $byKey Explicitly selected modules only.
+     * @return list<array<string, mixed>>
+     */
+    private function dependencies(ManifestDocument $document, array $byKey): array
     {
         $dependencies = $document->data['dependencies'] ?? [];
-        return is_array($dependencies) && array_is_list($dependencies) ? $dependencies : [];
+        $dependencies = is_array($dependencies) && array_is_list($dependencies) ? $dependencies : [];
+        foreach ($document->data['optional_dependencies'] ?? [] as $dependency) {
+            if (isset($byKey[$this->arrayString($dependency, 'module_key', $this->string($document, 'key'))])) {
+                $dependencies[] = $dependency;
+            }
+        }
+
+        return $dependencies;
     }
 
-    /** @return array<string, true> */
-    private function dependencyKeys(ManifestDocument $document): array
+    /** @param array<string, ManifestDocument> $byKey @return array<string, true> */
+    private function dependencyKeys(ManifestDocument $document, array $byKey): array
     {
         $keys = [];
-        foreach ($this->dependencies($document) as $dependency) {
+        foreach ($this->dependencies($document, $byKey) as $dependency) {
             $keys[$this->arrayString($dependency, 'module_key', $this->string($document, 'key'))] = true;
         }
 
