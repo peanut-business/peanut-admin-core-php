@@ -20,6 +20,15 @@ use Qiniu\Auth;
 /** Host-installed SDK request serialization/deserialization, with no network access. */
 final class StorageSdkContractTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        // Check before constructing response arguments or loading the stub-based host.
+        if (!class_exists(Client::class) || !method_exists(Client::class, 'getApi')
+            || !class_exists(Auth::class) || !method_exists(Auth::class, 'signRequest')) {
+            self::markTestSkipped('Run scripts/verify-storage-sdk in the locked SDK host.');
+        }
+    }
+
     public function testCosMetadataPrivateAclAndExactVersionDeleteThroughInstalledSdk(): void
     {
         $history = [];

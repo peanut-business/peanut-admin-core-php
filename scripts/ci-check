@@ -32,6 +32,7 @@ test_count="$(grep -c '^ - ' "$discovery" || true)"
 
 php vendor/bin/phpunit --no-configuration --bootstrap vendor/autoload.php \
   --fail-on-empty-test-suite --fail-on-risky "${test_roots[@]}"
+"$ROOT/scripts/verify-storage-sdk"
 "$ROOT/scripts/verify-consumer"
 
 printf 'PHP-CORE-CI-001 passed: candidate=%s tree=%s php_files=%d discovered_tests=%d\n' \
