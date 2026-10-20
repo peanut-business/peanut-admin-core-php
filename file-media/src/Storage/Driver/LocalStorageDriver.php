@@ -6,6 +6,12 @@ namespace PeanutAdmin\FileMedia\Storage\Driver;
 
 use PeanutAdmin\FileMedia\Storage\StorageDriver;
 use PeanutAdmin\FileMedia\Storage\StorageObjectKey;
+use PeanutAdmin\FileMedia\Storage\StorageDriverCapabilities;
+use PeanutAdmin\FileMedia\Storage\StorageCapabilityUnsupported;
+use PeanutAdmin\FileMedia\Storage\StorageObjectObservation;
+use PeanutAdmin\FileMedia\Storage\StorageOperationReceipt;
+use PeanutAdmin\FileMedia\Storage\StorageVersionCursor;
+use PeanutAdmin\FileMedia\Storage\StorageVersionPage;
 
 /** Host-filesystem storage driver confined to an absolute Host-selected directory. */
 final readonly class LocalStorageDriver implements StorageDriver
@@ -27,6 +33,43 @@ final readonly class LocalStorageDriver implements StorageDriver
         $this->root = $this->canonicalRoot($root);
     }
 
+    public function capabilities(): StorageDriverCapabilities
+    {
+        return new StorageDriverCapabilities(objectInspection: true);
+    }
+
+    public function inspect(string $objectKey, ?string $versionId = null): StorageObjectObservation
+    {
+        $objectKey = StorageObjectKey::assert($objectKey);
+        $this->assertUnversioned($versionId);
+        $path = $this->objectPath($objectKey, false);
+        clearstatcache(true, $path);
+        if (!file_exists($path) && !is_link($path)) {
+            return new StorageObjectObservation(false);
+        }
+        $this->assertRegularFile($path);
+        $size = filesize($path);
+        $mime = (new \finfo(FILEINFO_MIME_TYPE))->file($path);
+        if (!is_int($size) || !is_string($mime)) {
+            throw new \RuntimeException('STORAGE_OBJECT_OBSERVATION_FAILED');
+        }
+        return new StorageObjectObservation(true, $size, $mime, true);
+    }
+
+    public function restrictToPrivate(string $objectKey, ?string $versionId = null): StorageOperationReceipt
+    {
+        StorageObjectKey::assert($objectKey);
+        $this->assertUnversioned($versionId);
+        // Unix permissions cannot close a path served by the same Web-server user.
+        throw new StorageCapabilityUnsupported('object-acl-restriction');
+    }
+
+    public function listVersions(string $objectKey, ?StorageVersionCursor $cursor = null, int $limit = 100): StorageVersionPage
+    {
+        StorageObjectKey::assert($objectKey);
+        throw new StorageCapabilityUnsupported('object-version-listing');
+    }
+
     /** @inheritDoc */
     public function put(string $objectKey, string $sourcePath): void
     {
@@ -40,25 +83,36 @@ final readonly class LocalStorageDriver implements StorageDriver
     }
 
     /** @inheritDoc */
-    public function delete(string $objectKey): void
+    public function delete(string $objectKey, ?string $versionId = null): StorageOperationReceipt
     {
+        $this->assertUnversioned($versionId);
         $path = $this->objectPath($objectKey, false);
+        clearstatcache(true, $path);
         if (!file_exists($path) && !is_link($path)) {
-            return;
+            return new StorageOperationReceipt('delete', 'already-absent');
         }
         $this->assertRegularFile($path);
         if (!unlink($path)) {
             throw new \RuntimeException('本地文件删除失败');
         }
+        return new StorageOperationReceipt('delete', 'acknowledged');
     }
 
     /** @inheritDoc */
-    public function downloadTo(string $objectKey, string $targetPath): void
+    public function downloadTo(string $objectKey, string $targetPath, ?string $versionId = null): void
     {
+        $this->assertUnversioned($versionId);
         $source = $this->objectPath($objectKey, false);
         $this->assertRegularFile($source);
         $this->assertWritableTarget($targetPath);
         $this->atomicCopy($source, $targetPath, 0600, '本地文件读取失败');
+    }
+
+    private function assertUnversioned(?string $versionId): void
+    {
+        if ($versionId !== null) {
+            throw new StorageCapabilityUnsupported('object-version');
+        }
     }
 
     /** @inheritDoc */

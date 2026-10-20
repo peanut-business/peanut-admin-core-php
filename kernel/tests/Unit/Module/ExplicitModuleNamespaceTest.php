@@ -136,11 +136,64 @@ final class ExplicitModuleNamespaceTest extends TestCase
         ]);
     }
 
+    public function testSelectedOptionalStillRequiresAnExportedContract(): void
+    {
+        $optional = [['module_key' => 'demo.catalog', 'version' => '^1.0']];
+        $this->boundary('use Vendor\\Packages\\Catalog\\Service\\ProductQuery;', [],
+            ['Vendor\\Packages\\Catalog\\Service\\ProductQuery'], optionalDependencies: $optional)->check();
+        $this->expectException(ModuleException::class);
+        $this->expectExceptionMessage('does not export');
+        $this->boundary('use Vendor\\Packages\\Catalog\\Internal\\ProductRecord;', [],
+            ['Vendor\\Packages\\Catalog\\Service\\ProductQuery'], optionalDependencies: $optional)->check();
+    }
+
+    public function testAbsentOptionalTypesCanColdLoadWithoutLoadingTheProvider(): void
+    {
+        $name = 'ColdLoad' . bin2hex(random_bytes(8));
+        $checker = $this->boundary(
+            'namespace Vendor\\Packages\\Billing; use Vendor\\Packages\\Catalog\\Service\\ProductQuery; '
+                . 'final class ' . $name . ' { public function query(?ProductQuery $query): ?ProductQuery { return $query; } }',
+            [], [], optionalDependencies: [['module_key' => 'demo.catalog', 'version' => '^1.0']], selectCatalog: false,
+        );
+        $checker->check();
+        require $this->temporaryFiles[array_key_last($this->temporaryFiles)];
+        $class = 'Vendor\\Packages\\Billing\\' . $name;
+        self::assertTrue(class_exists($class, false));
+        self::assertFalse(class_exists('Vendor\\Packages\\Catalog\\Service\\ProductQuery', false));
+        self::assertSame('Vendor\\Packages\\Catalog\\Service\\ProductQuery',
+            (new \ReflectionMethod($class, 'query'))->getReturnType()?->getName());
+        self::assertNull((new $class())->query(null));
+    }
+
+    public function testAbsentOptionalDeclarationDoesNotGrantOtherModulesOrTables(): void
+    {
+        $optional = [['module_key' => 'demo.catalog', 'version' => '^1.0']];
+        foreach (['use Host\\Modules\\unknown\\module\\Hidden;', '$table = "demo_catalog";',
+            '$sql = "REFERENCES `demo_catalog`";'] as $reference) {
+            try {
+                $this->boundary($reference, [], [], optionalDependencies: $optional, selectCatalog: false)->check();
+                self::fail('Absent optional declarations must not grant other modules or tables.');
+            } catch (ModuleException $exception) {
+                self::assertSame('MODULE_REGISTRY_CONFLICT', $exception->errorCode);
+            }
+        }
+    }
+
+    public function testSelectedOptionalDoesNotGrantPrivateTableAccess(): void
+    {
+        $this->expectException(ModuleException::class);
+        $this->expectExceptionMessage('references table demo_catalog');
+        $this->boundary('$table = "demo_catalog";', [], [],
+            optionalDependencies: [['module_key' => 'demo.catalog', 'version' => '^1.0']])->check();
+    }
+
     private function boundary(
         string $reference,
         array $dependencies,
         array $exports,
         ?ModuleHostLayout $layout = null,
+        array $optionalDependencies = [],
+        bool $selectCatalog = true,
     ): ModuleBoundaryChecker {
         $root = sys_get_temp_dir() . '/module-namespace-' . bin2hex(random_bytes(8));
         mkdir($root, 0700);
@@ -157,9 +210,11 @@ final class ExplicitModuleNamespaceTest extends TestCase
         ]);
         $billing = ManifestDocument::fromArray($root . '/billing', [
             'key' => 'demo.billing', 'dependencies' => $dependencies, 'contracts' => ['exports' => []],
+            'optional_dependencies' => $optionalDependencies,
         ]);
         return new ModuleBoundaryChecker(
-            new CompiledModuleRegistry([$catalog, $billing], [], [], [], 'fixture-revision'),
+            new CompiledModuleRegistry($selectCatalog ? [$catalog, $billing] : [$billing], [],
+                $selectCatalog ? ['demo_catalog' => 'demo.catalog'] : [], [], 'fixture-revision'),
             $layout ?? $this->layout(),
             ['demo_'],
         );

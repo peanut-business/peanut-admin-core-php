@@ -1,0 +1,11 @@
+{
+  "name": "peanut-admin/storage-sdk-qualification",
+  "description": "Isolated dependencies for the existing offline storage SDK contracts",
+  "type": "project",
+  "license": "Apache-2.0",
+  "require": {
+    "php": "^8.3",
+    "qcloud/cos-sdk-v5": "^2.6.17",
+    "qiniu/php-sdk": "^7.4.0"
+  }
+}

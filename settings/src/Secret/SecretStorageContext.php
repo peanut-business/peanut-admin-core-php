@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Settings\Secret;
 
+/** Immutable deployment, tenant or target identity authenticated with each protected value. */
 final readonly class SecretStorageContext
 {
     private const AAD_PREFIX = 'peanut-admin/settings/secret/v2';

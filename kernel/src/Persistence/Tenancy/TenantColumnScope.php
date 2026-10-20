@@ -7,6 +7,10 @@ namespace PeanutAdmin\Kernel\Persistence\Tenancy;
 use RuntimeException;
 use think\facade\Db;
 
+/**
+ * Validates whether persistence uses a tenant_id column or an instance-bound tenant.
+ * Schema checks fail closed when the configured mode disagrees with the actual tables.
+ */
 final class TenantColumnScope
 {
     /** @var array<string, true> */
@@ -29,6 +33,7 @@ final class TenantColumnScope
 
     public function whenTenant(string $sql): string
     {
+        // Schema builders use this only for tenant-column fragments, never for predicates.
         return $this->usesTenantColumn() ? $sql : '';
     }
 

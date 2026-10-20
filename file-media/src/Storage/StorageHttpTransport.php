@@ -27,7 +27,7 @@ interface StorageHttpTransport
      *         headers?: array<string, string>
      *     }>
      * } $request
-     * @return array{status: int, body: string}
+     * @return array{status: int, body: string, headers?: array<string, string>}
      */
     public function request(array $request): array;
 }

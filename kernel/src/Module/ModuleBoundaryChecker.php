@@ -56,6 +56,15 @@ final readonly class ModuleBoundaryChecker
                 }
             }
         }
+        // Declared, absent modules may still appear in cold-loadable type declarations.
+        // Use only host-verified/key-derived namespaces; never guess a package prefix.
+        foreach ($this->registry->modules as $manifest) {
+            foreach ($manifest->data['optional_dependencies'] ?? [] as $dependency) {
+                $key = ModuleKey::fromString($dependency['module_key']);
+                $this->registerNamespaceOwner($namespaceOwners, $this->layout->backendNamespace($key), $key->value());
+                $this->registerNamespaceOwner($namespaceOwners, $this->layout->historicalBackendNamespace($key), $key->value());
+            }
+        }
         uksort($namespaceOwners, static function (string $left, string $right): int {
             $lengthOrder = strlen($right) <=> strlen($left);
 
@@ -78,12 +87,22 @@ final readonly class ModuleBoundaryChecker
             throw new ModuleException('MODULE_MANIFEST_INVALID', 'Module key is required for boundary checks.');
         }
         $dependencies = [];
+        $absentOptional = [];
         $declaredDependencies = $manifest->data['dependencies'] ?? [];
         if (is_array($declaredDependencies)) {
             foreach ($declaredDependencies as $dependency) {
                 if (is_array($dependency) && is_string($dependency['module_key'] ?? null)) {
                     $dependencies[$dependency['module_key']] = true;
                 }
+            }
+        }
+        $selected = array_fill_keys($this->registry->moduleKeys(), true);
+        foreach ($manifest->data['optional_dependencies'] ?? [] as $dependency) {
+            $key = $dependency['module_key'];
+            if (isset($selected[$key])) {
+                $dependencies[$key] = true;
+            } else {
+                $absentOptional[$key] = true;
             }
         }
         $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
@@ -98,6 +117,7 @@ final readonly class ModuleBoundaryChecker
                 $file->getPathname(),
                 $moduleKey,
                 $dependencies,
+                $absentOptional,
                 $namespaceOwners,
                 $exportOwners,
             );
@@ -106,6 +126,7 @@ final readonly class ModuleBoundaryChecker
 
     /**
      * @param array<string, true> $dependencies
+     * @param array<string, true> $absentOptional
      * @param array<string, string> $namespaceOwners
      * @param array<string, string> $exportOwners
      */
@@ -113,6 +134,7 @@ final readonly class ModuleBoundaryChecker
         string $path,
         string $moduleKey,
         array $dependencies,
+        array $absentOptional,
         array $namespaceOwners,
         array $exportOwners,
     ): void {
@@ -136,6 +158,7 @@ final readonly class ModuleBoundaryChecker
                         $moduleKey,
                         $referenceOwner,
                         $dependencies,
+                        $absentOptional,
                         $exportOwners,
                     );
                 }
@@ -163,6 +186,7 @@ final readonly class ModuleBoundaryChecker
 
     /**
      * @param array<string, true> $dependencies
+     * @param array<string, true> $absentOptional
      * @param array<string, string> $exportOwners
      */
     private function assertCrossModuleContract(
@@ -171,8 +195,14 @@ final readonly class ModuleBoundaryChecker
         string $moduleKey,
         ?string $owner,
         array $dependencies,
+        array $absentOptional,
         array $exportOwners,
     ): void {
+        if ($owner !== null && isset($absentOptional[$owner])) {
+            // No export/source audit is possible without the selected module. This
+            // permits declarations, not runtime access; hosts must gate contributors.
+            return;
+        }
         if ($owner === null || $owner === $moduleKey
             || (!$this->layout->hasExplicitBackendNamespace(ModuleKey::fromString($owner))
                 && !str_contains($reference, '\\contracts\\'))) {

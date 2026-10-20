@@ -75,6 +75,50 @@ final class ModuleRegistryCompilerTest extends TestCase
             ],
             'MODULE_VERSION_INCOMPATIBLE',
         ];
+        yield 'selected optional version mismatch' => [
+            [
+                $test->manifest('example.target', version: '2.0.0'),
+                $test->manifest('example.work-item', optionalDependencies: ['example.target']),
+            ],
+            'MODULE_VERSION_INCOMPATIBLE',
+        ];
+        yield 'selected optional cycle' => [
+            [
+                $test->manifest('example.one', optionalDependencies: ['example.two']),
+                $test->manifest('example.two', ['example.one']),
+            ],
+            'MODULE_DEPENDENCY_CYCLE',
+        ];
+        yield 'required cannot become optional' => [
+            [$test->manifest('example.one', ['example.missing'], optionalDependencies: ['example.missing'])],
+            'MODULE_DEPENDENCY_MISSING',
+        ];
+    }
+
+    public function testOptionalDependenciesOnlyParticipateWhenExplicitlySelected(): void
+    {
+        // The optional key sorts after the consumer, so this proves an actual graph edge.
+        $consumer = $this->manifest('example.alpha', optionalDependencies: ['example.target']);
+        self::assertSame(['example.alpha'], $this->compiler()->compile([$consumer])->moduleKeys());
+        $registry = $this->compiler()->compile([$consumer, $this->manifest('example.target')]);
+        self::assertSame(['example.target', 'example.alpha'], $registry->moduleKeys());
+        self::assertSame([], $consumer->data['dependencies']);
+        self::assertSame([], $consumer->data['tenant']['requires']);
+        self::assertSame($registry->revision, $this->compiler()->compile([
+            $this->manifest('example.target'), $consumer,
+        ])->revision);
+    }
+
+    public function testSelectedOptionalOwnerCanSupplyAPermissionWithoutTenantEnablement(): void
+    {
+        $registry = $this->compiler()->compile([
+            $this->manifest('example.work-item', optionalDependencies: ['example.target'], menus: [[
+                'key' => 'example.work-item.page', 'type' => 'page',
+                'component_key' => 'example.target.list', 'required_permission' => 'example.target.read',
+            ]]),
+            $this->manifest('example.target', permissions: [$this->permission('example.target.read')]),
+        ]);
+        self::assertSame(['example.target', 'example.work-item'], $registry->moduleKeys());
     }
 
     public function testCompilerRejectsDuplicateTargetOwnershipAndMissingProviders(): void
@@ -350,6 +394,7 @@ final class ModuleRegistryCompilerTest extends TestCase
         array $menus = [],
         array $permissions = [],
         array $ownedTables = [],
+        array $optionalDependencies = [],
     ): ManifestDocument {
         $moduleKey = \PeanutAdmin\Kernel\Module\ModuleKey::fromString($key);
         $layout = str_starts_with($key, 'dcs.')
@@ -391,6 +436,10 @@ final class ModuleRegistryCompilerTest extends TestCase
             'backend' => [
                 'provider' => $namespace . 'ModuleProvider',
             ],
+            'optional_dependencies' => array_map(
+                static fn(string $dependency): array => ['module_key' => $dependency, 'version' => '^1.0'],
+                $optionalDependencies,
+            ),
             'frontend' => [],
             'database' => ['owned_tables' => $ownedTables],
             'contracts' => ['exports' => [], 'events' => []],

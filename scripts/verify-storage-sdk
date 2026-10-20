@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+host="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/peanut-storage-sdk.XXXXXX")"
+succeeded=0
+cleanup() {
+  if [[ "$succeeded" -eq 1 ]]; then
+    rm -rf -- "$host"
+  else
+    printf 'Storage SDK host retained for diagnosis: %s\n' "$host" >&2
+  fi
+}
+trap cleanup EXIT
+cp "$ROOT/scripts/storage-sdk/composer.json" "$ROOT/scripts/storage-sdk/composer.lock" "$host/"
+composer --working-dir="$host" validate --strict
+composer --working-dir="$host" install --no-interaction --no-progress --prefer-dist --no-scripts --no-plugins
+# A separate PHP process never loads StorageDriverContractTest's provider stubs.
+php "$ROOT/vendor/bin/phpunit" --no-configuration --bootstrap "$host/vendor/autoload.php" \
+  --fail-on-empty-test-suite --fail-on-risky --fail-on-skipped \
+  "$ROOT/file-media/tests/Unit/Storage/StorageSdkContractTest.php"
+composer --working-dir="$host" show --locked --direct
+printf 'PHP-CORE-STORAGE-SDK-001 passed: locked offline SDK contracts, no skips\n'
+succeeded=1

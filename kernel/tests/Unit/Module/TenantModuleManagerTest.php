@@ -146,6 +146,31 @@ final class TenantModuleManagerTest extends TestCase
         return new CompiledModuleRegistry([$target, $workItem], [], [], [], hash('sha256', $target->digest . '|' . $workItem->digest));
     }
 
+    public function testOptionalDependenciesNeverRequireOrAutoEnableATenantModule(): void
+    {
+        $targetData = $this->manifest('example.target');
+        $workItemData = $this->manifest('example.work-item');
+        $workItemData['optional_dependencies'] = [['module_key' => 'example.target', 'version' => '^1.0']];
+        $target = ManifestDocument::fromArray('/tmp/example-target', $targetData);
+        $workItem = ManifestDocument::fromArray('/tmp/example-work-item', $workItemData);
+        $repository = new InMemoryTenantModuleMutationRepository();
+        $repository->records['example.target'] = new TenantModuleRecord(9, 'example.target', 'disabled', null, null, 1);
+        $manager = new TenantModuleManager(
+            new CompiledModuleRegistry([$target, $workItem], [], [], [], 'optional-fixture'),
+            $repository,
+            new class implements TenantModuleConfigValidator {
+                public function assertValid(ManifestDocument $manifest, array $config): void {}
+            },
+        );
+        $now = new DateTimeImmutable('2026-07-16T12:00:00Z');
+        self::assertSame('enabled', $manager->enable(9, 'example.work-item', [], $now)->status);
+        self::assertSame('disabled', $repository->records['example.target']->status);
+        self::assertSame(1, $repository->enableWriteCount);
+        $repository->records['example.target'] = new TenantModuleRecord(9, 'example.target', 'enabled', null, null, 1);
+        self::assertSame('disabled', $manager->disable(9, 'example.target', $now)->status);
+        self::assertSame('enabled', $repository->records['example.work-item']->status);
+    }
+
     public function testProtectedFoundationCannotBeEnabledOrDisabledAsAnOptionalTenantModule(): void
     {
         $manifest = $this->manifest('example.target');

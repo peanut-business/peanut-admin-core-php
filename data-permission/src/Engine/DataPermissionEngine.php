@@ -27,6 +27,7 @@ use PeanutAdmin\DataPermission\Target\TypedResourceTargetCollection;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Authorization\TenantAuthorizationEvaluator;
 
+/** Resolves declared resource operations into authorization decisions and query constraints. */
 final readonly class DataPermissionEngine
 {
     public function __construct(
@@ -96,6 +97,7 @@ final readonly class DataPermissionEngine
         string $operationName,
         TypedResourceTargetCollection $requestedTargets = new TypedResourceTargetCollection(),
     ): QueryConstraint {
+        // Apply this predicate to every matching read and count, not only one row lookup.
         $operation = $this->operation($resourceKey, $operationName);
         $this->assertCommon($tenantContext, $operation);
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
