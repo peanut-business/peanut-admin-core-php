@@ -58,7 +58,7 @@ def native_origin(path):
     return 'executable-or-library-content-address; non-package installation'
 
 
-def compression(path):
+def compression(path, covered_by='git.binarySha256'):
     if platform.system() != 'Linux':
         raise RuntimeError('Archive library capture currently requires the Linux producer toolchain')
     result = subprocess.run(['ldd', str(path)], capture_output=True, text=True)
@@ -72,15 +72,25 @@ def compression(path):
         runtime = ctypes.CDLL(str(library))
         runtime.zlibVersion.restype = ctypes.c_char_p
         return dict(linkage='dynamic', version=runtime.zlibVersion().decode(), librarySha256=sha(library), origin=native_origin(library))
-    return dict(linkage='embedded', coveredBy='git.binarySha256')
+    return dict(linkage='embedded', coveredBy=covered_by)
 
 
 def verifier_inputs():
+    python = Path(sys.executable).resolve()
     runtime = None
     if sysconfig.get_config_var('Py_ENABLE_SHARED'):
         path = Path(sysconfig.get_config_var('LIBDIR')) / sysconfig.get_config_var('LDLIBRARY')
         runtime = sha(path.resolve())
-    return dict(pythonVersion=platform.python_version(), executableSha256=sha(Path(sys.executable).resolve()), sharedRuntimeSha256=runtime, zipfileSha256=sha(Path(zipfile.__file__)), jsonModules={p.name: sha(p) for p in sorted(Path(json.__file__).parent.glob('*.py'))}, zlibVersion=zlib.ZLIB_RUNTIME_VERSION, zlibModuleSha256=sha(Path(zlib.__file__)), gitObjectVerifier=dict(version=command('git', '--version'), binarySha256=sha(executable('git'))))
+    if zlib.__spec__.origin == 'built-in' and 'zlib' in sys.builtin_module_names:
+        module = dict(linkage='builtin', coveredBy=['executableSha256'] + (['sharedRuntimeSha256'] if runtime else []))
+        library = compression(python, 'verifier.zlibModule')
+    else:
+        extension = Path(zlib.__file__).resolve()
+        module = dict(linkage='extension', binarySha256=sha(extension))
+        library = compression(extension, 'verifier.zlibModule')
+    if library['linkage'] == 'dynamic' and library['version'] != zlib.ZLIB_RUNTIME_VERSION:
+        raise RuntimeError('Python zlib linkage differs from its actual runtime version')
+    return dict(pythonVersion=platform.python_version(), executableSha256=sha(python), sharedRuntimeSha256=runtime, zipfileSha256=sha(Path(zipfile.__file__)), jsonModules={p.name: sha(p) for p in sorted(Path(json.__file__).parent.glob('*.py'))}, zlibVersion=zlib.ZLIB_RUNTIME_VERSION, zlibModule=module, zlibLibrary=library, gitObjectVerifier=dict(version=command('git', '--version'), binarySha256=sha(executable('git'))))
 
 
 def resolver_inputs():
@@ -133,8 +143,22 @@ def validate_supply(seal):
     if p.get('attributes') != dict(globalFile='disabled by core.attributesFile=/dev/null', system='disabled by GIT_ATTR_NOSYSTEM=1', info='absent-or-empty', source='tracked .gitattributes in source files'):
         raise RuntimeError('Missing or different archive attributes policy')
     r, v = data.get('resolver', {}), data.get('verifier', {})
-    if set(r) != {'phpVersion', 'phpBinarySha256', 'phpSupply', 'composer', 'composerActualVersion', 'platform', 'args'} or set(v) != {'pythonVersion', 'executableSha256', 'sharedRuntimeSha256', 'zipfileSha256', 'jsonModules', 'zlibVersion', 'zlibModuleSha256', 'gitObjectVerifier'} or r.get('composer') != POLICY['composer'] or r.get('args') != POLICY['resolverArgs'] or not r.get('platform') or not r.get('phpVersion', '').startswith(POLICY['phpMinor'] + '.') or not all(re.fullmatch('[0-9a-f]{64}', x or '') for x in [r.get('phpBinarySha256'), v.get('executableSha256'), v.get('zipfileSha256'), v.get('zlibModuleSha256'), v.get('gitObjectVerifier', {}).get('binarySha256')]) or not all(v.get('jsonModules', {}).get(name) for name in ('__init__.py', 'decoder.py', 'encoder.py', 'scanner.py')) or not v.get('pythonVersion') or not v.get('zlibVersion'):
+    if set(r) != {'phpVersion', 'phpBinarySha256', 'phpSupply', 'composer', 'composerActualVersion', 'platform', 'args'} or set(v) != {'pythonVersion', 'executableSha256', 'sharedRuntimeSha256', 'zipfileSha256', 'jsonModules', 'zlibVersion', 'zlibModule', 'zlibLibrary', 'gitObjectVerifier'} or r.get('composer') != POLICY['composer'] or r.get('args') != POLICY['resolverArgs'] or not r.get('platform') or not r.get('phpVersion', '').startswith(POLICY['phpMinor'] + '.') or not all(re.fullmatch('[0-9a-f]{64}', x or '') for x in [r.get('phpBinarySha256'), v.get('executableSha256'), v.get('zipfileSha256'), v.get('gitObjectVerifier', {}).get('binarySha256')]) or not all(v.get('jsonModules', {}).get(name) for name in ('__init__.py', 'decoder.py', 'encoder.py', 'scanner.py')) or not v.get('pythonVersion') or not v.get('zlibVersion'):
         raise RuntimeError('Missing resolver/verifier role input records')
+    if v['sharedRuntimeSha256'] is not None and not re.fullmatch('[0-9a-f]{64}', v['sharedRuntimeSha256']):
+        raise RuntimeError('Missing actual shared Python runtime identity')
+    module = v['zlibModule']
+    if module.get('linkage') == 'builtin':
+        if module != dict(linkage='builtin', coveredBy=['executableSha256'] + (['sharedRuntimeSha256'] if v['sharedRuntimeSha256'] else [])):
+            raise RuntimeError('Missing builtin zlib module coverage')
+    elif set(module) != {'linkage', 'binarySha256'} or module.get('linkage') != 'extension' or not re.fullmatch('[0-9a-f]{64}', module['binarySha256']):
+        raise RuntimeError('Missing actual zlib extension identity')
+    library = v['zlibLibrary']
+    if library.get('linkage') == 'dynamic':
+        if set(library) != {'linkage', 'version', 'librarySha256', 'origin'} or library['version'] != v['zlibVersion'] or not re.fullmatch('[0-9a-f]{64}', library['librarySha256']) or not library['origin']:
+            raise RuntimeError('Missing actual Python dynamic zlib identity')
+    elif library != dict(linkage='embedded', coveredBy='verifier.zlibModule'):
+        raise RuntimeError('Missing Python zlib implementation coverage')
     source = seal.get('sourceCommit', '')
     if not re.fullmatch('[0-9a-f]{40}', source) or command('git', 'cat-file', '-t', source) != 'commit' or command('git', 'rev-parse', '--verify', source + '^{tree}') != data['tree'] or command('git', 'show', '-s', '--format=%ct', source) != seal.get('sourceCommitTime'):
         raise RuntimeError('Input seal source does not match real Git objects')

@@ -16,7 +16,7 @@ Composer 包名保持 `peanut-admin/core`，版本从 Git 分支／标签取得�
 
 原生顺序为 `scripts/release-identity inputs` → `scripts/release-identity resolve` → `scripts/release-identity prepare`。`inputs` 只实际采集/验证，不制包、不安装依赖、不标资格；默认 `.local/build-inputs.json`，可用 `CORE_BUILD_INPUTS` 指定本候选独立文件。初次成为本候选期望，已存在 seal 不允许漂移或被覆盖。resolve 实际调用固定官方 Composer PHAR/所选 PHP 和政策参数；prepare 在 archive 前后重采有效输入，绑定 seal 与实际解析锁。源码变化须形成新 seal/新资格，不能拿旧输入宣称新增字段已通过。
 
-角色分别保存：producer 是 Git/zlib/归档输入；resolver 是 PHP 实际 patch/执行文件 SHA、Composer 2.10.2 官方 PHAR SHA、原生 platform 清单、manifest/lock/固定 install 参数；verifier 是 Python 实际执行/共享 runtime、ZIP/JSON 代码及 zlib 身份和 Git 对象读取工具。平台清单只用于解释 Composer 求解，不代表每个扩展都影响主 ZIP。setup-php 选择 minor，不能以写一个 patch 字符串冒充固定 patch；实际 PHP 记录为真实值，不为 ZIP 复制整台 PHP 宿主。安装前缀不写入有效输入，实际内容和逻辑来源必须可核。
+角色分别保存：producer 是 Git/zlib/归档输入；resolver 是 PHP 实际 patch/执行文件 SHA、Composer 2.10.2 官方 PHAR SHA、原生 platform 清单、manifest/lock/固定 install 参数；verifier 是 Python 实际执行/共享 runtime、ZIP/JSON 代码及 zlib 身份和 Git 对象读取工具。Python zlib 为 extension 时记录实际模块文件，builtin 时明确由实际 Python executable/shared runtime 内容摘要覆盖，并定向记录实际 zlib 库版本/内容或内置覆盖关系；缺失身份拒绝。平台清单只用于解释 Composer 求解，不代表每个扩展都影响主 ZIP。setup-php 选择 minor，不能以写一个 patch 字符串冒充固定 patch；实际 PHP 记录为真实值，不为 ZIP 复制整台 PHP 宿主。安装前缀不写入有效输入，实际内容和逻辑来源必须可核。
 
 正式发行先显式运行 CI 并填写精确 `release_version`（不带 v），通过后将本仓 Actions variable `CORE_QUALIFICATION_RUN_ID` 固定到该成功 run。schema 2 资格用 archive ZIP 原生安装干净消费者，保存 `build-inputs.json` 字节摘要、源码 commit/tree、有效输入、实际根锁、消费者 manifest/lock、ZIP SHA-256 与逐文件身份到 `php-core-qualified`。生产/资格核当前有效 producer/resolver/verifier 没有漂移；发行只读原包时核真实 run/commit/tree、源码政策/供应约束、seal、qualified 和包内容，不要求未执行 producer 的发布宿主二进制全部相同。锁定安装及当前 verifier 的实际输入另存独立角色回执，用原锁 install，不重解析；同树合并可改变发布 commit，不改变原包 seal。旧 schema/缺字段拒绝，旧历史 CI 未记录信息保持未知。
 
