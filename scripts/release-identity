@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import platform
 import re
 from pathlib import Path
 import stat
@@ -30,6 +31,7 @@ def inputs():
         raise RuntimeError('Untracked source must be committed before sealing inputs')
     return dict(tree=command('git', 'rev-parse', 'HEAD^{tree}'),
                 composerJson=sha(ROOT / 'composer.json'),
+                git=command('git', '--version'), python=platform.python_version(),
                 php=command('php', '-r', 'echo PHP_VERSION;'),
                 composer=command('composer', '--version', '--no-ansi'))
 
@@ -74,6 +76,8 @@ if mode == 'prepare':
     save(data)
 elif mode in ('verify', 'qualify', 'public'):
     data = json.loads((OUT / 'release-identity.json').read_text())
+    if os.environ.get('CORE_QUALIFICATION_COMMIT') and data['sourceCommit'] != os.environ['CORE_QUALIFICATION_COMMIT']:
+        raise RuntimeError('Artifact source does not match the selected qualification run')
     if data['schema'] != 1 or data['inputs'] != inputs() or (os.environ.get('CORE_RELEASE_VERSION') and data['version'] != os.environ['CORE_RELEASE_VERSION']):
         raise RuntimeError('Qualified source tree or tool inputs differ')
     if sha(OUT / 'core.zip') != data['archiveSha256'] or payload(OUT / 'core.zip') != data['payload']:

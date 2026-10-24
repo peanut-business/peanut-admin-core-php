@@ -34,6 +34,28 @@ installed="$consumer/vendor/peanut-admin/core"
   echo 'verify-consumer: Core package was not installed as an isolated copy' >&2
   exit 1
 }
+python3 - "$artifacts" "$consumer" <<'PYTHON'
+import hashlib, json, pathlib, sys
+artifacts, consumer = map(pathlib.Path, sys.argv[1:])
+identity = json.loads((artifacts/'release-identity.json').read_text())
+packages = json.loads((consumer/'vendor/composer/installed.json').read_text())['packages']
+core = next(p for p in packages if p['name'] == 'peanut-admin/core')
+if core.get('installation-source') != 'dist':
+    raise RuntimeError('Composer fell back to source instead of consuming the final ZIP')
+installed = consumer/'vendor/peanut-admin/core'
+actual = {}
+for path in installed.rglob('*'):
+    if path.is_dir() and not path.is_symlink():
+        continue
+    data = path.readlink().as_posix().encode() if path.is_symlink() else path.read_bytes()
+    actual[path.relative_to(installed).as_posix()] = dict(kind='symlink' if path.is_symlink() else 'file', executable=bool(path.lstat().st_mode & 0o111), sha256=hashlib.sha256(data).hexdigest())
+if actual != identity['payload']:
+    raise RuntimeError('Composer installed payload differs from the qualified archive')
+if consumer.name == 'public-consumer':
+    public = json.loads((artifacts/'public-identity.json').read_text())
+    if hashlib.sha256((consumer/'composer.lock').read_bytes()).hexdigest() != public['consumerLockSha256']:
+        raise RuntimeError('Composer changed the frozen public consumer lock')
+PYTHON
 php -r '
 require $argv[1];
 $classes = array_slice($argv, 2);
@@ -56,5 +78,13 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 fi
 if [[ "${1:-}" != --public ]]; then
   "$ROOT/scripts/release-identity" qualify
+else
+  python3 - "$artifacts/public-identity.json" <<'PYTHON'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+identity = json.loads(path.read_text())
+identity['cleanConsumer'] = 'passed'
+path.write_text(json.dumps(identity, indent=2)+'\n')
+PYTHON
 fi
 rm -rf -- "$consumer/vendor"

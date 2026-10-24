@@ -116,6 +116,7 @@ jobs:
           name: php-core-qualified
           path: .local/release/
           if-no-files-found: error
+          include-hidden-files: true
 
   docs:
     name: Documentation hygiene
