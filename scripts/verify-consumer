@@ -9,7 +9,7 @@ consumer="$artifacts/consumer"
 if [[ "${1:-}" == --public ]]; then
   [[ -f "$artifacts/public-identity.json" ]] || { echo 'Public payload gate has not passed' >&2; exit 1; }
   consumer="$artifacts/public-consumer"
-  composer --working-dir="$consumer" install --no-interaction --no-progress --prefer-dist --no-scripts
+  "$ROOT/scripts/release-identity" install-consumer public
 else
   "$ROOT/scripts/release-identity" prepare
   [[ ! -e "$consumer" ]] || { echo 'Consumer output already exists; choose a fresh qualification output' >&2; exit 1; }
@@ -26,7 +26,7 @@ package['source']={'type':'git','url':'https://github.com/peanut-business/peanut
 consumer={'name':'peanut-admin/ci-consumer','require':{'peanut-admin/core':identity['version']},'repositories':[{'type':'package','package':package}]}
 (root/'consumer/composer.json').write_text(json.dumps(consumer, indent=2)+'\n')
 PYTHON
-  composer --working-dir="$consumer" install --no-interaction --no-progress --prefer-dist --no-scripts
+  "$ROOT/scripts/release-identity" install-consumer candidate
 fi
 
 installed="$consumer/vendor/peanut-admin/core"

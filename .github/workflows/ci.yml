@@ -113,8 +113,9 @@ jobs:
           key: ${{ runner.os }}-php83-${{ hashFiles('composer.json') }}
       - name: Validate and install public package dependencies
         run: |
+          ./scripts/release-identity inputs
           composer validate --strict
-          composer install --no-interaction --no-progress --prefer-dist --no-scripts
+          ./scripts/release-identity resolve
       - name: Run complete Core and clean-consumer qualification
         env:
           CORE_RELEASE_VERSION: ${{ inputs.release_version }}
@@ -181,12 +182,14 @@ jobs:
           CORE_RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           set -Eeuo pipefail
+          ./scripts/release-identity inputs
           composer validate --strict
-          composer install --no-interaction --no-progress --prefer-dist --no-scripts
+          ./scripts/release-identity resolve
           CORE_RELEASE_ARTIFACTS="$RUNNER_TEMP/identity-a" ./scripts/release-identity prepare
           cp composer.lock "$RUNNER_TEMP/identity-source-b/composer.lock"
           cd "$RUNNER_TEMP/identity-source-b"
-          composer install --no-interaction --no-progress --prefer-dist --no-scripts
+          ./scripts/release-identity inputs
+          ./scripts/release-identity resolve
           cmp composer.lock "$RUNNER_TEMP/identity-a/qualification-composer.lock"
           CORE_RELEASE_ARTIFACTS="$RUNNER_TEMP/identity-b" ./scripts/release-identity prepare
           git diff --exit-code HEAD --
@@ -200,7 +203,7 @@ jobs:
           files = sorted(p.name for p in a.iterdir())
           assert files == sorted(p.name for p in b.iterdir()) and files
           identity = json.loads((a/'release-identity.json').read_text())
-          assert identity['sourceCommit'] == os.environ['GITHUB_SHA'] and identity.get('qualified') is not True
+          assert identity['schema'] == 2 and identity['sourceCommit'] == os.environ['GITHUB_SHA'] and identity.get('qualified') is not True
           result = []
           for name in files:
               left, right = (a/name).read_bytes(), (b/name).read_bytes()
