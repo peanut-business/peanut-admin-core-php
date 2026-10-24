@@ -4,6 +4,15 @@ name: CI
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Full qualification or nonpublishing package identity only
+        type: choice
+        options: [qualification, identity]
+        default: qualification
+      expected_source_commit:
+        description: Exact dispatch HEAD required for identity mode
+        type: string
+        default: ''
       release_version:
         description: Exact Core version for this qualification (without v)
         required: true
@@ -14,11 +23,12 @@ permissions:
 
 concurrency:
   group: php-core-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   changes:
     name: Changed paths
+    if: inputs.mode != 'identity'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -130,7 +140,7 @@ jobs:
 
   summary:
     name: CI summary
-    if: always()
+    if: ${{ always() && inputs.mode != 'identity' }}
     needs: [changes, core, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -143,3 +153,70 @@ jobs:
             --check='changes:${{ needs.changes.result }}:required' \
             --check='core:${{ needs.core.result }}:${{ needs.changes.outputs.runtime || 'false' }}' \
             --check='docs:${{ needs.docs.result }}:${{ needs.changes.outputs.docs_only || 'false' }}'
+
+  identity:
+    name: Nonpublishing package identity
+    if: inputs.mode == 'identity'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the exact selected source
+        env:
+          EXPECTED_SOURCE: ${{ inputs.expected_source_commit }}
+        run: |
+          [[ "$EXPECTED_SOURCE" =~ ^[a-f0-9]{40}$ && "$EXPECTED_SOURCE" == "$GITHUB_SHA" ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git worktree add --detach "$RUNNER_TEMP/identity-source-b" "$EXPECTED_SOURCE"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:2.10.2
+          coverage: none
+      - name: Resolve once, freeze the actual lock and prepare twice
+        env:
+          CORE_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -Eeuo pipefail
+          composer validate --strict
+          composer install --no-interaction --no-progress --prefer-dist --no-scripts
+          CORE_RELEASE_ARTIFACTS="$RUNNER_TEMP/identity-a" ./scripts/release-identity prepare
+          cp composer.lock "$RUNNER_TEMP/identity-source-b/composer.lock"
+          cd "$RUNNER_TEMP/identity-source-b"
+          composer install --no-interaction --no-progress --prefer-dist --no-scripts
+          cmp composer.lock "$RUNNER_TEMP/identity-a/qualification-composer.lock"
+          CORE_RELEASE_ARTIFACTS="$RUNNER_TEMP/identity-b" ./scripts/release-identity prepare
+          git diff --exit-code HEAD --
+      - name: Compare actual standard artifacts and fixed inputs
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          a, b = root/'identity-a', root/'identity-b'
+          files = sorted(p.name for p in a.iterdir())
+          assert files == sorted(p.name for p in b.iterdir()) and files
+          identity = json.loads((a/'release-identity.json').read_text())
+          assert identity['sourceCommit'] == os.environ['GITHUB_SHA'] and identity.get('qualified') is not True
+          result = []
+          for name in files:
+              left, right = (a/name).read_bytes(), (b/name).read_bytes()
+              assert left == right, name
+              result.append(dict(name=name, size=len(left), sha256=hashlib.sha256(left).hexdigest()))
+          (root/'identity-comparison.json').write_text(json.dumps(dict(status='identical', sourceCommit=identity['sourceCommit'], inputs=identity['inputs'], qualified=False, files=result), indent=2)+'\n')
+          PYTHON
+          echo 'Two independent standard productions matched byte-for-byte; full qualification and publication NOT_RUN.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: php-core-identity-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/identity-a/
+            ${{ runner.temp }}/identity-b/
+            ${{ runner.temp }}/identity-comparison.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 7

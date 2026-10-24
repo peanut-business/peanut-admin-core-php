@@ -1,5 +1,7 @@
 # Peanut Admin Core PHP
 
+CI 默认 `mode=qualification` 保留完整资格。显式 `mode=identity` 须填写精确 `expected_source_commit` 和 `release_version`，仅生成两轮标准 `release-identity prepare` 归档并逐字节比较输入、锁及 ZIP。库根无提交锁时只解析一次，封存实际锁，第二独立检出复制该锁并严格 install，不重新解析。结果保存 `php-core-identity-*` artifact；不运行测试或消费者资格、不标记 qualified、不发布，不能用于 tag 发行。CI 不取消已有运行。
+
 `peanut-admin/core` 的 PHP 技术核心源码仓。A1 目标是执行上下文、Scope、授权协议、模块机制、技术存储／安全协议及 ThinkPHP 接入；完整账号组织、设置、文件账本、任务等业务由 Code 官方模块维护。迁移进度与验收见 Project 的 `docs/development/deep-convergence-a1.md`，不能将开发源码当作全项目完成或发布证明。
 
 日常开发使用 `dev`；`main` 只承载已批准的发布版本。该仓在 2026-09-17 从原 Core 单体仓的 `packages/php` 拆出，初始开发提交为 `d1c25fdd3bc27cc8bd56fcaa2d4cbdc33c906bbe`。
