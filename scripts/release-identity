@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Seal the qualified Composer archive; compare the public ZIP by payload, not ZIP encoding."""
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import urllib.request
+import urllib.parse
+import zipfile
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = Path(os.environ.get('CORE_RELEASE_ARTIFACTS', ROOT / '.local/release'))
+
+
+def command(*args):
+    return subprocess.check_output(args, cwd=ROOT, text=True).strip()
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def inputs():
+    subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    if command('git', 'ls-files', '--others', '--exclude-standard'):
+        raise RuntimeError('Untracked source must be committed before sealing inputs')
+    return dict(tree=command('git', 'rev-parse', 'HEAD^{tree}'),
+                composerJson=sha(ROOT / 'composer.json'),
+                php=command('php', '-r', 'echo PHP_VERSION;'),
+                composer=command('composer', '--version', '--no-ansi'))
+
+
+def payload(path):
+    files = {}
+    with zipfile.ZipFile(path) as archive:
+        for entry in archive.infolist():
+            if entry.is_dir():
+                continue
+            name = entry.filename.split('/', 1)
+            if len(name) != 2 or not name[1] or '..' in name[1].split('/') or name[1].startswith('/'):
+                raise RuntimeError('Unsafe or unprefixed archive path')
+            name = name[1]
+            if name in files:
+                raise RuntimeError('Duplicate archive path')
+            kind = 'symlink' if stat.S_ISLNK(entry.external_attr >> 16) else 'file'
+            files[name] = dict(kind=kind, executable=bool((entry.external_attr >> 16) & 0o111), sha256=hashlib.sha256(archive.read(entry)).hexdigest())
+    if not files:
+        raise RuntimeError('Empty package')
+    return files
+
+
+def save(data):
+    (OUT / 'release-identity.json').write_text(json.dumps(data, indent=2) + '\n')
+
+
+mode = sys.argv[1] if len(sys.argv) > 1 else ''
+if mode == 'prepare':
+    OUT.mkdir(parents=True, exist_ok=True)
+    if list(OUT.iterdir()):
+        raise RuntimeError('Release output must be fresh; preserve existing qualification evidence')
+    input_identity = inputs()
+    version = os.environ.get('CORE_RELEASE_VERSION', '')
+    if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?', version):
+        raise RuntimeError('Set CORE_RELEASE_VERSION to the exact intended version (without v)')
+    subprocess.run(['git', 'archive', '--format=zip', '--prefix=core/', '-o', str(OUT / 'core.zip'), 'HEAD'], cwd=ROOT, check=True)
+    (OUT / 'qualification-composer.lock').write_bytes((ROOT / 'composer.lock').read_bytes())
+    data = dict(schema=1, sourceCommit=command('git', 'rev-parse', 'HEAD'), inputs=input_identity,
+                version=version, archiveSha256=sha(OUT / 'core.zip'),
+                dependencyLockSha256=sha(OUT / 'qualification-composer.lock'), payload=payload(OUT / 'core.zip'))
+    save(data)
+elif mode in ('verify', 'qualify', 'public'):
+    data = json.loads((OUT / 'release-identity.json').read_text())
+    if data['schema'] != 1 or data['inputs'] != inputs() or (os.environ.get('CORE_RELEASE_VERSION') and data['version'] != os.environ['CORE_RELEASE_VERSION']):
+        raise RuntimeError('Qualified source tree or tool inputs differ')
+    if sha(OUT / 'core.zip') != data['archiveSha256'] or payload(OUT / 'core.zip') != data['payload']:
+        raise RuntimeError('Qualified archive differs')
+    if sha(OUT / 'qualification-composer.lock') != data['dependencyLockSha256']:
+        raise RuntimeError('Qualification dependency lock differs')
+    if mode == 'qualify':
+        data['consumerLockSha256'] = sha(OUT / 'consumer/composer.lock')
+        data['consumerJsonSha256'] = sha(OUT / 'consumer/composer.json')
+        data['qualified'] = True
+        save(data)
+    else:
+        if data.get('qualified') is not True or sha(OUT / 'consumer/composer.lock') != data['consumerLockSha256'] or sha(OUT / 'consumer/composer.json') != data['consumerJsonSha256']:
+            raise RuntimeError('Clean Composer consumer qualification is absent or differs')
+        if mode == 'public':
+            metadata = json.loads(Path(sys.argv[2]).read_text())
+            previous = {}
+            selected = None
+            for raw in metadata.get('packages', {}).get('peanut-admin/core', []):
+                if metadata.get('minified') == 'composer/2.0':
+                    package = dict(previous)
+                    for key, value in raw.items():
+                        if value == '__unset':
+                            package.pop(key, None)
+                        else:
+                            package[key] = value
+                    previous = package
+                else:
+                    package = raw
+                if package.get('version', '').lstrip('v') == data['version'].lstrip('v'):
+                    selected = package
+                    break
+            source = (selected or {}).get('source', {})
+            dist = (selected or {}).get('dist', {})
+            release_commit = command('git', 'rev-parse', 'HEAD')
+            if source.get('reference') != release_commit or source.get('url', '').removesuffix('.git') != 'https://github.com/peanut-business/peanut-admin-core-php' or dist.get('type') != 'zip' or dist.get('reference') != release_commit:
+                raise RuntimeError('Exact public source/dist metadata differs')
+            url = urllib.parse.urlparse(dist.get('url', ''))
+            if url.scheme != 'https' or url.hostname not in ('api.github.com', 'codeload.github.com') or 'peanut-business/peanut-admin-core-php/' not in url.path:
+                raise RuntimeError('Unexpected public dist origin')
+            target = OUT / 'public-core.zip'
+            with urllib.request.urlopen(dist['url']) as response:
+                target.write_bytes(response.read())
+            if payload(target) != data['payload']:
+                raise RuntimeError('Public ZIP payload differs from the qualified source archive')
+            # Preserve every resolved dependency. Only the root package transport is replaced.
+            lock = json.loads((OUT / 'consumer/composer.lock').read_text())
+            matches = [p for p in lock['packages'] if p['name'] == 'peanut-admin/core']
+            if len(matches) != 1 or matches[0]['version'] != data['version']:
+                raise RuntimeError('Qualified consumer version differs')
+            matches[0]['dist'] = dict(type='zip', url=target.resolve().as_uri(), reference=dist['reference'], shasum=hashlib.sha1(target.read_bytes()).hexdigest())
+            matches[0]['source'] = source
+            consumer = OUT / 'public-consumer'
+            consumer.mkdir()
+            (consumer / 'composer.json').write_bytes((OUT / 'consumer/composer.json').read_bytes())
+            (consumer / 'composer.lock').write_text(json.dumps(lock, indent=2) + '\n')
+            (OUT / 'public-identity.json').write_text(json.dumps(dict(source=source, dist=dist, archiveSha256=sha(target), qualifiedArchiveSha256=data['archiveSha256'], payloadEqual=True, consumerLockSha256=sha(consumer / 'composer.lock')), indent=2) + '\n')
+    print('PHP Core ' + mode + ': exact identity verified')
+else:
+    raise RuntimeError('Usage: release-identity prepare|qualify|verify|public [packagist.json]')

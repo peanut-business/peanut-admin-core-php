@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: php-core-release-${{ github.ref }}
@@ -50,11 +51,27 @@ jobs:
           php-version: '8.3'
           tools: composer:2.10.2
           coverage: none
-      - name: Qualify tagged source
+      - name: Require a fixed successful qualification run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFICATION_RUN: ${{ vars.CORE_QUALIFICATION_RUN_ID }}
         run: |
-          composer validate --strict
+          set -Eeuo pipefail
+          [[ "$QUALIFICATION_RUN" =~ ^[1-9][0-9]*$ ]] || { echo 'Set CORE_QUALIFICATION_RUN_ID to the approved CI run' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN" > "$RUNNER_TEMP/qualification-run.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '.conclusion == "success" and .path == ".github/workflows/ci.yml" and .head_repository.full_name == $repo' "$RUNNER_TEMP/qualification-run.json"
+      - uses: actions/download-artifact@v4
+        with:
+          name: php-core-qualified
+          path: .local/release
+          github-token: ${{ github.token }}
+          run-id: ${{ vars.CORE_QUALIFICATION_RUN_ID }}
+      - name: Verify qualified source, dependency lock and tools
+        run: |
+          CORE_RELEASE_VERSION="${GITHUB_REF_NAME#v}" ./scripts/release-identity verify
+          cp .local/release/qualification-composer.lock composer.lock
           composer install --no-interaction --no-progress --prefer-dist --no-scripts
-          ./scripts/ci-check
+          cmp composer.lock .local/release/qualification-composer.lock
       - name: Confirm Packagist indexed this exact tag and source
         shell: bash
         run: |
@@ -67,14 +84,13 @@ jobs:
               && php -r '
                 $data=json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
                 foreach ($data["packages"]["peanut-admin/core"] ?? [] as $package) {
-                  $source=preg_replace("/\\.git$/", "", rtrim($package["source"]["url"] ?? "", "/"));
-                  if (($package["version"] ?? null) === $argv[2]
-                    && ($package["source"]["reference"] ?? null) === $argv[3]
-                    && $source === "https://github.com/peanut-business/peanut-admin-core-php") exit(0);
+                  if (ltrim($package["version"] ?? "", "v") === ltrim($argv[2], "v")) exit(0);
                 }
                 exit(1);
               ' "$RUNNER_TEMP/packagist-core.json" "$GITHUB_REF_NAME" "$expected_commit"; then
-              echo "Packagist resolved $GITHUB_REF_NAME to $expected_commit"
+              CORE_RELEASE_VERSION="${GITHUB_REF_NAME#v}" ./scripts/release-identity public "$RUNNER_TEMP/packagist-core.json"
+              ./scripts/verify-consumer --public
+              echo "Packagist dist payload and locked native consumer matched $GITHUB_REF_NAME at $expected_commit"
               exit 0
             fi
             if [[ "$attempt" -lt 18 ]]; then sleep 20; fi

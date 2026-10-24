@@ -3,21 +3,31 @@ set -Eeuo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 candidate="$(git -C "$ROOT" rev-parse HEAD^{commit})"
-consumer="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/peanut-php-core-consumer.XXXXXX")"
-succeeded=0
-cleanup() {
-  if [[ "$succeeded" -eq 1 ]]; then
-    rm -rf -- "$consumer"
-  else
-    printf 'PHP Core consumer retained for diagnosis: %s\n' "$consumer" >&2
-  fi
-}
-trap cleanup EXIT
-
-composer --working-dir="$consumer" init --name=peanut-admin/ci-consumer --no-interaction >/dev/null
-composer --working-dir="$consumer" config repositories.core path "$ROOT"
-COMPOSER_MIRROR_PATH_REPOS=1 composer --working-dir="$consumer" require \
-  'peanut-admin/core:@dev' --no-interaction --no-progress --prefer-dist --no-scripts
+artifacts="${CORE_RELEASE_ARTIFACTS:-$ROOT/.local/release}"
+export CORE_RELEASE_ARTIFACTS="$artifacts"
+consumer="$artifacts/consumer"
+if [[ "${1:-}" == --public ]]; then
+  [[ -f "$artifacts/public-identity.json" ]] || { echo 'Public payload gate has not passed' >&2; exit 1; }
+  consumer="$artifacts/public-consumer"
+  composer --working-dir="$consumer" install --no-interaction --no-progress --prefer-dist --no-scripts
+else
+  "$ROOT/scripts/release-identity" prepare
+  [[ ! -e "$consumer" ]] || { echo 'Consumer output already exists; choose a fresh qualification output' >&2; exit 1; }
+  mkdir -p "$consumer"
+  python3 - "$artifacts" <<'PYTHON'
+import json, pathlib, sys, zipfile
+root=pathlib.Path(sys.argv[1]).resolve()
+identity=json.loads((root/'release-identity.json').read_text())
+with zipfile.ZipFile(root/'core.zip') as archive:
+    package=json.loads(archive.read('core/composer.json'))
+package['version']=identity['version']
+package['dist']={'type':'zip','url':(root/'core.zip').as_uri(),'reference':identity['sourceCommit']}
+package['source']={'type':'git','url':'https://github.com/peanut-business/peanut-admin-core-php.git','reference':identity['sourceCommit']}
+consumer={'name':'peanut-admin/ci-consumer','require':{'peanut-admin/core':identity['version']},'repositories':[{'type':'package','package':package}]}
+(root/'consumer/composer.json').write_text(json.dumps(consumer, indent=2)+'\n')
+PYTHON
+  composer --working-dir="$consumer" install --no-interaction --no-progress --prefer-dist --no-scripts
+fi
 
 installed="$consumer/vendor/peanut-admin/core"
 [[ -d "$installed" && ! -L "$installed" ]] || {
@@ -44,4 +54,7 @@ printf("PHP-CORE-CONSUMER-001 passed: %d public package namespaces\n", count($cl
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   printf -- '- Clean Composer consumer: passed (5 public namespaces)\n- Candidate: `%s`\n' "$candidate" >>"$GITHUB_STEP_SUMMARY"
 fi
-succeeded=1
+if [[ "${1:-}" != --public ]]; then
+  "$ROOT/scripts/release-identity" qualify
+fi
+rm -rf -- "$consumer/vendor"
