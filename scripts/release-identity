@@ -93,6 +93,8 @@ elif mode in ('verify', 'qualify', 'public'):
         if data.get('qualified') is not True or sha(OUT / 'consumer/composer.lock') != data['consumerLockSha256'] or sha(OUT / 'consumer/composer.json') != data['consumerJsonSha256']:
             raise RuntimeError('Clean Composer consumer qualification is absent or differs')
         if mode == 'public':
+            if any((OUT / name).exists() for name in ('public-core.zip', 'public-identity.json', 'public-consumer')):
+                raise RuntimeError('Public output already exists; preserve the previous download/consumer evidence')
             metadata = json.loads(Path(sys.argv[2]).read_text())
             previous = {}
             selected = None
