@@ -38,18 +38,52 @@ def inputs():
 
 def payload(path):
     files = {}
+    paths = {}
+    wrapper = None
     with zipfile.ZipFile(path) as archive:
         for entry in archive.infolist():
-            if entry.is_dir():
-                continue
-            name = entry.filename.split('/', 1)
-            if len(name) != 2 or not name[1] or '..' in name[1].split('/') or name[1].startswith('/'):
-                raise RuntimeError('Unsafe or unprefixed archive path')
-            name = name[1]
-            if name in files:
+            # Check the original name before stripping the wrapper or skipping directories.
+            raw = entry.orig_filename
+            if not raw or raw != entry.filename or raw.startswith('/') or '\\' in raw or '\x00' in raw:
+                raise RuntimeError('Unsafe original archive path')
+            parts = raw.removesuffix('/').split('/')
+            if any(not part or part in ('.', '..') or re.match(r'^[A-Za-z]:', part) for part in parts):
+                raise RuntimeError('Unsafe original archive path component')
+            if wrapper is None:
+                wrapper = parts[0]
+            elif parts[0] != wrapper:
+                raise RuntimeError('Archive must have one safe wrapper directory')
+            mode = entry.external_attr >> 16
+            if mode & 0o7000:
+                raise RuntimeError('Archive entry has privileged permission bits')
+            if entry.create_system == 0 and mode == 0:
+                # Standard git archive uses DOS attributes for non-executable files/dirs.
+                if entry.external_attr not in (0, 0x10):
+                    raise RuntimeError('Unsupported DOS archive entry attributes')
+                kind = 'dir' if entry.external_attr == 0x10 else 'file'
+            elif entry.create_system == 3 and stat.S_ISREG(mode):
+                kind = 'file'
+            elif entry.create_system == 3 and stat.S_ISDIR(mode):
+                kind = 'dir'
+            else:
+                # The Core source has no symlink consumer; reject links and special files.
+                raise RuntimeError('Unsupported archive entry type, including symlinks')
+            if entry.is_dir() != (kind == 'dir') or (len(parts) == 1 and kind != 'dir'):
+                raise RuntimeError('Archive path and entry type disagree')
+            key = tuple(parts)
+            if key in paths:
                 raise RuntimeError('Duplicate archive path')
-            kind = 'symlink' if stat.S_ISLNK(entry.external_attr >> 16) else 'file'
-            files[name] = dict(kind=kind, executable=bool((entry.external_attr >> 16) & 0o111), sha256=hashlib.sha256(archive.read(entry)).hexdigest())
+            paths[key] = kind
+            content = archive.read(entry)
+            if kind == 'dir':
+                if content:
+                    raise RuntimeError('Archive directory has a payload')
+                continue
+            name = '/'.join(parts[1:])
+            files[name] = dict(kind=kind, executable=bool(mode & 0o111), sha256=hashlib.sha256(content).hexdigest())
+    for key in paths:
+        if any(paths.get(key[:end]) == 'file' for end in range(1, len(key))):
+            raise RuntimeError('Archive file is also used as a parent directory')
     if not files:
         raise RuntimeError('Empty package')
     return files
@@ -78,6 +112,10 @@ elif mode in ('verify', 'qualify', 'public'):
     data = json.loads((OUT / 'release-identity.json').read_text())
     if os.environ.get('CORE_QUALIFICATION_COMMIT') and data['sourceCommit'] != os.environ['CORE_QUALIFICATION_COMMIT']:
         raise RuntimeError('Artifact source does not match the selected qualification run')
+    if not re.fullmatch(r'[0-9a-f]{40}', data['sourceCommit']) or command('git', 'cat-file', '-t', data['sourceCommit']) != 'commit':
+        raise RuntimeError('Qualification source is not an available commit object')
+    if command('git', 'rev-parse', '--verify', data['sourceCommit'] + '^{tree}') != data['inputs']['tree']:
+        raise RuntimeError('Qualification commit object tree differs from the artifact')
     if data['schema'] != 1 or data['inputs'] != inputs() or (os.environ.get('CORE_RELEASE_VERSION') and data['version'] != os.environ['CORE_RELEASE_VERSION']):
         raise RuntimeError('Qualified source tree or tool inputs differ')
     if sha(OUT / 'core.zip') != data['archiveSha256'] or payload(OUT / 'core.zip') != data['payload']:
