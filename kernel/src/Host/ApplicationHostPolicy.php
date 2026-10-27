@@ -10,12 +10,10 @@ final readonly class ApplicationHostPolicy
 {
     /**
      * @param list<string> $platformHosts
-     * @param list<string> $tenantAdminHosts
      */
     public function __construct(
         private string $deploymentMode,
         private array $platformHosts,
-        private array $tenantAdminHosts,
         private TenantEntryBindingResolver $bindings,
     ) {}
 
@@ -40,9 +38,6 @@ final readonly class ApplicationHostPolicy
         $host = self::requestHost($request);
         if (in_array($host, $this->platformHosts, true)) {
             throw new \DomainException('TENANT_ADMIN_HOST_FORBIDDEN');
-        }
-        if (in_array($host, $this->tenantAdminHosts, true)) {
-            return;
         }
         if ($this->bindings->boundTenantId($request, TenantEntryBindingResolver::ADMIN_CLIENT) === null) {
             throw new \DomainException('TENANT_ADMIN_HOST_FORBIDDEN');
