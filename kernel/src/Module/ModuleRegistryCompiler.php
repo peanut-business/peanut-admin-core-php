@@ -4,8 +4,20 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Module;
 
+use PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider;
+use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProvider;
+use PeanutAdmin\DataPermission\Target\ResourceTargetCatalogProvider;
+use PeanutAdmin\DataPermission\Target\ResourceTargetResolver;
+
 final readonly class ModuleRegistryCompiler
 {
+    private const CONTRACTS = [
+        'TargetResolver' => ResourceTargetResolver::class,
+        'TargetCatalogProvider' => ResourceTargetCatalogProvider::class,
+        'ResourceQueryPolicyProvider' => ResourceQueryPolicyProvider::class,
+        'SharedMasterScopeProvider' => SharedMasterScopeProvider::class,
+    ];
+
     private const CORE_CONDITIONS = [
         'core.tenant_all',
         'core.self',
@@ -24,8 +36,6 @@ final readonly class ModuleRegistryCompiler
      */
     public function __construct(
         private ManifestSchemaValidator $schemaValidator,
-        private VersionConstraintMatcher $versionMatcher,
-        private ContractInspector $contractInspector,
         private string $kernelVersion,
         private array $frontendComponents,
         private ModuleHostLayout $layout,
@@ -46,15 +56,12 @@ final readonly class ModuleRegistryCompiler
             if (isset($byKey[$key])) {
                 throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Duplicate module key: {$key}");
             }
-            if ((int) ($document->data['schema_version'] ?? 0) !== 1) {
-                throw new ModuleException('MODULE_MANIFEST_INVALID', "Unsupported manifest schema for {$key}.");
-            }
-            if (!$this->versionMatcher->matches($this->kernelVersion, $this->string($document, 'kernel_constraint'))) {
+            if (!(new StrictVersionConstraintMatcher())->matches($this->kernelVersion, $this->string($document, 'kernel_constraint'))) {
                 throw new ModuleException('MODULE_VERSION_INCOMPATIBLE', "Kernel version is incompatible with {$key}.");
             }
             $provider = $this->nestedString($document, 'backend', 'provider');
             if (!str_starts_with($provider, $this->layout->backendNamespace($moduleKey))
-                || !$this->contractInspector->implements($provider, ModuleProvider::class)) {
+                || !is_a($provider, ModuleProvider::class, true)) {
                 throw new ModuleException('MODULE_CONTRACT_MISSING', "Invalid ModuleProvider for {$key}.");
             }
             $byKey[$key] = $document;
@@ -112,7 +119,7 @@ final readonly class ModuleRegistryCompiler
             }
             $contracts = is_array($document->data['contracts'] ?? null) ? $document->data['contracts'] : [];
             foreach ($contracts['exports'] ?? [] as $contract) {
-                if (!is_string($contract) || !$this->contractInspector->classExists($contract)) {
+                if (!is_string($contract) || (!class_exists($contract) && !interface_exists($contract))) {
                     throw new ModuleException('MODULE_CONTRACT_MISSING', "Missing exported contract in {$key}.");
                 }
             }
@@ -180,7 +187,7 @@ final readonly class ModuleRegistryCompiler
                     'MODULE_DEPENDENCY_MISSING',
                     "{$key} requires missing module {$dependencyKey}.",
                 );
-                if (!$this->versionMatcher->matches(
+                if (!(new StrictVersionConstraintMatcher())->matches(
                     $this->string($dependencyDocument, 'version'),
                     $this->arrayString($dependency, 'version', $key),
                 )) {
@@ -265,18 +272,9 @@ final readonly class ModuleRegistryCompiler
             }
             $this->assertOwnedContract($scopeProvider, 'SharedMasterScopeProvider', $moduleKey);
         }
-        $operations = $resource['operations'] ?? [];
-        if (!is_array($operations) || !array_is_list($operations)) {
-            throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid operations in {$moduleKey}.");
-        }
+        $operations = $resource['operations'];
         foreach ($operations as $operation) {
-            if (!is_array($operation)) {
-                throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid operation in {$moduleKey}.");
-            }
-            foreach ($operation['permissions'] ?? [] as $permissionKey) {
-                if (!is_string($permissionKey) || $permissionKey === '') {
-                    throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid operation permission in {$moduleKey}.");
-                }
+            foreach ($operation['permissions'] as $permissionKey) {
                 $this->assertAccessibleOwner(
                     $permissionKey,
                     'permission',
@@ -285,24 +283,12 @@ final readonly class ModuleRegistryCompiler
                     $permissionOwners,
                 );
             }
-            $cardinality = $operation['target_cardinality'] ?? null;
-            if (!is_string($cardinality) || !in_array($cardinality, [
-                'none', 'one_required', 'zero_or_one', 'many_readable', 'aggregate_read', 'policy_publish', 'bulk_write',
-            ], true)) {
-                throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation cardinality is missing or invalid in {$moduleKey}.");
-            }
-            $targetTypes = $operation['target_types'] ?? [];
-            if (!is_array($targetTypes) || !array_is_list($targetTypes)) {
-                throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target types are missing in {$moduleKey}.");
-            }
+            $cardinality = $operation['target_cardinality'];
+            $targetTypes = $operation['target_types'];
             $relations = [];
             foreach ($targetTypes as $targetType) {
-                if (!is_array($targetType)) {
-                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target relation must be structured in {$moduleKey}.");
-                }
                 $targetResourceKey = $this->arrayString($targetType, 'target_resource_key', $moduleKey);
                 $targetRole = $this->arrayString($targetType, 'target_role', $moduleKey);
-                $inputMode = $this->arrayString($targetType, 'input_mode', $moduleKey);
                 if (!isset($targetOwners[$targetResourceKey])) {
                     throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation references unknown target type in {$moduleKey}.");
                 }
@@ -313,13 +299,7 @@ final readonly class ModuleRegistryCompiler
                     $dependencies,
                     $targetOwners,
                 );
-                if (!in_array($inputMode, ['explicit', 'derived', 'either'], true)) {
-                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Operation target input mode is invalid in {$moduleKey}.");
-                }
                 $selectionPermission = $targetType['policy_selection_permission'] ?? null;
-                if ($selectionPermission !== null && (!is_string($selectionPermission) || $selectionPermission === '')) {
-                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Policy selection permission is invalid in {$moduleKey}.");
-                }
                 if (is_string($selectionPermission)) {
                     $this->assertAccessibleOwner(
                         $selectionPermission,
@@ -342,9 +322,6 @@ final readonly class ModuleRegistryCompiler
                 throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Targeted operation has no target relations in {$moduleKey}.");
             }
             foreach ($operation['conditions'] ?? [] as $condition) {
-                if (!is_array($condition)) {
-                    throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid operation condition in {$moduleKey}.");
-                }
                 $this->assertAccessibleOwner(
                     $this->arrayString($condition, 'key', $moduleKey),
                     'data condition',
@@ -354,9 +331,6 @@ final readonly class ModuleRegistryCompiler
                 );
                 $selector = $condition['selector_resource_key'] ?? null;
                 if ($selector !== null) {
-                    if (!is_string($selector) || $selector === '') {
-                        throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid condition selector in {$moduleKey}.");
-                    }
                     $this->assertAccessibleOwner(
                         $selector,
                         'target type',
@@ -371,7 +345,7 @@ final readonly class ModuleRegistryCompiler
 
     private function assertContract(string $class, string $contract): void
     {
-        if (!$this->contractInspector->implements($class, $contract)) {
+        if (!is_a($class, self::CONTRACTS[$contract] ?? $contract, true)) {
             throw new ModuleException('MODULE_CONTRACT_MISSING', "{$class} must implement {$contract}.");
         }
     }

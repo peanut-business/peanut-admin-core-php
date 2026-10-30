@@ -121,7 +121,7 @@ final readonly class QiniuStorageDriver implements StorageDriver
         $this->assertUnversioned($versionId);
         $entry = \Qiniu\entry(
             $this->bucket,
-            StorageObjectKey::assert($objectKey),
+            $objectKey,
         );
         $url = 'https://rs.qiniuapi.com/delete/' . $entry;
         $response = $this->transport->request([

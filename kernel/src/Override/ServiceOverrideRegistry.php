@@ -9,14 +9,8 @@ final readonly class ServiceOverrideRegistry
     private const KEY_PATTERN = '/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*){2,}$/D';
     private const VERSION_PATTERN = '/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/D';
 
-    /** @var array<string, ServiceOverrideResolution> */
-    private array $resolutions;
-
     /** @var array<class-string, class-string> */
     private array $serviceBindings;
-
-    /** @var list<array{key: string, contract: class-string, contract_version: string, source: 'default'|'application'}> */
-    private array $resolutionDiagnostics;
 
     /**
      * @param array<array-key, mixed> $slots
@@ -44,15 +38,9 @@ final readonly class ServiceOverrideRegistry
             $contracts[$slot->contract] = true;
         }
 
-        $resolutions = [];
+        $bindings = [];
         foreach ($slotMap as $key => $slot) {
-            $resolutions[$key] = new ServiceOverrideResolution(
-                $key,
-                $slot->contract,
-                $slot->contractVersion,
-                $slot->defaultImplementation,
-                'default',
-            );
+            $bindings[$slot->contract] = $slot->defaultImplementation;
         }
 
         $seenOverrides = [];
@@ -75,54 +63,16 @@ final readonly class ServiceOverrideRegistry
                 throw self::failure('PHP_OVERRIDE_VERSION_MISMATCH', "Service override version mismatch: {$override->key}");
             }
             self::validateImplementation($override->implementation, $slot->contract, $override->key, false);
-            $resolutions[$override->key] = new ServiceOverrideResolution(
-                $override->key,
-                $slot->contract,
-                $slot->contractVersion,
-                $override->implementation,
-                'application',
-            );
+            $bindings[$slot->contract] = $override->implementation;
         }
 
-        $bindings = [];
-        $diagnostics = [];
-        foreach ($resolutions as $resolution) {
-            $bindings[$resolution->contract] = $resolution->implementation;
-            $diagnostics[] = [
-                'key' => $resolution->key,
-                'contract' => $resolution->contract,
-                'contract_version' => $resolution->contractVersion,
-                'source' => $resolution->source,
-            ];
-        }
-
-        $this->resolutions = $resolutions;
         $this->serviceBindings = $bindings;
-        $this->resolutionDiagnostics = $diagnostics;
-    }
-
-    public function resolve(string $key): ServiceOverrideResolution
-    {
-        return $this->resolutions[$key]
-            ?? throw self::failure('PHP_OVERRIDE_RESOLUTION_UNKNOWN', "Unknown service override slot: {$key}");
-    }
-
-    /** @return class-string */
-    public function implementation(string $key): string
-    {
-        return $this->resolve($key)->implementation;
     }
 
     /** @return array<class-string, class-string> */
     public function bindings(): array
     {
         return $this->serviceBindings;
-    }
-
-    /** @return list<array{key: string, contract: class-string, contract_version: string, source: 'default'|'application'}> */
-    public function diagnostics(): array
-    {
-        return $this->resolutionDiagnostics;
     }
 
     private static function validateKey(string $key): void

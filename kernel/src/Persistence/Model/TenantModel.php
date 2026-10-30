@@ -22,7 +22,7 @@ abstract class TenantModel extends Model
      * @param array<string, mixed> $attributes
      * @return array<string, mixed>
      */
-    final protected static function tenantAttributes(TenantScope $scope, array $attributes): array
+    final public static function tenantAttributes(TenantScope $scope, array $attributes): array
     {
         if (array_key_exists('tenant_id', $attributes)
             && (int) $attributes['tenant_id'] !== $scope->tenantId()) {

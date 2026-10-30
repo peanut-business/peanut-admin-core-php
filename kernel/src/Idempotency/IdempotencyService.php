@@ -10,9 +10,8 @@ use JsonException;
 use PeanutAdmin\Kernel\Api\ApiException;
 use PeanutAdmin\Kernel\Idempotency\Model\PlatformIdempotencyRecord;
 use PeanutAdmin\Kernel\Idempotency\Model\TenantIdempotencyRecord as TenantRecordModel;
-use PeanutAdmin\Kernel\Persistence\Model\EditionTenantModel;
+use PeanutAdmin\Kernel\Persistence\Model\TenantModel;
 use PeanutAdmin\Kernel\Persistence\Tenancy\TenantColumnScope;
-use PeanutAdmin\Kernel\Persistence\Tenancy\TenantPersistenceMode;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use think\db\BaseQuery;
 use think\db\exception\PDOException;
@@ -23,12 +22,9 @@ final readonly class IdempotencyService
 {
     private TenantColumnScope $tenantScope;
 
-    public function __construct(
-        private TenantPersistenceMode $persistenceMode = TenantPersistenceMode::TenantScoped,
-        private ?int $instanceTenantId = null,
-    ) {
-        $this->tenantScope = new TenantColumnScope($persistenceMode, $instanceTenantId);
-        $this->tenantScope->assertRuntimeConfigured();
+    public function __construct()
+    {
+        $this->tenantScope = new TenantColumnScope();
     }
 
     public function beginTenant(
@@ -44,10 +40,8 @@ final readonly class IdempotencyService
         return $this->begin(
             $this->tenantQuery($scope)->where('tenant_member_id', $memberId),
             new TenantRecordModel(),
-            EditionTenantModel::tenantAttributes(
+            TenantModel::tenantAttributes(
                 $scope,
-                $this->persistenceMode,
-                $this->instanceTenantId,
                 ['tenant_member_id' => $memberId],
             ),
             $operationKey,
@@ -301,8 +295,6 @@ final readonly class IdempotencyService
         return TenantRecordModel::scope(
             'tenant',
             $scope,
-            $this->persistenceMode,
-            $this->instanceTenantId,
         );
     }
 

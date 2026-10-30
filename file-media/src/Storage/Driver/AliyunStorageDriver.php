@@ -76,7 +76,7 @@ final readonly class AliyunStorageDriver implements StorageDriver
         $this->assertUnversioned($versionId);
         $this->client->getObject(
             $this->bucket,
-            StorageObjectKey::assert($objectKey),
+            $objectKey,
             [OssClient::OSS_FILE_DOWNLOAD => $targetPath],
         );
     }

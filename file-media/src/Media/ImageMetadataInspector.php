@@ -21,10 +21,18 @@ final readonly class ImageMetadataInspector
 
     public function inspect(string $sourcePath): ImageMetadata
     {
-        return $this->inspectWithEvidence($sourcePath)->metadata;
+        return $this->readImage($sourcePath)[0];
     }
 
     public function inspectWithEvidence(string $sourcePath): ImageInspection
+    {
+        [$metadata, $bytes] = $this->readImage($sourcePath);
+
+        return new ImageInspection($metadata, strlen($bytes), hash('sha256', $bytes));
+    }
+
+    /** @return array{ImageMetadata, string} Metadata and the exact bytes read from the bounded stream. */
+    private function readImage(string $sourcePath): array
     {
         if ($sourcePath === '' || is_link($sourcePath) || !is_file($sourcePath) || !is_readable($sourcePath)) {
             throw FileMediaException::imageInvalid();
@@ -39,7 +47,6 @@ final readonly class ImageMetadataInspector
                 throw FileMediaException::imageInvalid();
             }
             $bytes = '';
-            $hash = hash_init('sha256');
             while (!feof($stream)) {
                 $chunk = fread($stream, 8192);
                 if (!is_string($chunk)) {
@@ -49,7 +56,6 @@ final readonly class ImageMetadataInspector
                 if (strlen($bytes) > $this->maxBytes) {
                     throw FileMediaException::imageInvalid();
                 }
-                hash_update($hash, $chunk);
             }
             $final = fstat($stream);
             if ($final === false || $final['size'] !== $initial['size'] || strlen($bytes) !== $initial['size']) {
@@ -60,11 +66,7 @@ final readonly class ImageMetadataInspector
                 throw FileMediaException::imageInvalid();
             }
 
-            return new ImageInspection(
-                new ImageMetadata($size[0], $size[1], $size['mime']),
-                strlen($bytes),
-                hash_final($hash),
-            );
+            return [new ImageMetadata($size[0], $size[1], $size['mime']), $bytes];
         } catch (FileMediaException $exception) {
             throw $exception;
         } catch (Throwable) {

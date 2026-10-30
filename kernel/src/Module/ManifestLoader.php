@@ -22,38 +22,25 @@ final class ManifestLoader
 
         try {
             $json = (string) file_get_contents($path);
-            $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
             $object = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
             throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid manifest JSON: {$path}");
         }
-        if (!is_array($data) || array_is_list($data) || !is_object($object)) {
+        if (!is_object($object)) {
             throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest root must be an object.');
         }
 
-        $catalog = $this->loadCatalog($root, $data);
-        $data['catalog'] = $catalog;
-        try {
-            $object->catalog = json_decode(
-                json_encode($catalog, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-                false,
-                512,
-                JSON_THROW_ON_ERROR,
-            );
-        } catch (JsonException $exception) {
-            throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest catalog is not valid JSON.');
-        }
+        $object->catalog = (object) $this->loadCatalog($root, $object);
 
-        return ManifestDocument::fromDecodedJson($root, $data, $object);
+        return ManifestDocument::fromObject($root, $object);
     }
 
     /**
-     * @param array<string, mixed> $manifest
-     * @return array<string, list<array<string, mixed>>>
+     * @return array<string, list<object>>
      */
-    private function loadCatalog(string $root, array $manifest): array
+    private function loadCatalog(string $root, object $manifest): array
     {
-        $backend = is_array($manifest['backend'] ?? null) ? $manifest['backend'] : [];
+        $backend = $manifest->backend ?? null;
         $mapping = [
             'menus' => 'menus',
             'permissions' => 'permissions',
@@ -64,7 +51,7 @@ final class ManifestLoader
         ];
         $catalog = [];
         foreach ($mapping as $manifestKey => $catalogKey) {
-            $relative = $backend[$manifestKey] ?? null;
+            $relative = is_object($backend) ? ($backend->{$manifestKey} ?? null) : null;
             if ($relative === null) {
                 $catalog[$catalogKey] = [];
                 continue;
@@ -78,7 +65,7 @@ final class ManifestLoader
                 throw new ModuleException('MODULE_MANIFEST_INVALID', "Catalog file is outside module root: {$relative}");
             }
             try {
-                $decoded = json_decode((string) file_get_contents($real), true, 512, JSON_THROW_ON_ERROR);
+                $decoded = json_decode((string) file_get_contents($real), false, 512, JSON_THROW_ON_ERROR);
             } catch (JsonException) {
                 throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid catalog JSON: {$relative}");
             }

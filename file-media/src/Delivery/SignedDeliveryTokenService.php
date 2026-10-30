@@ -43,7 +43,7 @@ final readonly class SignedDeliveryTokenService
         ) {
             throw FileMediaException::deliveryInvalid();
         }
-        $payload = $this->encode(json_encode([
+        $payload = self::encodeValue(json_encode([
             'v' => 1,
             'tid' => $tenantId,
             'fk' => $fileKey,
@@ -54,7 +54,7 @@ final readonly class SignedDeliveryTokenService
             'jti' => $tokenId,
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
 
-        return $payload . '.' . $this->encode(hash_hmac('sha256', $payload, $this->secret, true));
+        return $payload . '.' . self::encodeValue(hash_hmac('sha256', $payload, $this->secret, true));
     }
 
     public static function peekTenantId(string $token, string $secret): int
@@ -105,11 +105,6 @@ final readonly class SignedDeliveryTokenService
         return ['visibility' => $visibility, 'replay_mode' => $replay, 'expires_at' => $expiresAt, 'token_id' => $claims['jti']];
     }
 
-    private function encode(string $value): string
-    {
-        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
-    }
-
     /** @return array{v: mixed, tid: mixed, fk: mixed, vis: mixed, replay: mixed, iat: mixed, exp: mixed, jti: mixed} */
     private static function verifiedClaims(string $token, string $secret): array
     {
@@ -152,9 +147,6 @@ final readonly class SignedDeliveryTokenService
 
     private static function decodeValue(string $value): string
     {
-        if ($value === '' || preg_match('/^[A-Za-z0-9_-]+$/D', $value) !== 1) {
-            throw FileMediaException::deliveryDenied();
-        }
         $decoded = base64_decode(strtr($value, '-_', '+/'), true);
         if (!is_string($decoded)) {
             throw FileMediaException::deliveryDenied();
