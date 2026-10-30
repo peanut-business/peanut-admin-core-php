@@ -12,5 +12,4 @@ interface AuthorizationRevisionRepository
 
     public function bumpRole(int $tenantId, int $roleId): int;
 
-    public function bumpTenantModule(int $tenantId, string $moduleKey): int;
 }
