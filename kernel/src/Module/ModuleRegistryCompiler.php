@@ -68,6 +68,7 @@ final readonly class ModuleRegistryCompiler
             'core',
         );
         $conditionOwners = array_fill_keys(self::CORE_CONDITIONS, 'core');
+        $declaredTableOwners = [];
         $dependencyKeys = [];
         $menus = [];
         foreach ($ordered as $document) {
@@ -91,18 +92,23 @@ final readonly class ModuleRegistryCompiler
                 $this->claim($conditionOwners, $this->arrayString($condition, 'key', $key), $key, 'data condition');
             }
             $database = is_array($document->data['database'] ?? null) ? $document->data['database'] : [];
-            foreach ($database['owned_tables'] ?? [] as $table) {
-                if (!is_string($table) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $table) !== 1) {
-                    throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid owned table in {$key}.");
+            foreach (['owned_tables', 'retired_tables'] as $tableKind) {
+                foreach ($database[$tableKind] ?? [] as $table) {
+                    if (!is_string($table) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $table) !== 1) {
+                        throw new ModuleException('MODULE_MANIFEST_INVALID', "Invalid table declaration in {$key}.");
+                    }
+                    if (in_array($table, $this->reservedTables, true)
+                        && ($this->reservedTableOwners[$table] ?? null) !== $key) {
+                        throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Reserved table cannot be owned by {$key}: {$table}");
+                    }
+                    if (isset($declaredTableOwners[$table])) {
+                        throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Duplicate table ownership: {$table}");
+                    }
+                    $this->claim($declaredTableOwners, $table, $key, 'table');
+                    if ($tableKind === 'owned_tables') {
+                        $this->claim($tableOwners, $table, $key, 'table');
+                    }
                 }
-                if (in_array($table, $this->reservedTables, true)
-                    && ($this->reservedTableOwners[$table] ?? null) !== $key) {
-                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Reserved table cannot be owned by {$key}: {$table}");
-                }
-                if (isset($tableOwners[$table])) {
-                    throw new ModuleException('MODULE_REGISTRY_CONFLICT', "Duplicate table ownership: {$table}");
-                }
-                $this->claim($tableOwners, $table, $key, 'table');
             }
             $contracts = is_array($document->data['contracts'] ?? null) ? $document->data['contracts'] : [];
             foreach ($contracts['exports'] ?? [] as $contract) {

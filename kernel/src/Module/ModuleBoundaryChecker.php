@@ -105,6 +105,8 @@ final readonly class ModuleBoundaryChecker
                 $absentOptional[$key] = true;
             }
         }
+        $migrationDirectory = rtrim($manifest->root, '/') . '/database/migrations';
+        $retiredTables = array_fill_keys($manifest->data['database']['retired_tables'] ?? [], true);
         $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
             $manifest->root,
             RecursiveDirectoryIterator::SKIP_DOTS,
@@ -120,6 +122,10 @@ final readonly class ModuleBoundaryChecker
                 $absentOptional,
                 $namespaceOwners,
                 $exportOwners,
+                ($manifest->data['backend']['migrations'] ?? null) === 'database/migrations'
+                    && $file->getPath() === $migrationDirectory
+                    && preg_match('/^[0-9]{14}_[a-z][a-z0-9_]*\.php$/D', $file->getFilename()) === 1
+                        ? $retiredTables : [],
             );
         }
     }
@@ -129,6 +135,7 @@ final readonly class ModuleBoundaryChecker
      * @param array<string, true> $absentOptional
      * @param array<string, string> $namespaceOwners
      * @param array<string, string> $exportOwners
+     * @param array<string, true> $retiredTables Migration-only tables of this owner.
      */
     private function checkPhpFile(
         string $path,
@@ -137,6 +144,7 @@ final readonly class ModuleBoundaryChecker
         array $absentOptional,
         array $namespaceOwners,
         array $exportOwners,
+        array $retiredTables,
     ): void {
         $tokens = token_get_all((string) file_get_contents($path));
         foreach ($tokens as $token) {
@@ -168,6 +176,9 @@ final readonly class ModuleBoundaryChecker
             }
             foreach ($this->tableCandidates($text) as $table) {
                 $owner = $this->registry->ownedTableOwners[$table] ?? null;
+                if ($owner === null && isset($retiredTables[$table])) {
+                    continue;
+                }
                 if ($owner !== $moduleKey && !$this->isDeclaredForeignKeyReference(
                     $path,
                     $text,
