@@ -9,7 +9,4 @@ interface ModuleRuntimeRepository
     public function installation(string $moduleKey): ?ModuleInstallationRecord;
 
     public function tenantModule(int $tenantId, string $moduleKey): ?TenantModuleRecord;
-
-    /** @return list<string> */
-    public function enabledDependents(int $tenantId, string $moduleKey): array;
 }
