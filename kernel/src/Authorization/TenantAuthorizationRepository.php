@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Authorization;
 
+use PeanutAdmin\Kernel\Auth\TenantContext;
+
 interface TenantAuthorizationRepository
 {
     /**
@@ -17,4 +19,9 @@ interface TenantAuthorizationRepository
     public function revision(int $tenantId, int $memberId): string;
 
     public function permissions(int $tenantId, int $memberId): EffectivePermissionSet;
+
+    /** Live grants for only the requested keys; Core owner constants retain their native semantics.
+     * @param list<string> $permissionKeys
+     */
+    public function permissionsForKeys(TenantContext $context, array $permissionKeys): EffectivePermissionSet;
 }
