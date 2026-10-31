@@ -16,6 +16,7 @@ use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
 use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Policy\PolicyRepository;
+use PeanutAdmin\DataPermission\Policy\PolicyRevision;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
 use PeanutAdmin\DataPermission\Target\TargetCardinalityValidator;
@@ -113,10 +114,14 @@ final readonly class DataPermissionEngine
             return [];
         }
         $resolved = [];
+        $catalog = $this->catalog->findMany($operations);
         $modules = [];
         $permissionKeys = [];
         foreach ($operations as $resourceKey => $operationName) {
-            $operation = $this->operation($resourceKey, $operationName);
+            $operation = $catalog[$resourceKey] ?? throw new DataAuthorizationException(
+                'AUTHZ_OPERATION_UNDECLARED',
+                'The protected resource operation is not declared.',
+            );
             $resolved[$resourceKey] = $operation;
             if (!array_key_exists($operation->moduleKey, $modules)) {
                 $modules[$operation->moduleKey] = $this->catalog->moduleAvailable($tenantContext->tenantId, $operation->moduleKey);
@@ -128,10 +133,15 @@ final readonly class DataPermissionEngine
             $this->assertCommon($tenantContext, $operation, $modules, $permissions);
         }
         $registryRevision = $this->catalog->registryRevision();
+        $policyRevisions = $this->policies->revisions(
+            $tenantContext->tenantId,
+            $tenantContext->memberId,
+            array_values(array_unique(array_map(static fn(ResourceOperation $operation): int => $operation->id, $resolved))),
+        );
         $constraints = [];
         foreach ($resolved as $resourceKey => $operation) {
             $constraints[$resourceKey] = $this->compileQueryConstraint(
-                $tenantContext, $operation, new TypedResourceTargetCollection(), $registryRevision,
+                $tenantContext, $operation, new TypedResourceTargetCollection(), $registryRevision, $policyRevisions[$operation->id],
             );
         }
         return $constraints;
@@ -142,9 +152,10 @@ final readonly class DataPermissionEngine
         ResourceOperation $operation,
         TypedResourceTargetCollection $requestedTargets,
         ?string $registryRevision = null,
+        ?PolicyRevision $policyRevision = null,
     ): QueryConstraint {
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation, $registryRevision);
+        $policies = $this->effectivePolicies($tenantContext, $operation, $registryRevision, $policyRevision);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
         $provider = $this->providers->query($operation->providerKey);
 
@@ -272,9 +283,9 @@ final readonly class DataPermissionEngine
         }
     }
 
-    private function effectivePolicies(TenantContext $context, ResourceOperation $operation, ?string $registryRevision = null): EffectivePolicySet
+    private function effectivePolicies(TenantContext $context, ResourceOperation $operation, ?string $registryRevision = null, ?PolicyRevision $revision = null): EffectivePolicySet
     {
-        $revision = $this->policies->revision($context->tenantId, $context->memberId, $operation->id);
+        $revision ??= $this->policies->revision($context->tenantId, $context->memberId, $operation->id);
         $key = implode(':', [
             'pa',
             'authz',
