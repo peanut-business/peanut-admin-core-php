@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Module;
 
 use DateTimeImmutable;
+use PeanutAdmin\Kernel\Auth\TenantContext;
 
 final readonly class ModuleGuard
 {
@@ -36,9 +37,9 @@ final readonly class ModuleGuard
         return $installation;
     }
 
-    public function assertTenant(int $tenantId, string $moduleKey, DateTimeImmutable $now): TenantModuleRecord
+    public function assertTenant(int $tenantId, string $moduleKey, DateTimeImmutable $now, ?TenantContext $context = null): TenantModuleRecord
     {
-        $record = $this->repository->tenantModule($tenantId, $moduleKey);
+        $record = $this->repository->tenantModule($tenantId, $moduleKey, $context);
         if ($record === null || $record->status === 'disabled') {
             throw new ModuleException('MODULE_TENANT_DISABLED', "Module {$moduleKey} is disabled for tenant.");
         }

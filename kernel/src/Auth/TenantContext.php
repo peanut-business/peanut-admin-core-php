@@ -17,6 +17,7 @@ final readonly class TenantContext
         public string $requestId,
         public DateTimeImmutable $issuedAt,
         public int $authorizationRevision,
+        public int $tenantAuthorizationRevision,
     ) {}
 
     public static function fromValidatedSession(
@@ -32,6 +33,7 @@ final readonly class TenantContext
             $requestId,
             $session->issuedAt,
             $session->authorizationRevision,
+            $session->tenantAuthorizationRevision,
         );
     }
 }
