@@ -35,3 +35,5 @@ Core 提供通用技术能力与可直接使用的默认实现；应用业务规
 授权 AST 的 `JsonArrayContainsColumn` 接收 `TypedResourceTargetSet` 已规范的非空字符串列表，`ColumnNotIn` 接收 `SourceReadScope` 已验证的不超过 500 项非空整数列表；AST 不再重复规范或验证同一输入。首次目标、Scope 与列标识符校验仍由各自输入边界负责。
 
 服务覆盖 registry 只产出已校验的 `bindings()`，交由原生容器绑定；slot 白名单、版本及实现合同保持校验。租户锁名直接使用 `TenantNamespace::lockName()`。缓存使用框架 Cache，文件存储使用 `StorageDriver`，图片元数据使用 `ImageMetadataInspector`；旧通用 TenantCache/key builders、StorageProvider、上传策略、图片计划器，以及未装配的同步 transport 和迁移辅助登记已退出当前 API。图片变体定义和有实际消费者的授权发行合同继续保留。
+
+批量读取时，`TenantAuthorizationEvaluator::allowsMany(context, permissionKeys)` 在一次调用内共用同一实时修订和有效权限集合，仍拒绝 `platform.*`。`DataPermissionEngine::queryConstraints(context, [resourceKey => operationName])` 为无指定目标的批量查询生成逐资源约束：模块可用性、功能权限和目录修订仅在本次调用中复用，各操作仍独立校验目标基数、策略修订、有效期及租户谓词。需要指定目标时继续使用 `queryConstraint`。两入口均不保留跨调用的授权状态。

@@ -100,8 +100,51 @@ final readonly class DataPermissionEngine
         // Apply this predicate to every matching read and count, not only one row lookup.
         $operation = $this->operation($resourceKey, $operationName);
         $this->assertCommon($tenantContext, $operation);
+        return $this->compileQueryConstraint($tenantContext, $operation, $requestedTargets);
+    }
+
+    /** Batch reads share common authority inputs only for this call; policies remain operation-specific.
+     * @param array<string, string> $operations resource key => operation name
+     * @return array<string, QueryConstraint>
+     */
+    public function queryConstraints(TenantContext $tenantContext, array $operations): array
+    {
+        if ($operations === []) {
+            return [];
+        }
+        $resolved = [];
+        $modules = [];
+        $permissionKeys = [];
+        foreach ($operations as $resourceKey => $operationName) {
+            $operation = $this->operation($resourceKey, $operationName);
+            $resolved[$resourceKey] = $operation;
+            if (!array_key_exists($operation->moduleKey, $modules)) {
+                $modules[$operation->moduleKey] = $this->catalog->moduleAvailable($tenantContext->tenantId, $operation->moduleKey);
+            }
+            $permissionKeys = [...$permissionKeys, ...$operation->permissionKeys];
+        }
+        $permissions = $this->permissions->allowsMany($tenantContext, array_values(array_unique($permissionKeys)));
+        foreach ($resolved as $operation) {
+            $this->assertCommon($tenantContext, $operation, $modules, $permissions);
+        }
+        $registryRevision = $this->catalog->registryRevision();
+        $constraints = [];
+        foreach ($resolved as $resourceKey => $operation) {
+            $constraints[$resourceKey] = $this->compileQueryConstraint(
+                $tenantContext, $operation, new TypedResourceTargetCollection(), $registryRevision,
+            );
+        }
+        return $constraints;
+    }
+
+    private function compileQueryConstraint(
+        TenantContext $tenantContext,
+        ResourceOperation $operation,
+        TypedResourceTargetCollection $requestedTargets,
+        ?string $registryRevision = null,
+    ): QueryConstraint {
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies = $this->effectivePolicies($tenantContext, $operation, $registryRevision);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
         $provider = $this->providers->query($operation->providerKey);
 
@@ -208,16 +251,17 @@ final readonly class DataPermissionEngine
             );
     }
 
-    private function assertCommon(TenantContext $context, ResourceOperation $operation): void
+    /** @param array<string, bool>|null $modules @param array<string, bool>|null $permissions */
+    private function assertCommon(TenantContext $context, ResourceOperation $operation, ?array $modules = null, ?array $permissions = null): void
     {
-        if (!$this->catalog->moduleAvailable($context->tenantId, $operation->moduleKey)) {
+        if (!($modules[$operation->moduleKey] ?? $this->catalog->moduleAvailable($context->tenantId, $operation->moduleKey))) {
             throw new DataAuthorizationException('AUTHZ_MODULE_UNAVAILABLE', 'The resource module is unavailable.');
         }
         if ($operation->permissionKeys === []) {
             throw new DataAuthorizationException('AUTHZ_PERMISSION_DENIED', 'The operation has no permission binding.');
         }
         $results = array_map(
-            fn(string $permission): bool => $this->permissions->allows($context, $permission),
+            fn(string $permission): bool => $permissions[$permission] ?? $this->permissions->allows($context, $permission),
             $operation->permissionKeys,
         );
         $allowed = $operation->permissionMatch === 'all'
@@ -228,7 +272,7 @@ final readonly class DataPermissionEngine
         }
     }
 
-    private function effectivePolicies(TenantContext $context, ResourceOperation $operation): EffectivePolicySet
+    private function effectivePolicies(TenantContext $context, ResourceOperation $operation, ?string $registryRevision = null): EffectivePolicySet
     {
         $revision = $this->policies->revision($context->tenantId, $context->memberId, $operation->id);
         $key = implode(':', [
@@ -240,7 +284,7 @@ final readonly class DataPermissionEngine
             'member',
             (string) $context->memberId,
             'registry',
-            $this->catalog->registryRevision(),
+            $registryRevision ?? $this->catalog->registryRevision(),
             'operation',
             (string) $operation->id,
             'revision',
