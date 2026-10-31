@@ -14,9 +14,7 @@ use PeanutAdmin\DataPermission\Context\AuthorizationContext;
 use PeanutAdmin\DataPermission\Decision\AuthorizationDecision;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
-use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Policy\PolicyRepository;
-use PeanutAdmin\DataPermission\Policy\PolicyRevision;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
 use PeanutAdmin\DataPermission\Target\TargetCardinalityValidator;
@@ -34,7 +32,6 @@ final readonly class DataPermissionEngine
     public function __construct(
         private ResourceOperationCatalog $catalog,
         private PolicyRepository $policies,
-        private PolicyCache $cache,
         private TenantAuthorizationEvaluator $permissions,
         private ResourceProviderRegistry $providers,
         private TargetResolverRegistry $targetResolvers,
@@ -82,7 +79,7 @@ final readonly class DataPermissionEngine
             );
         }
 
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies = $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
 
         return $this->targetCatalogProviders->get($targetType->catalogProviderKey)->searchAllowedTargets(
             new AuthorizationContext($tenantContext, $policies->primaryDepartmentId),
@@ -132,8 +129,7 @@ final readonly class DataPermissionEngine
         foreach ($resolved as $operation) {
             $this->assertCommon($tenantContext, $operation, $modules, $permissions);
         }
-        $registryRevision = $this->catalog->registryRevision();
-        $policyRevisions = $this->policies->revisions(
+        $policySets = $this->policies->loadMany(
             $tenantContext->tenantId,
             $tenantContext->memberId,
             array_values(array_unique(array_map(static fn(ResourceOperation $operation): int => $operation->id, $resolved))),
@@ -141,7 +137,7 @@ final readonly class DataPermissionEngine
         $constraints = [];
         foreach ($resolved as $resourceKey => $operation) {
             $constraints[$resourceKey] = $this->compileQueryConstraint(
-                $tenantContext, $operation, new TypedResourceTargetCollection(), $registryRevision, $policyRevisions[$operation->id],
+                $tenantContext, $operation, new TypedResourceTargetCollection(), $policySets[$operation->id],
             );
         }
         return $constraints;
@@ -151,11 +147,10 @@ final readonly class DataPermissionEngine
         TenantContext $tenantContext,
         ResourceOperation $operation,
         TypedResourceTargetCollection $requestedTargets,
-        ?string $registryRevision = null,
-        ?PolicyRevision $policyRevision = null,
+        ?EffectivePolicySet $policies = null,
     ): QueryConstraint {
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation, $registryRevision, $policyRevision);
+        $policies ??= $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
         $provider = $this->providers->query($operation->providerKey);
 
@@ -205,7 +200,7 @@ final readonly class DataPermissionEngine
         $operation = $this->operation($resourceKey, $operationName);
         $this->assertCommon($tenantContext, $operation);
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies = $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
 
         $decision = $operation->accessMode === 'tenant_wide'
@@ -240,7 +235,7 @@ final readonly class DataPermissionEngine
         $operation = $this->operation($resourceKey, $operationName);
         $this->assertCommon($tenantContext, $operation);
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies = $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
 
         return $operation->accessMode === 'tenant_wide'
@@ -281,34 +276,6 @@ final readonly class DataPermissionEngine
         if (!$allowed) {
             throw new DataAuthorizationException('AUTHZ_PERMISSION_DENIED', 'The functional permission is denied.');
         }
-    }
-
-    private function effectivePolicies(TenantContext $context, ResourceOperation $operation, ?string $registryRevision = null, ?PolicyRevision $revision = null): EffectivePolicySet
-    {
-        $revision ??= $this->policies->revision($context->tenantId, $context->memberId, $operation->id);
-        $key = implode(':', [
-            'pa',
-            'authz',
-            'v1',
-            'tenant',
-            (string) $context->tenantId,
-            'member',
-            (string) $context->memberId,
-            'registry',
-            $registryRevision ?? $this->catalog->registryRevision(),
-            'operation',
-            (string) $operation->id,
-            'revision',
-            $revision->value,
-        ]);
-        $cached = $this->cache->get($key);
-        if ($cached !== null) {
-            return $cached;
-        }
-        $policies = $this->policies->load($context->tenantId, $context->memberId, $operation->id);
-        $this->cache->put($key, $policies, $revision->nextTransition);
-
-        return $policies;
     }
 
     private function resolveTargets(
