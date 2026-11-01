@@ -250,7 +250,7 @@ final class ModuleRegistryCompilerTest extends TestCase
 
         $manifest = $this->manifest('example.target');
         $data = $manifest->data;
-        $data['backend']['provider'] = 'PeanutAdmin\\App\\modules\\wrong\\Provider';
+        $data['backend']['provider'] = 'Example\\Modules\\Wrong\\Provider';
         $this->expectModuleCode('MODULE_CONTRACT_MISSING', function () use ($data): void {
             $this->compiler()->compile([ManifestDocument::fromArray('/tmp/example-target', $data)]);
         });
@@ -261,7 +261,9 @@ final class ModuleRegistryCompilerTest extends TestCase
         $manifest = $this->manifest('dcs.store', ownedTables: ['dcs_store']);
 
         $registry = $this->compiler(
-            layout: new ModuleHostLayout('backend/app/Modules', 'Dcs\\App\\Modules', 'frontend/src/modules'),
+            layout: new ModuleHostLayout('backend/app/Modules', 'Dcs\\Modules', 'frontend/src/modules', [
+                'dcs.store' => 'Dcs\\Modules\\Store',
+            ]),
         )->compile([$manifest]);
 
         self::assertSame(['dcs_store' => 'dcs.store'], $registry->ownedTableOwners);
@@ -370,7 +372,7 @@ final class ModuleRegistryCompilerTest extends TestCase
                 $this->manifest('example.work-item', protectedResources: [[
                     'key' => 'example.work-item',
                     'ownership' => 'tenant_owned',
-                    'provider' => 'PeanutAdmin\\App\\modules\\example\\other\\ForeignPolicyProvider',
+                    'provider' => 'Example\\Modules\\Other\\ForeignPolicyProvider',
                     'operations' => [],
                 ]]),
             ]);
@@ -398,7 +400,9 @@ final class ModuleRegistryCompilerTest extends TestCase
     ): ManifestDocument {
         $moduleKey = \PeanutAdmin\Kernel\Module\ModuleKey::fromString($key);
         $layout = str_starts_with($key, 'dcs.')
-            ? new ModuleHostLayout('backend/app/Modules', 'Dcs\\App\\Modules', 'frontend/src/modules')
+            ? new ModuleHostLayout('backend/app/Modules', 'Dcs\\Modules', 'frontend/src/modules', [
+                'dcs.store' => 'Dcs\\Modules\\Store',
+            ])
             : $this->referenceLayout();
         $namespace = $layout->backendNamespace($moduleKey);
         foreach ($targetTypes as &$targetType) {
@@ -522,8 +526,17 @@ final class ModuleRegistryCompilerTest extends TestCase
     {
         return new ModuleHostLayout(
             'backend/app/modules',
-            'PeanutAdmin\\App\\modules',
+            'Example\\Modules',
             'frontend/src/modules',
+            [
+                'example.alpha' => 'Example\\Modules\\Alpha',
+                'example.one' => 'Example\\Modules\\One',
+                'example.other' => 'Example\\Modules\\Other',
+                'example.reference' => 'Example\\Modules\\Reference',
+                'example.target' => 'Example\\Modules\\Target',
+                'example.two' => 'Example\\Modules\\Two',
+                'example.work-item' => 'Example\\Modules\\WorkItem',
+            ],
         );
     }
 
