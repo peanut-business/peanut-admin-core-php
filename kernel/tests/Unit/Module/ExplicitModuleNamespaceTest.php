@@ -80,6 +80,34 @@ final class ExplicitModuleNamespaceTest extends TestCase
         self::assertTrue(true);
     }
 
+    public function testModuleCannotClaimAnotherModulesPublicSymbol(): void
+    {
+        $this->expectException(ModuleException::class);
+        $this->expectExceptionMessage('outside its registered namespace');
+        $this->boundary(
+            'use Vendor\\Packages\\Catalog\\Service\\ProductQuery;',
+            [['module_key' => 'demo.catalog']],
+            ['Vendor\\Packages\\Billing\\Service\\ForeignQuery'],
+        )->check();
+    }
+
+    public function testModuleCannotClaimCoreSymbolAsItsOwnExport(): void
+    {
+        $this->expectException(ModuleException::class);
+        $this->expectExceptionMessage('outside its registered namespace');
+        $this->boundary('', [], ['PeanutAdmin\\Kernel\\Module\\ModuleGuard'])->check();
+    }
+
+    public function testHistoricalNamespaceExportsRemainValid(): void
+    {
+        $this->boundary(
+            'use Host\\Modules\\Demo\\Catalog\\contracts\\CatalogQuery;',
+            [['module_key' => 'demo.catalog']],
+            ['Host\\Modules\\Demo\\Catalog\\contracts\\CatalogQuery'],
+        )->check();
+        self::assertTrue(true);
+    }
+
     public function testRegisteredExternalNamespaceCannotBypassDependencyCheck(): void
     {
         $this->expectException(ModuleException::class);

@@ -71,6 +71,18 @@ final readonly class ModuleBoundaryChecker
             return $lengthOrder !== 0 ? $lengthOrder : strcmp($left, $right);
         });
 
+        // Every public export must belong to the declaring module's verified
+        // namespace (including its historical host namespace). A manifest must
+        // not claim a symbol owned by another module or by the technical Core.
+        foreach ($exportOwners as $symbol => $owner) {
+            if ($this->namespaceOwner($symbol, $namespaceOwners) !== $owner) {
+                throw new ModuleException(
+                    'MODULE_CONTRACT_OWNERSHIP_INVALID',
+                    "Module {$owner} cannot export {$symbol} outside its registered namespace.",
+                );
+            }
+        }
+
         foreach ($this->registry->modules as $manifest) {
             $this->checkModule($manifest, $namespaceOwners, $exportOwners);
         }
