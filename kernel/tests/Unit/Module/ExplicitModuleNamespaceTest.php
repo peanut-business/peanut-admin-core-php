@@ -209,10 +209,10 @@ final class ExplicitModuleNamespaceTest extends TestCase
         $path = $root . '/billing/UseCase.php';
         file_put_contents($path, "<?php\n" . $reference . "\n");
         $this->temporaryFiles[] = $path;
-        $catalog = ManifestDocument::fromArray($root . '/catalog', [
+        $catalog = ManifestDocument::fromObject($root . '/catalog', (object) [
             'key' => 'demo.catalog', 'dependencies' => [], 'contracts' => ['exports' => $exports],
         ]);
-        $billing = ManifestDocument::fromArray($root . '/billing', [
+        $billing = ManifestDocument::fromObject($root . '/billing', (object) [
             'key' => 'demo.billing', 'dependencies' => $dependencies, 'contracts' => ['exports' => []],
             'optional_dependencies' => $optionalDependencies,
         ]);
