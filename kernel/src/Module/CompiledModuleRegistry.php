@@ -40,12 +40,11 @@ final readonly class CompiledModuleRegistry
         throw new ModuleException('MODULE_NOT_INSTALLED', "Unknown module: {$moduleKey}");
     }
 
-    /** Required foundations are deployment-managed and never have per-Tenant switches. */
+    /** Deployment-managed capabilities have no per-Tenant switch; lifecycle protection is independent. */
     public function isRequiredTenantFoundation(string $moduleKey): bool
     {
         $manifest = $this->requireManifest($moduleKey);
 
-        return ($manifest->data['lifecycle']['protected'] ?? false) === true
-            && ($manifest->data['tenant']['enableable'] ?? null) === false;
+        return ($manifest->data['tenant']['enableable'] ?? null) === false;
     }
 }
