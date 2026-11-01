@@ -26,6 +26,8 @@ Core 提供通用技术能力与可直接使用的默认实现；应用业务规
 
 租户套餐、许可证和业务配置由应用持有。Core 的 `ModuleRuntimeRepository` 提供当前模块资格的读取合同，`ModuleGuard` 统一检查部署安装及租户有效窗口；`TenantModuleRecord` 是资格投影，不要求应用保存逐租户模块开关表。业务权益变更通过现有租户授权修订使旧授权失效，Core 不维护逐模块开通命令或第二套许可证体系。
 
+`tenant.enableable=false` 声明部署级基础能力：安装后不要求租户套餐另行开通。`CompiledModuleRegistry::isRequiredTenantFoundation()` 读取这一声明；`lifecycle.protected` 独立决定是否允许停用或卸载，不能用永久生命周期保护代替部署可用性。是否可卸载仍由应用既有依赖和生命周期服务核对，不改变用户、权限或对象授权。
+
 模块删除自有表时，将历史表名放入 database.retired_tables；它只允许所属模块在正式 database/migrations 原生迁移文件中引用，不授予业务 SQL 访问权。退役表不进入当前 ownedTableOwners 或存在性检查，与当前表及其他模块声明冲突时拒绝编译。
 
 清单以 `ManifestDocument::fromObject(root, decodedObject)` 接收唯一 JSON 对象，内部派生编译数组及确定性摘要，保留 `{}` 与 `[]` 的区别。`ManifestSchemaValidator::assertValid()` 必须落实随包完整 schema（含展开的 catalog）；编译器随后只补模块归属、依赖、权限及关系语义。编译器固定采用 PHP 原生类型反射与 Composer Semver，不接受替代反射／版本匹配 port。`StrictVersionConstraintMatcher` 供宿主共享“非法版本即不兼容”的 Semver 规则。
