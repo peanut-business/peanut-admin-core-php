@@ -13,7 +13,7 @@ final class RequestedReadProjectionTest extends TestCase
 {
     private function actor(): TenantContext
     {
-        return TenantContext::fromValidatedSession(new ValidatedTenantSession(1, 'test-session', 101, 10, 11, 'admin-web', new DateTimeImmutable('2031-01-01T00:00:00Z'), 1), 'test-request');
+        return TenantContext::fromValidatedSession(new ValidatedTenantSession(1, 'test-session', 101, 10, 11, 'admin-web', new DateTimeImmutable('2031-01-01T00:00:00Z'), 1, 1), 'test-request');
     }
 
     public function testRequestedFieldsAreRetainedForReauthorization(): void

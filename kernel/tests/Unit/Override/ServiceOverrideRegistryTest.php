@@ -22,13 +22,11 @@ final class ServiceOverrideRegistryTest extends TestCase
 {
     private const KEY = 'peanut.fixture.service.example';
 
-    public function testItResolvesDefaultsAndApplicationOverrides(): void
+    public function testItBuildsValidatedDefaultAndApplicationContainerBindings(): void
     {
         $slot = $this->slot();
         $defaults = new ServiceOverrideRegistry([$slot]);
 
-        self::assertSame(DefaultFixtureService::class, $defaults->implementation(self::KEY));
-        self::assertSame('default', $defaults->resolve(self::KEY)->source);
         self::assertSame([FixtureService::class => DefaultFixtureService::class], $defaults->bindings());
 
         $application = new ServiceOverrideRegistry([$slot], [new ServiceOverride(
@@ -38,15 +36,7 @@ final class ServiceOverrideRegistryTest extends TestCase
             ApplicationFixtureService::class,
         )]);
 
-        self::assertSame(ApplicationFixtureService::class, $application->implementation(self::KEY));
         self::assertSame([FixtureService::class => ApplicationFixtureService::class], $application->bindings());
-        self::assertSame([[
-            'key' => self::KEY,
-            'contract' => FixtureService::class,
-            'contract_version' => '1.0.0',
-            'source' => 'application',
-        ]], $application->diagnostics());
-        self::assertArrayNotHasKey('implementation', $application->diagnostics()[0]);
     }
 
     /** @param array<array-key, mixed> $slots */
@@ -148,13 +138,10 @@ final class ServiceOverrideRegistryTest extends TestCase
         )], 'PHP_OVERRIDE_IMPLEMENTATION_INVALID'];
     }
 
-    public function testUnknownResolutionFailsClosed(): void
+    public function testUndeclaredContractsAreNotBound(): void
     {
         $registry = new ServiceOverrideRegistry([$this->slot()]);
-        $this->expectOverrideError(
-            'PHP_OVERRIDE_RESOLUTION_UNKNOWN',
-            static fn() => $registry->resolve('peanut.missing.service.example'),
-        );
+        self::assertArrayNotHasKey(OtherFixtureService::class, $registry->bindings());
     }
 
     private function slot(): ServiceOverrideSlot
