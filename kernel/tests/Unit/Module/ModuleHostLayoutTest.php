@@ -16,17 +16,14 @@ final class ModuleHostLayoutTest extends TestCase
     {
         $layout = new ModuleHostLayout(
             'backend/app/Modules',
-            'Dcs\\App\\Modules',
+            'Dcs\\Modules',
             'frontend/src/modules',
+            ['dcs.store' => 'Dcs\\Modules\\Store'],
         );
         $key = ModuleKey::fromString('dcs.store');
 
         self::assertSame('backend/app/Modules/dcs/store/', $layout->backendRelativePath($key));
-        self::assertSame('Dcs\\App\\Modules\\dcs\\store\\', $layout->backendNamespace($key));
-        self::assertSame(
-            'Dcs\\App\\Modules\\Dcs\\Store\\',
-            $layout->historicalBackendNamespace($key),
-        );
+        self::assertSame('Dcs\\Modules\\Store\\', $layout->backendNamespace($key));
         self::assertSame('frontend/src/modules/dcs-store/', $layout->frontendRelativePath($key));
     }
 

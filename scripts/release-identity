@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""Seal the qualified Composer archive; compare the public ZIP by payload, not ZIP encoding."""
+import hashlib
+import ctypes
+import json
+import os
+import platform
+import re
+import shutil
+import sysconfig
+import zlib
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import urllib.request
+import urllib.parse
+import zipfile
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = Path(os.environ.get('CORE_RELEASE_ARTIFACTS', ROOT / '.local/release'))
+POLICY_PATH = ROOT / 'tools/build-inputs.json'
+POLICY = json.loads(POLICY_PATH.read_text())
+SEAL = Path(os.environ.get('CORE_BUILD_INPUTS', ROOT / '.local/build-inputs.json'))
+
+
+def command(*args):
+    return subprocess.check_output(args, cwd=ROOT, text=True).strip()
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def source_inputs():
+    subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    if command('git', 'ls-files', '--others', '--exclude-standard'):
+        raise RuntimeError('Untracked source must be committed before sealing inputs')
+    files = ['tools/build-inputs.json', 'scripts/release-identity', 'scripts/verify-consumer', 'scripts/ci-check', 'scripts/verify-storage-sdk', 'scripts/storage-sdk/composer.lock', 'composer.json', '.github/workflows/ci.yml', '.github/workflows/release.yml']
+    attributes = [name for name in command('git', 'ls-files').splitlines() if Path(name).name == '.gitattributes']
+    return dict(tree=command('git', 'rev-parse', 'HEAD^{tree}'), policySha256=sha(POLICY_PATH), files={name: sha(ROOT / name) for name in files + attributes})
+
+
+def executable(name):
+    path = shutil.which(name)
+    if not path:
+        raise RuntimeError('Missing tool: ' + name)
+    return Path(path).resolve()
+
+
+def native_origin(path):
+    # Record only the package which supplies this executable/library, never a host package list.
+    if shutil.which('dpkg-query'):
+        result = subprocess.run(['dpkg-query', '-S', str(path)], capture_output=True, text=True)
+        if result.returncode == 0:
+            package = result.stdout.split(': ', 1)[0]
+            return 'deb:' + command('dpkg-query', '-W', '-f=${Package}@${Version}:${Architecture}', package)
+    return 'executable-or-library-content-address; non-package installation'
+
+
+def compression(path, covered_by='git.binarySha256'):
+    if platform.system() != 'Linux':
+        raise RuntimeError('Archive library capture currently requires the Linux producer toolchain')
+    result = subprocess.run(['ldd', str(path)], capture_output=True, text=True)
+    if result.returncode != 0 and not any(text in result.stdout + result.stderr for text in ('not a dynamic executable', 'statically linked')):
+        raise RuntimeError('Cannot establish archive compression linkage')
+    matches = re.findall(r'libz\.so(?:\.[0-9]+)*\s+=>\s+(/\S+)', result.stdout)
+    if len(matches) > 1 or 'libz.so' in result.stdout and not matches:
+        raise RuntimeError('Ambiguous or unresolved zlib linkage')
+    if matches:
+        library = Path(matches[0]).resolve()
+        runtime = ctypes.CDLL(str(library))
+        runtime.zlibVersion.restype = ctypes.c_char_p
+        return dict(linkage='dynamic', version=runtime.zlibVersion().decode(), librarySha256=sha(library), origin=native_origin(library))
+    return dict(linkage='embedded', coveredBy=covered_by)
+
+
+def verifier_inputs():
+    python = Path(sys.executable).resolve()
+    runtime = None
+    if sysconfig.get_config_var('Py_ENABLE_SHARED'):
+        path = Path(sysconfig.get_config_var('LIBDIR')) / sysconfig.get_config_var('LDLIBRARY')
+        runtime = sha(path.resolve())
+    if zlib.__spec__.origin == 'built-in' and 'zlib' in sys.builtin_module_names:
+        module = dict(linkage='builtin', coveredBy=['executableSha256'] + (['sharedRuntimeSha256'] if runtime else []))
+        library = compression(python, 'verifier.zlibModule')
+    else:
+        extension = Path(zlib.__file__).resolve()
+        module = dict(linkage='extension', binarySha256=sha(extension))
+        library = compression(extension, 'verifier.zlibModule')
+    if library['linkage'] == 'dynamic' and library['version'] != zlib.ZLIB_RUNTIME_VERSION:
+        raise RuntimeError('Python zlib linkage differs from its actual runtime version')
+    return dict(pythonVersion=platform.python_version(), executableSha256=sha(python), sharedRuntimeSha256=runtime, zipfileSha256=sha(Path(zipfile.__file__)), jsonModules={p.name: sha(p) for p in sorted(Path(json.__file__).parent.glob('*.py'))}, zlibVersion=zlib.ZLIB_RUNTIME_VERSION, zlibModule=module, zlibLibrary=library, gitObjectVerifier=dict(version=command('git', '--version'), binarySha256=sha(executable('git'))))
+
+
+def resolver_inputs():
+    php = Path(command('php', '-r', 'echo PHP_BINARY;')).resolve()
+    composer = executable('composer')
+    version = command('php', '-r', 'echo PHP_VERSION;')
+    if not version.startswith(POLICY['phpMinor'] + '.') or sha(composer) != POLICY['composer']['sha256']:
+        raise RuntimeError('Actual PHP minor or official Composer PHAR supply differs')
+    platforms = json.loads(command('composer', 'show', '--platform', '--format=json'))
+    return dict(phpVersion=version, phpBinarySha256=sha(php), phpSupply='php executable:sha256:' + sha(php), composer=POLICY['composer'], composerActualVersion=command('composer', '--version', '--no-ansi'), platform={p['name']: p['version'] for p in platforms['platform']}, args=POLICY['resolverArgs'])
+
+
+def capture_inputs():
+    path = executable('git')
+    info = Path(command('git', 'rev-parse', '--git-path', 'info/attributes'))
+    if not info.is_absolute():
+        info = ROOT / info
+    if info.exists() and info.read_bytes().strip():
+        raise RuntimeError('Untracked info/attributes can change the archive')
+    archive_compression = compression(path)
+    if archive_compression['linkage'] == 'dynamic':
+        archive_compression['origin'] = 'zlib:sha256:' + archive_compression['librarySha256']
+    return dict(**source_inputs(), producer=dict(git=dict(version=command('git', '--version'), binarySha256=sha(path), buildOptions=command('git', 'version', '--build-options'), origin='git executable:sha256:' + sha(path)), compression=archive_compression, args=POLICY['archiveArgs'], environment=POLICY['archiveEnvironment'], compressionRequest=POLICY['compression'], attributes=dict(globalFile='disabled by core.attributesFile=/dev/null', system='disabled by GIT_ATTR_NOSYSTEM=1', info='absent-or-empty', source='tracked .gitattributes in source files')), resolver=resolver_inputs(), verifier=verifier_inputs())
+
+
+def provenance():
+    git = executable('git')
+    z = compression(git)
+    return dict(nativeGitPackage=native_origin(git), nativeZlibPackage=z.get('origin', 'embedded in Git executable'), nativePhpPackage=native_origin(Path(command('php', '-r', 'echo PHP_BINARY;')).resolve()), githubRunId=os.environ.get('GITHUB_RUN_ID'), githubRunAttempt=os.environ.get('GITHUB_RUN_ATTEMPT'), runnerImageVersion=os.environ.get('ImageVersion'))
+
+
+def validate_supply(seal):
+    if seal.get('schema') != 2 or not isinstance(seal.get('inputs'), dict) or set(seal.get('provenance', {})) != {'nativeGitPackage', 'nativeZlibPackage', 'nativePhpPackage', 'githubRunId', 'githubRunAttempt', 'runnerImageVersion'}:
+        raise RuntimeError('Expected build-input schema 2; no legacy fallback')
+    data = seal['inputs']
+    for key, value in source_inputs().items():
+        if data.get(key) != value:
+            raise RuntimeError('Source policy/input differs: ' + key)
+    p = data.get('producer', {})
+    if p.get('args') != POLICY['archiveArgs'] or p.get('environment') != POLICY['archiveEnvironment'] or p.get('compressionRequest') != POLICY['compression']:
+        raise RuntimeError('Effective archive arguments/configuration differ')
+    if not re.fullmatch('[0-9a-f]{64}', p.get('git', {}).get('binarySha256', '')) or not all(p.get('git', {}).get(k) for k in ('version', 'buildOptions', 'origin')):
+        raise RuntimeError('Missing actual Git executable supply')
+    z = p.get('compression', {})
+    if z.get('linkage') == 'dynamic':
+        if not re.fullmatch('[0-9a-f]{64}', z.get('librarySha256', '')) or not z.get('version') or not z.get('origin'):
+            raise RuntimeError('Missing actual dynamic zlib supply')
+    elif z != dict(linkage='embedded', coveredBy='git.binarySha256'):
+        raise RuntimeError('Missing compression implementation identity')
+    if p.get('attributes') != dict(globalFile='disabled by core.attributesFile=/dev/null', system='disabled by GIT_ATTR_NOSYSTEM=1', info='absent-or-empty', source='tracked .gitattributes in source files'):
+        raise RuntimeError('Missing or different archive attributes policy')
+    r, v = data.get('resolver', {}), data.get('verifier', {})
+    if set(r) != {'phpVersion', 'phpBinarySha256', 'phpSupply', 'composer', 'composerActualVersion', 'platform', 'args'} or set(v) != {'pythonVersion', 'executableSha256', 'sharedRuntimeSha256', 'zipfileSha256', 'jsonModules', 'zlibVersion', 'zlibModule', 'zlibLibrary', 'gitObjectVerifier'} or r.get('composer') != POLICY['composer'] or r.get('args') != POLICY['resolverArgs'] or not r.get('platform') or not r.get('phpVersion', '').startswith(POLICY['phpMinor'] + '.') or not all(re.fullmatch('[0-9a-f]{64}', x or '') for x in [r.get('phpBinarySha256'), v.get('executableSha256'), v.get('zipfileSha256'), v.get('gitObjectVerifier', {}).get('binarySha256')]) or not all(v.get('jsonModules', {}).get(name) for name in ('__init__.py', 'decoder.py', 'encoder.py', 'scanner.py')) or not v.get('pythonVersion') or not v.get('zlibVersion'):
+        raise RuntimeError('Missing resolver/verifier role input records')
+    if v['sharedRuntimeSha256'] is not None and not re.fullmatch('[0-9a-f]{64}', v['sharedRuntimeSha256']):
+        raise RuntimeError('Missing actual shared Python runtime identity')
+    module = v['zlibModule']
+    if module.get('linkage') == 'builtin':
+        if module != dict(linkage='builtin', coveredBy=['executableSha256'] + (['sharedRuntimeSha256'] if v['sharedRuntimeSha256'] else [])):
+            raise RuntimeError('Missing builtin zlib module coverage')
+    elif set(module) != {'linkage', 'binarySha256'} or module.get('linkage') != 'extension' or not re.fullmatch('[0-9a-f]{64}', module['binarySha256']):
+        raise RuntimeError('Missing actual zlib extension identity')
+    library = v['zlibLibrary']
+    if library.get('linkage') == 'dynamic':
+        if set(library) != {'linkage', 'version', 'librarySha256', 'origin'} or library['version'] != v['zlibVersion'] or not re.fullmatch('[0-9a-f]{64}', library['librarySha256']) or not library['origin']:
+            raise RuntimeError('Missing actual Python dynamic zlib identity')
+    elif library != dict(linkage='embedded', coveredBy='verifier.zlibModule'):
+        raise RuntimeError('Missing Python zlib implementation coverage')
+    source = seal.get('sourceCommit', '')
+    if not re.fullmatch('[0-9a-f]{40}', source) or command('git', 'cat-file', '-t', source) != 'commit' or command('git', 'rev-parse', '--verify', source + '^{tree}') != data['tree'] or command('git', 'show', '-s', '--format=%ct', source) != seal.get('sourceCommitTime'):
+        raise RuntimeError('Input seal source does not match real Git objects')
+
+
+def verify_current_inputs():
+    seal = json.loads(SEAL.read_text())
+    validate_supply(seal)
+    if seal['sourceCommit'] != command('git', 'rev-parse', 'HEAD') or seal['inputs'] != capture_inputs():
+        raise RuntimeError('Effective inputs drifted after pre-production sealing')
+    return seal
+
+
+def artifact_seal(data):
+    if data.get('schema') != 2 or sha(OUT / 'build-inputs.json') != data.get('inputSealSha256'):
+        raise RuntimeError('Missing or different build-input seal bytes')
+    seal = json.loads((OUT / 'build-inputs.json').read_text())
+    validate_supply(seal)
+    if seal['sourceCommit'] != data['sourceCommit'] or seal['inputs'] != data['inputs']:
+        raise RuntimeError('Artifact build-input seal differs')
+    return seal
+
+
+def install_dependencies(path, role, locked):
+    before = resolver_inputs()
+    lock = path / 'composer.lock'
+    original_lock = lock.read_bytes() if locked else None
+    if locked and original_lock is None:
+        raise RuntimeError('A frozen install requires its native dependency lock')
+    subprocess.run([str(Path(command('php', '-r', 'echo PHP_BINARY;')).resolve()), str(executable('composer')), '--working-dir=' + str(path), *POLICY['resolverArgs']], cwd=ROOT, check=True)
+    if resolver_inputs() != before or locked and lock.read_bytes() != original_lock:
+        raise RuntimeError('Resolver inputs or frozen dependency lock changed during install')
+    OUT.mkdir(parents=True, exist_ok=True)
+    record = dict(role=role, inputs=before, manifestSha256=sha(path / 'composer.json'), lockSha256=sha(lock))
+    target = OUT / ('resolver-inputs-' + role + '.json')
+    with target.open('x') as stream:
+        stream.write(json.dumps(record, indent=2) + '\n')
+
+
+def payload(path):
+    files = {}
+    paths = {}
+    wrapper = None
+    with zipfile.ZipFile(path) as archive:
+        for entry in archive.infolist():
+            # Check the original name before stripping the wrapper or skipping directories.
+            raw = entry.orig_filename
+            if not raw or raw != entry.filename or raw.startswith('/') or '\\' in raw or '\x00' in raw:
+                raise RuntimeError('Unsafe original archive path')
+            parts = raw.removesuffix('/').split('/')
+            if any(not part or part in ('.', '..') or re.match(r'^[A-Za-z]:', part) for part in parts):
+                raise RuntimeError('Unsafe original archive path component')
+            if wrapper is None:
+                wrapper = parts[0]
+            elif parts[0] != wrapper:
+                raise RuntimeError('Archive must have one safe wrapper directory')
+            mode = entry.external_attr >> 16
+            if mode & 0o7000:
+                raise RuntimeError('Archive entry has privileged permission bits')
+            if entry.create_system == 0 and mode == 0:
+                # Standard git archive uses DOS attributes for non-executable files/dirs.
+                if entry.external_attr not in (0, 0x10):
+                    raise RuntimeError('Unsupported DOS archive entry attributes')
+                kind = 'dir' if entry.external_attr == 0x10 else 'file'
+            elif entry.create_system == 3 and stat.S_ISREG(mode):
+                kind = 'file'
+            elif entry.create_system == 3 and stat.S_ISDIR(mode):
+                kind = 'dir'
+            else:
+                # The Core source has no symlink consumer; reject links and special files.
+                raise RuntimeError('Unsupported archive entry type, including symlinks')
+            if entry.is_dir() != (kind == 'dir') or (len(parts) == 1 and kind != 'dir'):
+                raise RuntimeError('Archive path and entry type disagree')
+            key = tuple(parts)
+            if key in paths:
+                raise RuntimeError('Duplicate archive path')
+            paths[key] = kind
+            content = archive.read(entry)
+            if kind == 'dir':
+                if content:
+                    raise RuntimeError('Archive directory has a payload')
+                continue
+            name = '/'.join(parts[1:])
+            files[name] = dict(kind=kind, executable=bool(mode & 0o111), sha256=hashlib.sha256(content).hexdigest())
+    for key in paths:
+        if any(paths.get(key[:end]) == 'file' for end in range(1, len(key))):
+            raise RuntimeError('Archive file is also used as a parent directory')
+    if not files:
+        raise RuntimeError('Empty package')
+    return files
+
+
+def save(data):
+    (OUT / 'release-identity.json').write_text(json.dumps(data, indent=2) + '\n')
+
+
+mode = sys.argv[1] if len(sys.argv) > 1 else ''
+if mode == 'inputs':
+    if SEAL.exists():
+        verify_current_inputs()
+    else:
+        seal = dict(schema=2, sourceCommit=command('git', 'rev-parse', 'HEAD'), sourceCommitTime=command('git', 'show', '-s', '--format=%ct', 'HEAD'), inputs=capture_inputs(), provenance=provenance())
+        SEAL.parent.mkdir(parents=True, exist_ok=True)
+        with SEAL.open('x') as stream:
+            stream.write(json.dumps(seal, indent=2) + '\n')
+    print('PHP actual producer/resolver/verifier inputs sealed/verified')
+elif mode == 'resolve':
+    verify_current_inputs()
+    # The initial solve occurs before OUT (the package output) is created.
+    before = resolver_inputs()
+    subprocess.run([str(Path(command('php', '-r', 'echo PHP_BINARY;')).resolve()), str(executable('composer')), *POLICY['resolverArgs']], cwd=ROOT, check=True)
+    if resolver_inputs() != before:
+        raise RuntimeError('Resolver changed while creating the actual dependency lock')
+    verify_current_inputs()
+elif mode in ('install-locked', 'install-consumer'):
+    data = json.loads((OUT / 'release-identity.json').read_text())
+    artifact_seal(data)
+    if mode == 'install-locked':
+        if sha(ROOT / 'composer.lock') != data['dependencyLockSha256']:
+            raise RuntimeError('Native root lock differs from qualified lock')
+        install_dependencies(ROOT, 'locked', True)
+    else:
+        kind = sys.argv[2]
+        if kind == 'candidate':
+            verify_current_inputs()
+            install_dependencies(OUT / 'consumer', 'candidate', False)
+            verify_current_inputs()
+        elif kind == 'public':
+            install_dependencies(OUT / 'public-consumer', 'public', True)
+        else:
+            raise RuntimeError('Expected candidate or public consumer')
+elif mode == 'prepare':
+    OUT.mkdir(parents=True, exist_ok=True)
+    if list(OUT.iterdir()):
+        raise RuntimeError('Release output must be fresh; preserve existing qualification evidence')
+    seal = verify_current_inputs()
+    version = os.environ.get('CORE_RELEASE_VERSION', '')
+    if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?', version):
+        raise RuntimeError('Set CORE_RELEASE_VERSION to the exact intended version (without v)')
+    args = [str(OUT / 'core.zip') if arg == '<output>' else arg for arg in POLICY['archiveArgs']]
+    subprocess.run([str(executable('git')), *args], env={**os.environ, **POLICY['archiveEnvironment']}, cwd=ROOT, check=True)
+    verify_current_inputs()
+    (OUT / 'build-inputs.json').write_bytes(SEAL.read_bytes())
+    (OUT / 'qualification-composer.lock').write_bytes((ROOT / 'composer.lock').read_bytes())
+    data = dict(schema=2, sourceCommit=seal['sourceCommit'], inputs=seal['inputs'], inputSealSha256=sha(OUT / 'build-inputs.json'),
+                version=version, archiveSha256=sha(OUT / 'core.zip'),
+                dependencyLockSha256=sha(OUT / 'qualification-composer.lock'), payload=payload(OUT / 'core.zip'))
+    save(data)
+elif mode in ('verify', 'qualify', 'public'):
+    current_verifier = verifier_inputs()
+    data = json.loads((OUT / 'release-identity.json').read_text())
+    if os.environ.get('CORE_QUALIFICATION_COMMIT') and data['sourceCommit'] != os.environ['CORE_QUALIFICATION_COMMIT']:
+        raise RuntimeError('Artifact source does not match the selected qualification run')
+    if not re.fullmatch(r'[0-9a-f]{40}', data['sourceCommit']) or command('git', 'cat-file', '-t', data['sourceCommit']) != 'commit':
+        raise RuntimeError('Qualification source is not an available commit object')
+    if command('git', 'rev-parse', '--verify', data['sourceCommit'] + '^{tree}') != data['inputs']['tree']:
+        raise RuntimeError('Qualification commit object tree differs from the artifact')
+    artifact_seal(data)
+    if mode == 'qualify' and verify_current_inputs()['inputs'] != data['inputs']:
+        raise RuntimeError('Qualification effective inputs differ')
+    if os.environ.get('CORE_RELEASE_VERSION') and data['version'] != os.environ['CORE_RELEASE_VERSION']:
+        raise RuntimeError('Qualified version differs')
+    if sha(OUT / 'core.zip') != data['archiveSha256'] or payload(OUT / 'core.zip') != data['payload']:
+        raise RuntimeError('Qualified archive differs')
+    if sha(OUT / 'qualification-composer.lock') != data['dependencyLockSha256']:
+        raise RuntimeError('Qualification dependency lock differs')
+    if mode == 'qualify':
+        data['consumerLockSha256'] = sha(OUT / 'consumer/composer.lock')
+        data['consumerJsonSha256'] = sha(OUT / 'consumer/composer.json')
+        data['qualified'] = True
+        save(data)
+    else:
+        if data.get('qualified') is not True or sha(OUT / 'consumer/composer.lock') != data['consumerLockSha256'] or sha(OUT / 'consumer/composer.json') != data['consumerJsonSha256']:
+            raise RuntimeError('Clean Composer consumer qualification is absent or differs')
+        if mode == 'public':
+            if any((OUT / name).exists() for name in ('public-core.zip', 'public-identity.json', 'public-consumer')):
+                raise RuntimeError('Public output already exists; preserve the previous download/consumer evidence')
+            metadata = json.loads(Path(sys.argv[2]).read_text())
+            previous = {}
+            selected = None
+            for raw in metadata.get('packages', {}).get('peanut-admin/core', []):
+                if metadata.get('minified') == 'composer/2.0':
+                    package = dict(previous)
+                    for key, value in raw.items():
+                        if value == '__unset':
+                            package.pop(key, None)
+                        else:
+                            package[key] = value
+                    previous = package
+                else:
+                    package = raw
+                if package.get('version', '').lstrip('v') == data['version'].lstrip('v'):
+                    selected = package
+                    break
+            source = (selected or {}).get('source', {})
+            dist = (selected or {}).get('dist', {})
+            release_commit = command('git', 'rev-parse', 'HEAD')
+            if source.get('reference') != release_commit or source.get('url', '').removesuffix('.git') != 'https://github.com/peanut-business/peanut-admin-core-php' or dist.get('type') != 'zip' or dist.get('reference') != release_commit:
+                raise RuntimeError('Exact public source/dist metadata differs')
+            url = urllib.parse.urlparse(dist.get('url', ''))
+            if url.scheme != 'https' or url.hostname not in ('api.github.com', 'codeload.github.com') or 'peanut-business/peanut-admin-core-php/' not in url.path:
+                raise RuntimeError('Unexpected public dist origin')
+            target = OUT / 'public-core.zip'
+            with urllib.request.urlopen(dist['url']) as response:
+                target.write_bytes(response.read())
+            if payload(target) != data['payload']:
+                raise RuntimeError('Public ZIP payload differs from the qualified source archive')
+            # Preserve every resolved dependency. Only the root package transport is replaced.
+            lock = json.loads((OUT / 'consumer/composer.lock').read_text())
+            matches = [p for p in lock['packages'] if p['name'] == 'peanut-admin/core']
+            if len(matches) != 1 or matches[0]['version'] != data['version']:
+                raise RuntimeError('Qualified consumer version differs')
+            matches[0]['dist'] = dict(type='zip', url=target.resolve().as_uri(), reference=dist['reference'], shasum=hashlib.sha1(target.read_bytes()).hexdigest())
+            matches[0]['source'] = source
+            consumer = OUT / 'public-consumer'
+            consumer.mkdir()
+            (consumer / 'composer.json').write_bytes((OUT / 'consumer/composer.json').read_bytes())
+            (consumer / 'composer.lock').write_text(json.dumps(lock, indent=2) + '\n')
+            (OUT / 'public-identity.json').write_text(json.dumps(dict(source=source, dist=dist, archiveSha256=sha(target), qualifiedArchiveSha256=data['archiveSha256'], payloadEqual=True, consumerLockSha256=sha(consumer / 'composer.lock')), indent=2) + '\n')
+    if verifier_inputs() != current_verifier:
+        raise RuntimeError('ZIP/metadata verifier inputs changed during verification')
+    if mode != 'qualify':
+        record = OUT / ('public-verifier-inputs.json' if mode == 'public' else 'verification-inputs.json')
+        with record.open('x') as stream:
+            stream.write(json.dumps(dict(role=mode, inputs=current_verifier, inputSealSha256=data['inputSealSha256']), indent=2) + '\n')
+    print('PHP Core ' + mode + ': exact identity verified')
+else:
+    raise RuntimeError('Usage: release-identity inputs|resolve|prepare|install-locked|install-consumer|qualify|verify|public [argument]')

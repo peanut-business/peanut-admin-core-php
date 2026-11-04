@@ -22,7 +22,7 @@ final readonly class RequestedTargetSet
         }
         $normalized = array_values(array_unique(array_map('strval', $targetIds), SORT_STRING));
         sort($normalized, SORT_STRING);
-        $this->targetIds = array_map('strval', $normalized);
+        $this->targetIds = $normalized;
     }
 
     /** @return array{target_resource_key: string, target_role: string, target_ids: non-empty-list<string>} */

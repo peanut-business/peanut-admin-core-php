@@ -14,7 +14,6 @@ use PeanutAdmin\DataPermission\Context\AuthorizationContext;
 use PeanutAdmin\DataPermission\Decision\AuthorizationDecision;
 use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
-use PeanutAdmin\DataPermission\Policy\PolicyCache;
 use PeanutAdmin\DataPermission\Policy\PolicyRepository;
 use PeanutAdmin\DataPermission\Provider\ResourceProviderRegistry;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProviderRegistry;
@@ -33,7 +32,6 @@ final readonly class DataPermissionEngine
     public function __construct(
         private ResourceOperationCatalog $catalog,
         private PolicyRepository $policies,
-        private PolicyCache $cache,
         private TenantAuthorizationEvaluator $permissions,
         private ResourceProviderRegistry $providers,
         private TargetResolverRegistry $targetResolvers,
@@ -81,7 +79,7 @@ final readonly class DataPermissionEngine
             );
         }
 
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies = $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
 
         return $this->targetCatalogProviders->get($targetType->catalogProviderKey)->searchAllowedTargets(
             new AuthorizationContext($tenantContext, $policies->primaryDepartmentId),
@@ -100,8 +98,59 @@ final readonly class DataPermissionEngine
         // Apply this predicate to every matching read and count, not only one row lookup.
         $operation = $this->operation($resourceKey, $operationName);
         $this->assertCommon($tenantContext, $operation);
+        return $this->compileQueryConstraint($tenantContext, $operation, $requestedTargets);
+    }
+
+    /** Batch reads share common authority inputs only for this call; policies remain operation-specific.
+     * @param array<string, string> $operations resource key => operation name
+     * @return array<string, QueryConstraint>
+     */
+    public function queryConstraints(TenantContext $tenantContext, array $operations): array
+    {
+        if ($operations === []) {
+            return [];
+        }
+        $resolved = [];
+        $catalog = $this->catalog->findMany($operations);
+        $modules = [];
+        $permissionKeys = [];
+        foreach ($operations as $resourceKey => $operationName) {
+            $operation = $catalog[$resourceKey] ?? throw new DataAuthorizationException(
+                'AUTHZ_OPERATION_UNDECLARED',
+                'The protected resource operation is not declared.',
+            );
+            $resolved[$resourceKey] = $operation;
+            if (!array_key_exists($operation->moduleKey, $modules)) {
+                $modules[$operation->moduleKey] = $this->catalog->moduleAvailable($tenantContext->tenantId, $operation->moduleKey);
+            }
+            $permissionKeys = [...$permissionKeys, ...$operation->permissionKeys];
+        }
+        $permissions = $this->permissions->allowsMany($tenantContext, array_values(array_unique($permissionKeys)));
+        foreach ($resolved as $operation) {
+            $this->assertCommon($tenantContext, $operation, $modules, $permissions);
+        }
+        $policySets = $this->policies->loadMany(
+            $tenantContext->tenantId,
+            $tenantContext->memberId,
+            array_values(array_unique(array_map(static fn(ResourceOperation $operation): int => $operation->id, $resolved))),
+        );
+        $constraints = [];
+        foreach ($resolved as $resourceKey => $operation) {
+            $constraints[$resourceKey] = $this->compileQueryConstraint(
+                $tenantContext, $operation, new TypedResourceTargetCollection(), $policySets[$operation->id],
+            );
+        }
+        return $constraints;
+    }
+
+    private function compileQueryConstraint(
+        TenantContext $tenantContext,
+        ResourceOperation $operation,
+        TypedResourceTargetCollection $requestedTargets,
+        ?EffectivePolicySet $policies = null,
+    ): QueryConstraint {
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies ??= $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
         $provider = $this->providers->query($operation->providerKey);
 
@@ -151,7 +200,7 @@ final readonly class DataPermissionEngine
         $operation = $this->operation($resourceKey, $operationName);
         $this->assertCommon($tenantContext, $operation);
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies = $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
 
         $decision = $operation->accessMode === 'tenant_wide'
@@ -186,7 +235,7 @@ final readonly class DataPermissionEngine
         $operation = $this->operation($resourceKey, $operationName);
         $this->assertCommon($tenantContext, $operation);
         $resolvedTargets = $this->resolveTargets($tenantContext, $operation, $requestedTargets);
-        $policies = $this->effectivePolicies($tenantContext, $operation);
+        $policies = $this->policies->load($tenantContext->tenantId, $tenantContext->memberId, $operation->id);
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
 
         return $operation->accessMode === 'tenant_wide'
@@ -208,16 +257,17 @@ final readonly class DataPermissionEngine
             );
     }
 
-    private function assertCommon(TenantContext $context, ResourceOperation $operation): void
+    /** @param array<string, bool>|null $modules @param array<string, bool>|null $permissions */
+    private function assertCommon(TenantContext $context, ResourceOperation $operation, ?array $modules = null, ?array $permissions = null): void
     {
-        if (!$this->catalog->moduleAvailable($context->tenantId, $operation->moduleKey)) {
+        if (!($modules[$operation->moduleKey] ?? $this->catalog->moduleAvailable($context->tenantId, $operation->moduleKey))) {
             throw new DataAuthorizationException('AUTHZ_MODULE_UNAVAILABLE', 'The resource module is unavailable.');
         }
         if ($operation->permissionKeys === []) {
             throw new DataAuthorizationException('AUTHZ_PERMISSION_DENIED', 'The operation has no permission binding.');
         }
         $results = array_map(
-            fn(string $permission): bool => $this->permissions->allows($context, $permission),
+            fn(string $permission): bool => $permissions[$permission] ?? $this->permissions->allows($context, $permission),
             $operation->permissionKeys,
         );
         $allowed = $operation->permissionMatch === 'all'
@@ -226,34 +276,6 @@ final readonly class DataPermissionEngine
         if (!$allowed) {
             throw new DataAuthorizationException('AUTHZ_PERMISSION_DENIED', 'The functional permission is denied.');
         }
-    }
-
-    private function effectivePolicies(TenantContext $context, ResourceOperation $operation): EffectivePolicySet
-    {
-        $revision = $this->policies->revision($context->tenantId, $context->memberId, $operation->id);
-        $key = implode(':', [
-            'pa',
-            'authz',
-            'v1',
-            'tenant',
-            (string) $context->tenantId,
-            'member',
-            (string) $context->memberId,
-            'registry',
-            $this->catalog->registryRevision(),
-            'operation',
-            (string) $operation->id,
-            'revision',
-            $revision->value,
-        ]);
-        $cached = $this->cache->get($key);
-        if ($cached !== null) {
-            return $cached;
-        }
-        $policies = $this->policies->load($context->tenantId, $context->memberId, $operation->id);
-        $this->cache->put($key, $policies, $revision->nextTransition);
-
-        return $policies;
     }
 
     private function resolveTargets(

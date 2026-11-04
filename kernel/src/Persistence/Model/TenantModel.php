@@ -13,6 +13,16 @@ abstract class TenantModel extends Model
 {
     /** @var bool */ protected $autoWriteTimestamp = false;
 
+    protected function validateAndFilterData(bool $isUpdate): array
+    {
+        $result = parent::validateAndFilterData($isUpdate);
+        if (!$isUpdate && $result[0] !== []) {
+            // Explicit schema skips discovery; load it before INSERT so SHOW cannot reset the PDO insert ID.
+            $this->getQuery()->getAutoInc();
+        }
+        return $result;
+    }
+
     public function scopeTenant(BaseQuery $query, TenantScope $scope): void
     {
         $query->where($query->getTable() . '.tenant_id', $scope->tenantId());
@@ -22,7 +32,7 @@ abstract class TenantModel extends Model
      * @param array<string, mixed> $attributes
      * @return array<string, mixed>
      */
-    final protected static function tenantAttributes(TenantScope $scope, array $attributes): array
+    final public static function tenantAttributes(TenantScope $scope, array $attributes): array
     {
         if (array_key_exists('tenant_id', $attributes)
             && (int) $attributes['tenant_id'] !== $scope->tenantId()) {

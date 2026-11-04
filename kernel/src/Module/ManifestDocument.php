@@ -16,69 +16,33 @@ final readonly class ManifestDocument
         public string $digest,
     ) {}
 
-    /** @param array<string, mixed> $data */
-    public static function fromArray(string $root, array $data): self
-    {
-        try {
-            $canonical = self::canonicalize($data);
-            $json = json_encode($canonical, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-            $object = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
-        } catch (JsonException $exception) {
-            throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest is not valid JSON: ' . $exception->getMessage());
-        }
-
-        if (!is_object($object)) {
-            throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest root must be an object.');
-        }
-
-        return new self(rtrim($root, '/'), $data, $object, hash('sha256', $json));
-    }
-
     /**
-     * Builds a document from the two native representations of the same decoded JSON.
-     * The object representation preserves the JSON object/array distinction required by schema validation.
-     *
-     * @param array<string, mixed> $data
+     * The decoded JSON object is authoritative; arrays for compilation are derived here.
+     * Object/array distinctions remain intact for schema validation and the digest.
      */
-    public static function fromDecodedJson(string $root, array $data, object $object): self
+    public static function fromObject(string $root, object $object): self
     {
         try {
             $canonicalObject = self::canonicalizeJsonValue($object);
             $json = json_encode($canonicalObject, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-            $decodedData = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
             throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest is not valid JSON: ' . $exception->getMessage());
         }
 
-        if (!is_object($canonicalObject) || !is_array($decodedData) || array_is_list($decodedData)
-            || $decodedData !== self::canonicalize($data)) {
-            throw new ModuleException('MODULE_MANIFEST_INVALID', 'Manifest JSON representations do not match.');
-        }
-
-        return new self(rtrim($root, '/'), $data, $canonicalObject, hash('sha256', $json));
+        return new self(rtrim($root, '/'), self::arrayValue($canonicalObject), $canonicalObject, hash('sha256', $json));
     }
 
     /**
      * @param array<array-key, mixed> $value
      * @return array<array-key, mixed>
      */
-    private static function canonicalize(array $value): array
+    private static function arrayValue(array|object $value): array
     {
-        if (array_is_list($value)) {
-            return array_map(
-                static fn(mixed $item): mixed => is_array($item) ? self::canonicalize($item) : $item,
-                $value,
-            );
-        }
-
-        ksort($value);
+        $result = [];
         foreach ($value as $key => $item) {
-            if (is_array($item)) {
-                $value[$key] = self::canonicalize($item);
-            }
+            $result[$key] = is_array($item) || is_object($item) ? self::arrayValue($item) : $item;
         }
-
-        return $value;
+        return $result;
     }
 
     private static function canonicalizeJsonValue(mixed $value): mixed

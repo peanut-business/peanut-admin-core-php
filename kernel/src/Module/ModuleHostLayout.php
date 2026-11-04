@@ -17,7 +17,7 @@ final readonly class ModuleHostLayout
 
     /**
      * Explicit namespaces come from the host's validated package declarations, never HTTP input.
-     * Omission preserves the original key-derived layout for existing hosts.
+     * An empty map supports path calculation only; PHP namespaces are never inferred from keys.
      *
      * @param array<string, string> $backendNamespaces
      */
@@ -58,17 +58,12 @@ final readonly class ModuleHostLayout
     public function backendNamespace(ModuleKey $key): string
     {
         return $this->backendNamespaces[$key->value()]
-            ?? $this->backendNamespaceRoot . '\\' . implode('\\', $key->snakeSegments()) . '\\';
+            ?? throw new InvalidArgumentException('Module PHP namespace is not declared: ' . $key->value() . '.');
     }
 
     public function hasExplicitBackendNamespace(ModuleKey $key): bool
     {
         return isset($this->backendNamespaces[$key->value()]);
-    }
-
-    public function historicalBackendNamespace(ModuleKey $key): string
-    {
-        return $this->backendNamespaceRoot . '\\' . implode('\\', $key->pascalSegments()) . '\\';
     }
 
     public function backendNamespaceRoot(): string

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Tests\Unit\Module;
 
 use DateTimeImmutable;
+use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Module\ModuleException;
 use PeanutAdmin\Kernel\Module\ModuleGuard;
 use PeanutAdmin\Kernel\Module\ModuleInstallationRecord;
@@ -97,7 +98,7 @@ final class ModuleGuardTest extends TestCase
                 return $this->installation;
             }
 
-            public function tenantModule(int $tenantId, string $moduleKey): ?TenantModuleRecord
+            public function tenantModule(int $tenantId, string $moduleKey, ?TenantContext $context = null): ?TenantModuleRecord
             {
                 return $this->tenantModule;
             }

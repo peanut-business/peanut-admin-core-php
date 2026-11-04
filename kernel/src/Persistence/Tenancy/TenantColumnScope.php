@@ -8,43 +8,18 @@ use RuntimeException;
 use think\facade\Db;
 
 /**
- * Validates whether persistence uses a tenant_id column or an instance-bound tenant.
- * Schema checks fail closed when the configured mode disagrees with the actual tables.
+ * Validates persisted rows and tables at the tenant-column boundary.
  */
 final class TenantColumnScope
 {
     /** @var array<string, true> */
     private array $validatedStorageModes = [];
 
-    public function __construct(
-        public readonly TenantPersistenceMode $mode = TenantPersistenceMode::TenantScoped,
-        private readonly ?int $instanceTenantId = null,
-    ) {
-        if (($this->mode === TenantPersistenceMode::TenantScoped && $this->instanceTenantId !== null)
-            || ($this->instanceTenantId !== null && $this->instanceTenantId < 1)) {
-            throw new RuntimeException('TENANT_PERSISTENCE_CONFIGURATION_INVALID');
-        }
-    }
-
-    public function usesTenantColumn(): bool
-    {
-        return $this->mode->usesTenantColumn();
-    }
-
-    public function whenTenant(string $sql): string
-    {
-        // Schema builders use this only for tenant-column fragments, never for predicates.
-        return $this->usesTenantColumn() ? $sql : '';
-    }
-
     /** @param array<string, mixed> $row */
     public function tenantId(array $row, int $logicalTenantId): int
     {
         $this->assertTenantId($logicalTenantId);
         $this->assertStorageRow($row);
-        if (!$this->usesTenantColumn()) {
-            return $logicalTenantId;
-        }
         $stored = $row['tenant_id'] ?? null;
         if ((!is_int($stored) && !(is_string($stored) && ctype_digit($stored)))
             || (int) $stored !== $logicalTenantId) {
@@ -56,24 +31,15 @@ final class TenantColumnScope
     /** @param array<string, mixed> $row */
     public function assertStorageRow(array $row): void
     {
-        if (array_key_exists('tenant_id', $row) !== $this->usesTenantColumn()) {
+        if (!array_key_exists('tenant_id', $row)) {
             throw new RuntimeException('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH');
         }
     }
 
     public function assertTenantId(int $tenantId): void
     {
-        if ($tenantId < 1
-            || ($this->mode === TenantPersistenceMode::InstanceScoped
-                && ($this->instanceTenantId === null || $tenantId !== $this->instanceTenantId))) {
+        if ($tenantId < 1) {
             throw new RuntimeException('TENANT_PERSISTENCE_CONTEXT_INVALID');
-        }
-    }
-
-    public function assertRuntimeConfigured(): void
-    {
-        if ($this->mode === TenantPersistenceMode::InstanceScoped && $this->instanceTenantId === null) {
-            throw new RuntimeException('TENANT_PERSISTENCE_CONFIGURATION_REQUIRED');
         }
     }
 
@@ -102,7 +68,6 @@ final class TenantColumnScope
             throw new RuntimeException('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH', 0, $exception);
         }
 
-        $expected = $this->usesTenantColumn() ? 1 : 0;
         $actual = [];
         foreach ($rows as $row) {
             $name = (string) $row['TABLE_NAME'];
@@ -112,7 +77,7 @@ final class TenantColumnScope
             }
         }
         foreach ($tables as $table) {
-            if (!array_key_exists($table, $actual) || $actual[$table] !== $expected) {
+            if (!array_key_exists($table, $actual) || $actual[$table] !== 1) {
                 throw new RuntimeException('TENANT_PERSISTENCE_SCHEMA_MODE_MISMATCH');
             }
         }

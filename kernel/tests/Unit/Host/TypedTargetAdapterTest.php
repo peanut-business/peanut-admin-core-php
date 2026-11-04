@@ -108,6 +108,7 @@ final class TypedTargetAdapterTest extends TestCase
             'fixture-web',
             new DateTimeImmutable('2026-07-19T00:00:00Z'),
             1,
+            1,
         ), 'req_fixture_0001');
     }
 }

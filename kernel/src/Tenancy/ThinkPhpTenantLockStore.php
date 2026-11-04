@@ -13,7 +13,7 @@ final readonly class ThinkPhpTenantLockStore implements TenantLockStore
 {
     public function acquire(TenantScope $scope, string $resourceKey): bool
     {
-        $name = (new TenantLockNamespace($scope))->name($resourceKey);
+        $name = TenantNamespace::lockName($scope, $resourceKey);
         $result = $this->connection()->query('SELECT GET_LOCK(:lock_name, 0) AS acquired', ['lock_name' => $name]);
 
         return (int) ($result[0]['acquired'] ?? 0) === 1;
@@ -22,7 +22,7 @@ final readonly class ThinkPhpTenantLockStore implements TenantLockStore
     public function release(TenantScope $scope, string $resourceKey): void
     {
         try {
-            $name = (new TenantLockNamespace($scope))->name($resourceKey);
+            $name = TenantNamespace::lockName($scope, $resourceKey);
             $this->connection()->query('SELECT RELEASE_LOCK(:lock_name)', ['lock_name' => $name]);
         } catch (\Throwable) {
         }

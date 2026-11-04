@@ -8,6 +8,8 @@ class PasswordHasher
 {
     /** Technical input ceiling, independent of new-password requirements. */
     public const MAXIMUM_INPUT_BYTES = 4096;
+    /** Precomputed with OPTIONS; invalid credentials still pay one native verification. */
+    public const INVALID_CREDENTIAL_HASH = '$argon2id$v=19$m=65536,t=4,p=2$Z0xvQURaRmlHd1FkOEY0Ng$3TP137B54h1yHlXuUr8z8Y/tmrXgFL2zQvVuEx9Zs2s';
     /** @var array{memory_cost: int, time_cost: int, threads: int} */
     private const OPTIONS = [
         'memory_cost' => 65_536,

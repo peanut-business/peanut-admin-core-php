@@ -56,6 +56,7 @@ final class StandardResourcePolicyProviderTest extends TestCase
                 'admin-web',
                 new DateTimeImmutable('2026-07-16T10:00:00Z'),
                 1,
+                1,
             ),
             'request-policy-coverage',
         ), null);

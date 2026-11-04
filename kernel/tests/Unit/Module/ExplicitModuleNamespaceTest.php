@@ -36,7 +36,7 @@ final class ExplicitModuleNamespaceTest extends TestCase
         }
     }
 
-    public function testExplicitNamespacesPreserveKeyDerivedPathsAndLegacyFallback(): void
+    public function testExplicitNamespacesKeepPathsButRejectUndeclaredPrefixes(): void
     {
         $layout = $this->layout();
         $key = ModuleKey::fromString('demo.catalog');
@@ -45,8 +45,10 @@ final class ExplicitModuleNamespaceTest extends TestCase
         self::assertTrue($layout->hasExplicitBackendNamespace($key));
         self::assertSame('frontend/modules/demo-catalog/', $layout->frontendRelativePath($key));
         $other = ModuleKey::fromString('demo.unlisted');
-        self::assertSame('Host\\Modules\\demo\\unlisted\\', $layout->backendNamespace($other));
         self::assertFalse($layout->hasExplicitBackendNamespace($other));
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Module PHP namespace is not declared: demo.unlisted.');
+        $layout->backendNamespace($other);
     }
 
     /** @return iterable<string, array{array<mixed>}> */
@@ -70,7 +72,7 @@ final class ExplicitModuleNamespaceTest extends TestCase
         new ModuleHostLayout('backend/modules', 'Host\\Modules', 'frontend/modules', $namespaces);
     }
 
-    public function testExplicitPublicServiceOutsideLegacyContractsDirectoryIsAccepted(): void
+    public function testRegisteredPublicServiceDoesNotRequireContractsDirectory(): void
     {
         $this->boundary(
             'use Vendor\\Packages\\Catalog\\Service\\ProductQuery;',
@@ -109,16 +111,14 @@ final class ExplicitModuleNamespaceTest extends TestCase
         $this->boundary('use Host\\Modules\\unknown\\module\\Hidden;', [], [])->check();
     }
 
-    public function testLegacyHostsKeepTheirExistingContractsPathRule(): void
+    public function testHistoricalNamespaceIsNotRegisteredAsAnAlias(): void
     {
-        $layout = new ModuleHostLayout('backend/modules', 'Host\\Modules', 'frontend/modules');
         $this->expectException(ModuleException::class);
         $this->expectExceptionMessage('outside its registered contracts API');
         $this->boundary(
-            'use Host\\Modules\\demo\\catalog\\service\\Query;',
+            'use Host\\Modules\\Demo\\Catalog\\contracts\\CatalogQuery;',
             [['module_key' => 'demo.catalog']],
-            ['Host\\Modules\\demo\\catalog\\service\\Query'],
-            $layout,
+            ['Host\\Modules\\Demo\\Catalog\\contracts\\CatalogQuery'],
         )->check();
     }
 
@@ -153,7 +153,11 @@ final class ExplicitModuleNamespaceTest extends TestCase
         $checker = $this->boundary(
             'namespace Vendor\\Packages\\Billing; use Vendor\\Packages\\Catalog\\Service\\ProductQuery; '
                 . 'final class ' . $name . ' { public function query(?ProductQuery $query): ?ProductQuery { return $query; } }',
-            [], [], optionalDependencies: [['module_key' => 'demo.catalog', 'version' => '^1.0']], selectCatalog: false,
+            [], [],
+            layout: new ModuleHostLayout('backend/modules', 'Host\\Modules', 'frontend/modules', [
+                'demo.billing' => 'Vendor\\Packages\\Billing',
+            ]),
+            optionalDependencies: [['module_key' => 'demo.catalog', 'version' => '^1.0']], selectCatalog: false,
         );
         $checker->check();
         require $this->temporaryFiles[array_key_last($this->temporaryFiles)];
@@ -205,10 +209,10 @@ final class ExplicitModuleNamespaceTest extends TestCase
         $path = $root . '/billing/UseCase.php';
         file_put_contents($path, "<?php\n" . $reference . "\n");
         $this->temporaryFiles[] = $path;
-        $catalog = ManifestDocument::fromArray($root . '/catalog', [
+        $catalog = ManifestDocument::fromObject($root . '/catalog', (object) [
             'key' => 'demo.catalog', 'dependencies' => [], 'contracts' => ['exports' => $exports],
         ]);
-        $billing = ManifestDocument::fromArray($root . '/billing', [
+        $billing = ManifestDocument::fromObject($root . '/billing', (object) [
             'key' => 'demo.billing', 'dependencies' => $dependencies, 'contracts' => ['exports' => []],
             'optional_dependencies' => $optionalDependencies,
         ]);

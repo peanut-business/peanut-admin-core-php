@@ -3,27 +3,59 @@ set -Eeuo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 candidate="$(git -C "$ROOT" rev-parse HEAD^{commit})"
-consumer="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/peanut-php-core-consumer.XXXXXX")"
-succeeded=0
-cleanup() {
-  if [[ "$succeeded" -eq 1 ]]; then
-    rm -rf -- "$consumer"
-  else
-    printf 'PHP Core consumer retained for diagnosis: %s\n' "$consumer" >&2
-  fi
-}
-trap cleanup EXIT
-
-composer --working-dir="$consumer" init --name=peanut-admin/ci-consumer --no-interaction >/dev/null
-composer --working-dir="$consumer" config repositories.core path "$ROOT"
-COMPOSER_MIRROR_PATH_REPOS=1 composer --working-dir="$consumer" require \
-  'peanut-admin/core:@dev' --no-interaction --no-progress --prefer-dist --no-scripts
+artifacts="${CORE_RELEASE_ARTIFACTS:-$ROOT/.local/release}"
+export CORE_RELEASE_ARTIFACTS="$artifacts"
+consumer="$artifacts/consumer"
+if [[ "${1:-}" == --public ]]; then
+  [[ -f "$artifacts/public-identity.json" ]] || { echo 'Public payload gate has not passed' >&2; exit 1; }
+  consumer="$artifacts/public-consumer"
+  "$ROOT/scripts/release-identity" install-consumer public
+else
+  "$ROOT/scripts/release-identity" prepare
+  [[ ! -e "$consumer" ]] || { echo 'Consumer output already exists; choose a fresh qualification output' >&2; exit 1; }
+  mkdir -p "$consumer"
+  python3 - "$artifacts" <<'PYTHON'
+import json, pathlib, sys, zipfile
+root=pathlib.Path(sys.argv[1]).resolve()
+identity=json.loads((root/'release-identity.json').read_text())
+with zipfile.ZipFile(root/'core.zip') as archive:
+    package=json.loads(archive.read('core/composer.json'))
+package['version']=identity['version']
+package['dist']={'type':'zip','url':(root/'core.zip').as_uri(),'reference':identity['sourceCommit']}
+package['source']={'type':'git','url':'https://github.com/peanut-business/peanut-admin-core-php.git','reference':identity['sourceCommit']}
+consumer={'name':'peanut-admin/ci-consumer','require':{'peanut-admin/core':identity['version']},'repositories':[{'type':'package','package':package}]}
+(root/'consumer/composer.json').write_text(json.dumps(consumer, indent=2)+'\n')
+PYTHON
+  "$ROOT/scripts/release-identity" install-consumer candidate
+fi
 
 installed="$consumer/vendor/peanut-admin/core"
 [[ -d "$installed" && ! -L "$installed" ]] || {
   echo 'verify-consumer: Core package was not installed as an isolated copy' >&2
   exit 1
 }
+python3 - "$artifacts" "$consumer" <<'PYTHON'
+import hashlib, json, pathlib, sys
+artifacts, consumer = map(pathlib.Path, sys.argv[1:])
+identity = json.loads((artifacts/'release-identity.json').read_text())
+packages = json.loads((consumer/'vendor/composer/installed.json').read_text())['packages']
+core = next(p for p in packages if p['name'] == 'peanut-admin/core')
+if core.get('installation-source') != 'dist':
+    raise RuntimeError('Composer fell back to source instead of consuming the final ZIP')
+installed = consumer/'vendor/peanut-admin/core'
+actual = {}
+for path in installed.rglob('*'):
+    if path.is_dir() and not path.is_symlink():
+        continue
+    data = path.readlink().as_posix().encode() if path.is_symlink() else path.read_bytes()
+    actual[path.relative_to(installed).as_posix()] = dict(kind='symlink' if path.is_symlink() else 'file', executable=bool(path.lstat().st_mode & 0o111), sha256=hashlib.sha256(data).hexdigest())
+if actual != identity['payload']:
+    raise RuntimeError('Composer installed payload differs from the qualified archive')
+if consumer.name == 'public-consumer':
+    public = json.loads((artifacts/'public-identity.json').read_text())
+    if hashlib.sha256((consumer/'composer.lock').read_bytes()).hexdigest() != public['consumerLockSha256']:
+        raise RuntimeError('Composer changed the frozen public consumer lock')
+PYTHON
 php -r '
 require $argv[1];
 $classes = array_slice($argv, 2);
@@ -44,4 +76,15 @@ printf("PHP-CORE-CONSUMER-001 passed: %d public package namespaces\n", count($cl
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   printf -- '- Clean Composer consumer: passed (5 public namespaces)\n- Candidate: `%s`\n' "$candidate" >>"$GITHUB_STEP_SUMMARY"
 fi
-succeeded=1
+if [[ "${1:-}" != --public ]]; then
+  "$ROOT/scripts/release-identity" qualify
+else
+  python3 - "$artifacts/public-identity.json" <<'PYTHON'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+identity = json.loads(path.read_text())
+identity['cleanConsumer'] = 'passed'
+path.write_text(json.dumps(identity, indent=2)+'\n')
+PYTHON
+fi
+rm -rf -- "$consumer/vendor"

@@ -17,5 +17,6 @@ final readonly class ValidatedTenantSession
         public string $clientKey,
         public DateTimeImmutable $issuedAt,
         public int $authorizationRevision,
+        public int $tenantAuthorizationRevision,
     ) {}
 }

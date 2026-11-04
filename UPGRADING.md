@@ -23,8 +23,8 @@ $hash = $hasher->hash($newPassword);
 
 Argon2id 参数与既有摘要验证合同保持。技术输入超过 4096 字节时 hash 拒绝、verify 返回 false。应用分别注入策略与散列服务，可通过宿主原生容器替换；不再向 PasswordHasher 传策略参数，也不自行创建默认对象绕过绑定。
 
-## 租户模块钩子
+## 租户模块资格
 
-`TenantModuleEnableHook` 仍是租户启停命令的事务内前置回调，非安装/启动或定时生效事件。Manager 构造时拒绝未知/受保护模块或无效实现。尚未过期的 enabled 记录（包含未来生效记录）重复 enable、已 disabled 记录重复 disable，不重复钩子或状态写入。
+Core 保留 ModuleRuntimeRepository / TenantModuleRecord 的资格读取和 ModuleGuard 检查，应用从当前许可证及套餐产生投影。逐模块开通 Manager、写仓储、配置校验与启停 Hook 合同已经退出；应用直接通过自己的套餐/许可证用例变更权益，并使用现有租户授权修订使旧结果失效。
 
-调用者保留外层事务、授权、依赖校验和审计；钩子异常传播。回调只执行可回滚数据库操作，外部副作用使用应用持久业务机制。应用需把可信配置或 Provider 的钩子交给同一 Manager，不改 Core 源码扩展业务。
+套餐、期限及成员业务授权属于应用，不由 Core 自动授予。模块业务配置使用应用已有 Settings 能力；外部副作用继续使用所属业务的持久机制，不把许可证到期当成自动补偿或定时事件。

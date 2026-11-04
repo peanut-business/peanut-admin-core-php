@@ -11,8 +11,8 @@ use PeanutAdmin\Kernel\Async\VerifiedJobEnvelope;
 use PeanutAdmin\Kernel\Auth\AuthException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
-use PeanutAdmin\Kernel\Cache\CacheKeyBuilder;
-use PeanutAdmin\Kernel\Cache\LockKeyBuilder;
+use PeanutAdmin\Kernel\Tenancy\TenantNamespace;
+use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PeanutAdmin\Kernel\Context\AuthorizationDecision;
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
 use PeanutAdmin\Kernel\Context\RequestedTargetSet;
@@ -55,19 +55,22 @@ final class SystemAndAsyncContextTest extends TestCase
         $factory->tenant('example.scheduler', 'example.reconcile', '', 'operation-3');
     }
 
-    public function testCacheAndLockKeysSeparateAudienceTenantAndRevision(): void
+    public function testTenantResourceNamesSeparateTenantsKindsAndLogicalRevisions(): void
     {
-        $alpha = CacheKeyBuilder::tenant(101, 'example.record', 7, 'record-1');
-        $beta = CacheKeyBuilder::tenant(202, 'example.record', 7, 'record-1');
-        $newRevision = CacheKeyBuilder::tenant(101, 'example.record', 8, 'record-1');
-        $platform = CacheKeyBuilder::platform('tenant.catalog', 7, 'page-1');
+        $tenantA = TenantScope::fromTrustedContext(101, 'request-a');
+        $tenantB = TenantScope::fromTrustedContext(202, 'request-b');
+        // Revision is part of the caller's logical key in the current namespace API.
+        $logicalKey = 'example.record:revision=7:record-1';
+        $alpha = TenantNamespace::cacheKey($tenantA, $logicalKey);
+        $beta = TenantNamespace::cacheKey($tenantB, $logicalKey);
+        $newRevision = TenantNamespace::cacheKey($tenantA, 'example.record:revision=8:record-1');
 
         self::assertNotSame($alpha, $beta);
         self::assertNotSame($alpha, $newRevision);
-        self::assertNotSame($alpha, $platform);
+        self::assertNotSame($alpha, TenantNamespace::cacheTag($tenantA, $logicalKey));
         self::assertNotSame(
-            LockKeyBuilder::tenant(101, 'example.record', 7, 'record-1'),
-            LockKeyBuilder::tenant(202, 'example.record', 7, 'record-1'),
+            TenantNamespace::lockName($tenantA, $logicalKey),
+            TenantNamespace::lockName($tenantB, $logicalKey),
         );
     }
 
@@ -178,6 +181,7 @@ final class SystemAndAsyncContextTest extends TestCase
             'admin-web',
             new \DateTimeImmutable('2026-07-16T03:00:00Z'),
             18,
+            1,
         ), 'request-context');
     }
 }

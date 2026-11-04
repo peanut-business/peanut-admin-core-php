@@ -39,11 +39,6 @@ final readonly class ModuleBoundaryChecker
             }
             $key = ModuleKey::fromString($moduleKey);
             $this->registerNamespaceOwner($namespaceOwners, $this->layout->backendNamespace($key), $moduleKey);
-            $this->registerNamespaceOwner(
-                $namespaceOwners,
-                $this->layout->historicalBackendNamespace($key),
-                $moduleKey,
-            );
             $contracts = is_array($manifest->data['contracts'] ?? null) ? $manifest->data['contracts'] : [];
             foreach ($contracts['exports'] ?? [] as $contract) {
                 if (is_string($contract)) {
@@ -57,12 +52,14 @@ final readonly class ModuleBoundaryChecker
             }
         }
         // Declared, absent modules may still appear in cold-loadable type declarations.
-        // Use only host-verified/key-derived namespaces; never guess a package prefix.
+        // Register only known package declarations; an absent optional package
+        // has no namespace to infer and does not become a required dependency.
         foreach ($this->registry->modules as $manifest) {
             foreach ($manifest->data['optional_dependencies'] ?? [] as $dependency) {
                 $key = ModuleKey::fromString($dependency['module_key']);
-                $this->registerNamespaceOwner($namespaceOwners, $this->layout->backendNamespace($key), $key->value());
-                $this->registerNamespaceOwner($namespaceOwners, $this->layout->historicalBackendNamespace($key), $key->value());
+                if ($this->layout->hasExplicitBackendNamespace($key)) {
+                    $this->registerNamespaceOwner($namespaceOwners, $this->layout->backendNamespace($key), $key->value());
+                }
             }
         }
         uksort($namespaceOwners, static function (string $left, string $right): int {
@@ -105,6 +102,8 @@ final readonly class ModuleBoundaryChecker
                 $absentOptional[$key] = true;
             }
         }
+        $migrationDirectory = rtrim($manifest->root, '/') . '/database/migrations';
+        $retiredTables = array_fill_keys($manifest->data['database']['retired_tables'] ?? [], true);
         $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
             $manifest->root,
             RecursiveDirectoryIterator::SKIP_DOTS,
@@ -120,6 +119,10 @@ final readonly class ModuleBoundaryChecker
                 $absentOptional,
                 $namespaceOwners,
                 $exportOwners,
+                ($manifest->data['backend']['migrations'] ?? null) === 'database/migrations'
+                    && $file->getPath() === $migrationDirectory
+                    && preg_match('/^[0-9]{14}_[a-z][a-z0-9_]*\.php$/D', $file->getFilename()) === 1
+                        ? $retiredTables : [],
             );
         }
     }
@@ -129,6 +132,7 @@ final readonly class ModuleBoundaryChecker
      * @param array<string, true> $absentOptional
      * @param array<string, string> $namespaceOwners
      * @param array<string, string> $exportOwners
+     * @param array<string, true> $retiredTables Migration-only tables of this owner.
      */
     private function checkPhpFile(
         string $path,
@@ -137,6 +141,7 @@ final readonly class ModuleBoundaryChecker
         array $absentOptional,
         array $namespaceOwners,
         array $exportOwners,
+        array $retiredTables,
     ): void {
         $tokens = token_get_all((string) file_get_contents($path));
         foreach ($tokens as $token) {
@@ -147,7 +152,7 @@ final readonly class ModuleBoundaryChecker
             if (in_array($type, [T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
                 $reference = ltrim($text, '\\');
                 $referenceOwner = $this->namespaceOwner($reference, $namespaceOwners);
-                // Registered package prefixes can live outside the legacy host namespace root.
+                // Registered package prefixes can live outside the host's reserved module root.
                 // Their cross-module references still require an explicit dependency and export.
                 if (($referenceOwner !== null
                         || $this->isWithinNamespace($reference, $this->layout->backendNamespaceRoot()))
@@ -168,6 +173,9 @@ final readonly class ModuleBoundaryChecker
             }
             foreach ($this->tableCandidates($text) as $table) {
                 $owner = $this->registry->ownedTableOwners[$table] ?? null;
+                if ($owner === null && isset($retiredTables[$table])) {
+                    continue;
+                }
                 if ($owner !== $moduleKey && !$this->isDeclaredForeignKeyReference(
                     $path,
                     $text,
@@ -203,9 +211,7 @@ final readonly class ModuleBoundaryChecker
             // permits declarations, not runtime access; hosts must gate contributors.
             return;
         }
-        if ($owner === null || $owner === $moduleKey
-            || (!$this->layout->hasExplicitBackendNamespace(ModuleKey::fromString($owner))
-                && !str_contains($reference, '\\contracts\\'))) {
+        if ($owner === null || $owner === $moduleKey) {
             throw new ModuleException(
                 'MODULE_REGISTRY_CONFLICT',
                 "{$path} imports another module outside its registered contracts API.",

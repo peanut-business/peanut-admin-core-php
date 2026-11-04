@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Idempotency\Model;
 
-use PeanutAdmin\Kernel\Persistence\Model\EditionTenantModel;
+use PeanutAdmin\Kernel\Persistence\Model\TenantModel;
 
-final class TenantIdempotencyRecord extends EditionTenantModel
+final class TenantIdempotencyRecord extends TenantModel
 {
     /** @var string */ protected $name = 'tenant_idempotency_record';
 

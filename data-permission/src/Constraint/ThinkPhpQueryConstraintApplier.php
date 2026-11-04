@@ -34,7 +34,9 @@ final readonly class ThinkPhpQueryConstraintApplier
 
     private function and(BaseQuery $query, AndConstraint $constraint): void
     {
-        $query->where(function (BaseQuery $nested) use ($constraint): void {
+        $pk = $query->getPk();
+        $query->where(function (BaseQuery $nested) use ($constraint, $pk): void {
+            $nested->pk($pk);
             foreach ($constraint->constraints as $child) {
                 $this->apply($nested, $child);
             }
@@ -43,10 +45,13 @@ final readonly class ThinkPhpQueryConstraintApplier
 
     private function or(BaseQuery $query, OrConstraint $constraint): void
     {
-        $query->where(function (BaseQuery $nested) use ($constraint): void {
+        $pk = $query->getPk();
+        $query->where(function (BaseQuery $nested) use ($constraint, $pk): void {
+            $nested->pk($pk);
             foreach ($constraint->constraints as $index => $child) {
                 $method = $index === 0 ? 'where' : 'whereOr';
-                $nested->{$method}(function (BaseQuery $branch) use ($child): void {
+                $nested->{$method}(function (BaseQuery $branch) use ($child, $pk): void {
+                    $branch->pk($pk);
                     $this->apply($branch, $child);
                 });
             }

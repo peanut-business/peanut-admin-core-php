@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tests\Unit\Module;
 
-use PeanutAdmin\Kernel\Module\ContractInspector;
+use Opis\JsonSchema\Validator;
 use PeanutAdmin\Kernel\Module\ManifestDocument;
 use PeanutAdmin\Kernel\Module\ManifestSchemaValidator;
 use PeanutAdmin\Kernel\Module\ModuleException;
 use PeanutAdmin\Kernel\Module\ModuleHostLayout;
 use PeanutAdmin\Kernel\Module\ModuleRegistryCompiler;
-use PeanutAdmin\Kernel\Module\VersionConstraintMatcher;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -126,8 +125,8 @@ final class ModuleRegistryCompilerTest extends TestCase
         $target = [[
             'key' => 'example.project',
             'name' => 'Project',
-            'resolver' => 'resolver.project',
-            'catalog_provider' => 'catalog.project',
+            'resolver' => 'ProjectResolver',
+            'catalog_provider' => 'ProjectCatalogProvider',
         ]];
 
         $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($target): void {
@@ -138,12 +137,12 @@ final class ModuleRegistryCompilerTest extends TestCase
         });
 
         $this->expectModuleCode('MODULE_CONTRACT_MISSING', function (): void {
-            $this->compiler(['provider.module'])->compile([
+            $this->compiler()->compile([
                 $this->manifest('example.target', targetTypes: [[
                     'key' => 'example.project',
                     'name' => 'Project',
-                    'resolver' => 'resolver.missing',
-                    'catalog_provider' => 'catalog.project',
+                    'resolver' => 'MissingProjectResolver',
+                    'catalog_provider' => 'ProjectCatalogProvider',
                 ]]),
             ]);
         });
@@ -151,13 +150,16 @@ final class ModuleRegistryCompilerTest extends TestCase
 
     public function testCompilerRequiresCardinalityTargetDeclarationsAndSharedScopeProvider(): void
     {
+        // Structure is owned by the manifest schema, before Compiler's semantic checks.
+        $this->assertInvalidOperation(['key' => 'list']);
+
         $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function (): void {
             $this->compiler()->compile([
                 $this->manifest('example.work-item', protectedResources: [[
                     'key' => 'example.work-item',
                     'ownership' => 'business_target_owned',
-                    'provider' => 'query.work-item',
-                    'operations' => [['key' => 'list']],
+                    'provider' => 'WorkItemQueryProvider',
+                    'operations' => [['key' => 'list', 'target_cardinality' => 'one_required']],
                 ]]),
             ]);
         });
@@ -167,7 +169,7 @@ final class ModuleRegistryCompilerTest extends TestCase
                 $this->manifest('example.reference', protectedResources: [[
                     'key' => 'example.reference',
                     'ownership' => 'shared_master',
-                    'provider' => 'query.reference',
+                    'provider' => 'ReferenceQueryProvider',
                     'scope_provider' => null,
                     'operations' => [[
                         'key' => 'list',
@@ -184,13 +186,13 @@ final class ModuleRegistryCompilerTest extends TestCase
         $target = [[
             'key' => 'example.project',
             'name' => 'Project',
-            'resolver' => 'resolver.project',
-            'catalog_provider' => 'catalog.project',
+            'resolver' => 'ProjectResolver',
+            'catalog_provider' => 'ProjectCatalogProvider',
         ]];
         $resource = static fn(array $targetTypes): array => [
             'key' => 'example.work-item',
             'ownership' => 'business_target_owned',
-            'provider' => 'query.work-item',
+            'provider' => 'WorkItemQueryProvider',
             'operations' => [[
                 'key' => 'transfer',
                 'target_cardinality' => 'one_required',
@@ -198,20 +200,7 @@ final class ModuleRegistryCompilerTest extends TestCase
             ]],
         ];
 
-        $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($target, $resource): void {
-            $this->compiler()->compile([
-                $this->manifest(
-                    'example.target',
-                    targetTypes: $target,
-                    permissions: [$this->permission('example.target.manage')],
-                ),
-                $this->manifest(
-                    'example.work-item',
-                    ['example.target'],
-                    protectedResources: [$resource(['example.project'])],
-                ),
-            ]);
-        });
+        $this->assertInvalidOperation($resource(['example.project'])['operations'][0]);
 
         $registry = $this->compiler()->compile([
             $this->manifest(
@@ -250,9 +239,9 @@ final class ModuleRegistryCompilerTest extends TestCase
 
         $manifest = $this->manifest('example.target');
         $data = $manifest->data;
-        $data['backend']['provider'] = 'PeanutAdmin\\App\\modules\\wrong\\Provider';
+        $data['backend']['provider'] = 'Example\\Modules\\Wrong\\Provider';
         $this->expectModuleCode('MODULE_CONTRACT_MISSING', function () use ($data): void {
-            $this->compiler()->compile([ManifestDocument::fromArray('/tmp/example-target', $data)]);
+            $this->compiler()->compile([ManifestDocument::fromObject('/tmp/example-target', (object) $data)]);
         });
     }
 
@@ -261,7 +250,9 @@ final class ModuleRegistryCompilerTest extends TestCase
         $manifest = $this->manifest('dcs.store', ownedTables: ['dcs_store']);
 
         $registry = $this->compiler(
-            layout: new ModuleHostLayout('backend/app/Modules', 'Dcs\\App\\Modules', 'frontend/src/modules'),
+            layout: new ModuleHostLayout('backend/app/Modules', 'Dcs\\Modules', 'frontend/src/modules', [
+                'dcs.store' => 'Dcs\\Modules\\Store',
+            ]),
         )->compile([$manifest]);
 
         self::assertSame(['dcs_store' => 'dcs.store'], $registry->ownedTableOwners);
@@ -304,7 +295,7 @@ final class ModuleRegistryCompilerTest extends TestCase
         $resource = static fn(array $overrides = []): array => $overrides + [
             'key' => 'example.work-item',
             'ownership' => 'tenant_owned',
-            'provider' => 'query.work-item',
+            'provider' => 'WorkItemQueryProvider',
             'operations' => [[
                 'key' => 'list',
                 'permissions' => ['example.missing.read'],
@@ -323,8 +314,8 @@ final class ModuleRegistryCompilerTest extends TestCase
         $target = [[
             'key' => 'example.project',
             'name' => 'Project',
-            'resolver' => 'resolver.project',
-            'catalog_provider' => 'catalog.project',
+            'resolver' => 'ProjectResolver',
+            'catalog_provider' => 'ProjectCatalogProvider',
         ]];
         $targeted = $resource(['operations' => [[
             'key' => 'list',
@@ -366,12 +357,12 @@ final class ModuleRegistryCompilerTest extends TestCase
     public function testCompilerRejectsResourceProviderOwnedByAnotherModule(): void
     {
         $this->expectModuleCode('MODULE_CONTRACT_MISSING', function (): void {
-            $this->compiler(['provider.module', 'ForeignPolicyProvider'])->compile([
+            $this->compiler()->compile([
                 $this->manifest('example.work-item', protectedResources: [[
                     'key' => 'example.work-item',
                     'ownership' => 'tenant_owned',
-                    'provider' => 'PeanutAdmin\\App\\modules\\example\\other\\ForeignPolicyProvider',
-                    'operations' => [],
+                    'provider' => 'Example\\Modules\\Other\\ForeignPolicyProvider',
+                    'operations' => [['key' => 'list', 'target_cardinality' => 'none']],
                 ]]),
             ]);
         });
@@ -398,7 +389,9 @@ final class ModuleRegistryCompilerTest extends TestCase
     ): ManifestDocument {
         $moduleKey = \PeanutAdmin\Kernel\Module\ModuleKey::fromString($key);
         $layout = str_starts_with($key, 'dcs.')
-            ? new ModuleHostLayout('backend/app/Modules', 'Dcs\\App\\Modules', 'frontend/src/modules')
+            ? new ModuleHostLayout('backend/app/Modules', 'Dcs\\Modules', 'frontend/src/modules', [
+                'dcs.store' => 'Dcs\\Modules\\Store',
+            ])
             : $this->referenceLayout();
         $namespace = $layout->backendNamespace($moduleKey);
         foreach ($targetTypes as &$targetType) {
@@ -415,10 +408,14 @@ final class ModuleRegistryCompilerTest extends TestCase
                     $resource[$field] = $namespace . $resource[$field];
                 }
             }
+            foreach ($resource['operations'] as &$operation) {
+                $operation += ['permissions' => ['core.member.read'], 'target_types' => [], 'conditions' => []];
+            }
+            unset($operation);
         }
         unset($resource);
 
-        return ManifestDocument::fromArray('/tmp/' . str_replace('.', '-', $key), [
+        return ManifestDocument::fromObject('/tmp/' . str_replace('.', '-', $key), (object) [
             'schema_version' => 1,
             'key' => $key,
             'name' => $key,
@@ -454,59 +451,20 @@ final class ModuleRegistryCompilerTest extends TestCase
     }
 
     /**
-     * @param list<string>|null $availableContracts
      * @param list<string> $components
      * @param list<string> $reservedTables
      * @param non-empty-list<string> $registeredClientKeys
      */
     private function compiler(
-        ?array $availableContracts = null,
         array $components = ['example.target.list'],
         ?ModuleHostLayout $layout = null,
         array $reservedTables = [],
         array $registeredClientKeys = ['admin-web', 'platform-web'],
         array $reservedTableOwners = [],
     ): ModuleRegistryCompiler {
-        $available = $availableContracts ?? [
-            'provider.module',
-            'resolver.project',
-            'catalog.project',
-            'query.work-item',
-            'query.reference',
-            'scope.reference',
-        ];
-
         return new ModuleRegistryCompiler(
             new class implements ManifestSchemaValidator {
                 public function assertValid(object $manifest): void {}
-            },
-            new class implements VersionConstraintMatcher {
-                public function matches(string $version, string $constraint): bool
-                {
-                    return str_starts_with($constraint, '^1.') && str_starts_with($version, '1.');
-                }
-            },
-            new class ($available) implements ContractInspector {
-                /** @param list<string> $available */
-                public function __construct(private array $available) {}
-
-                public function classExists(string $class): bool
-                {
-                    return str_ends_with($class, 'ModuleProvider');
-                }
-
-                public function implements(string $class, string $contract): bool
-                {
-                    if ($contract === \PeanutAdmin\Kernel\Module\ModuleProvider::class) {
-                        return str_ends_with($class, 'ModuleProvider');
-                    }
-
-                    $separator = strrpos($class, '\\');
-                    $alias = $separator === false ? $class : substr($class, $separator + 1);
-
-                    return in_array($class, $this->available, true)
-                        || in_array($alias, $this->available, true);
-                }
             },
             '1.0.0',
             $components,
@@ -522,9 +480,39 @@ final class ModuleRegistryCompilerTest extends TestCase
     {
         return new ModuleHostLayout(
             'backend/app/modules',
-            'PeanutAdmin\\App\\modules',
+            'Example\\Modules',
             'frontend/src/modules',
+            [
+                'example.alpha' => 'Example\\Modules\\Alpha',
+                'example.one' => 'Example\\Modules\\One',
+                'example.other' => 'Example\\Modules\\Other',
+                'example.reference' => 'Example\\Modules\\Reference',
+                'example.target' => 'Example\\Modules\\Target',
+                'example.two' => 'Example\\Modules\\Two',
+                'example.work-item' => 'Example\\Modules\\WorkItem',
+            ],
         );
+    }
+
+    /** @param array<string, mixed> $operation */
+    private function assertInvalidOperation(array $operation): void
+    {
+        $operation += [
+            'access_mode' => 'rule_filtered',
+            'permission_match' => 'all',
+            'audit_level' => 'deny',
+            'permissions' => ['core.member.read'],
+            'target_types' => [],
+            'conditions' => [],
+        ];
+        $schema = json_decode((string) file_get_contents(
+            dirname(__DIR__, 3) . '/resources/schemas/module-manifest.schema.json',
+        ), false, 512, JSON_THROW_ON_ERROR);
+        $operationSchema = $schema->properties->catalog->properties->protected_resources
+            ->items->properties->operations->items;
+        $object = json_decode(json_encode($operation, JSON_THROW_ON_ERROR), false, 512, JSON_THROW_ON_ERROR);
+
+        self::assertFalse((new Validator())->validate($object, $operationSchema)->isValid());
     }
 
     /** @return array{key: string, type: string, name: string, risk_level: string} */
@@ -546,3 +534,45 @@ final class ModuleRegistryCompilerTest extends TestCase
         self::fail("Expected {$code}.");
     }
 }
+
+// Compiler checks types and module ownership without constructing provider instances.
+namespace Example\Modules\Alpha;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
+
+namespace Example\Modules\One;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
+abstract class ProjectResolver implements \PeanutAdmin\DataPermission\Target\ResourceTargetResolver {}
+abstract class ProjectCatalogProvider implements \PeanutAdmin\DataPermission\Target\ResourceTargetCatalogProvider {}
+
+namespace Example\Modules\Other;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
+abstract class ForeignPolicyProvider implements \PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider {}
+
+namespace Example\Modules\Reference;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
+abstract class ReferenceQueryProvider implements \PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider {}
+
+namespace Example\Modules\Target;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
+abstract class ProjectResolver implements \PeanutAdmin\DataPermission\Target\ResourceTargetResolver {}
+abstract class ProjectCatalogProvider implements \PeanutAdmin\DataPermission\Target\ResourceTargetCatalogProvider {}
+
+namespace Example\Modules\Two;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
+abstract class ProjectResolver implements \PeanutAdmin\DataPermission\Target\ResourceTargetResolver {}
+abstract class ProjectCatalogProvider implements \PeanutAdmin\DataPermission\Target\ResourceTargetCatalogProvider {}
+
+namespace Example\Modules\WorkItem;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
+abstract class WorkItemQueryProvider implements \PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider {}
+
+namespace Dcs\Modules\Store;
+
+abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}

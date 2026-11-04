@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "archiveArgs": ["-c", "core.attributesFile=/dev/null", "archive", "--format=zip", "--prefix=core/", "-o", "<output>", "HEAD"],
+  "archiveEnvironment": {"GIT_ATTR_NOSYSTEM": "1"},
+  "compression": "Git ZIP default; no level override; implementation fixed by Git and its actual zlib identities",
+  "gitSupply": "Native Git executable and package origin, content-addressed by the pre-production seal",
+  "composer": {"version": "2.10.2", "url": "https://getcomposer.org/download/2.10.2/composer.phar", "sha256": "5ee7125f8a30a34d246cefdc0bc85b8a783b28f2aec968994118512350d28027"},
+  "phpMinor": "8.3",
+  "resolverArgs": ["install", "--no-interaction", "--no-progress", "--prefer-dist", "--no-scripts"],
+  "pythonRole": "metadata and safe ZIP payload verification, not primary ZIP compression"
+}
