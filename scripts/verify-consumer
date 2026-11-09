@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+scope=package-consumer
+case "${1:-}" in
+  ''|--production) ;;
+  --qualification) scope=qualification ;;
+  --public) ;;
+  -h|--help)
+    echo 'Usage: verify-consumer [--production|--qualification|--public]'
+    echo 'Default production prepares once and checks the native package consumer; unit/storage remain NOT_RUN.'
+    echo '--qualification records full scope only after ci-check has completed unit/storage suites.'
+    exit 0 ;;
+  *) echo 'verify-consumer: unknown argument' >&2; exit 2 ;;
+esac
+[[ "$#" -le 1 ]] || { echo 'verify-consumer: expected at most one mode' >&2; exit 2; }
+
 ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 candidate="$(git -C "$ROOT" rev-parse HEAD^{commit})"
 artifacts="${CORE_RELEASE_ARTIFACTS:-$ROOT/.local/release}"
@@ -77,7 +91,13 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   printf -- '- Clean Composer consumer: passed (5 public namespaces)\n- Candidate: `%s`\n' "$candidate" >>"$GITHUB_STEP_SUMMARY"
 fi
 if [[ "${1:-}" != --public ]]; then
-  "$ROOT/scripts/release-identity" qualify
+  "$ROOT/scripts/release-identity" qualify "$scope"
+  if [[ "$scope" == package-consumer ]]; then
+    echo 'Package consumer PASS; unit/storage NOT_RUN (production scope).'
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      echo '- Scope: package-consumer PASS; unit/storage NOT_RUN; full qualification NOT_RUN.' >> "$GITHUB_STEP_SUMMARY"
+    fi
+  fi
 else
   python3 - "$artifacts/public-identity.json" <<'PYTHON'
 import json, pathlib, sys

@@ -1,6 +1,8 @@
 # Peanut Admin Core PHP
 
-CI 默认 `mode=qualification` 保留完整资格。显式 `mode=identity` 须填写精确 `expected_source_commit` 和 `release_version`，仅生成两轮标准 `release-identity prepare` 归档并逐字节比较输入、锁及 ZIP。库根无提交锁时只解析一次，封存实际锁，第二独立检出复制该锁并严格 install，不重新解析。结果保存 `php-core-identity-*` artifact；不运行测试或消费者资格、不标记 qualified、不发布，不能用于 tag 发行。CI 不取消已有运行。
+CI 默认 `mode=production`：绑定非空、精确的 `expected_source_commit`（40 位小写 SHA，必须同时等于 dispatch 的 `GITHUB_SHA` 与实际 HEAD），执行 `inputs` → `resolve` → `verify-consumer --production`。消费者入口内只 `prepare` 一次，使用原 ZIP 进行原生 Composer 干净安装、完整 payload 与五个公开命名空间检查。production 不调用 `ci-check`、PHPUnit 或完整 storage SDK 套件；身份记录 `qualification.scope=package-consumer`、`packageConsumer=PASS`、`unit/storage=NOT_RUN`、`qualified=false`，允许作为 tag 发行原件，但不表示完整测试通过。CI 制包与本地开发验证独立，本地包不上传 GitHub draft。
+
+显式 `mode=qualification` 保留 `ci-check` 的 PHP lint、完整 PHPUnit、storage SDK 与同一消费者检查；仅全部完成后记录 `scope=qualification`、三项 `PASS`、`qualified=true`。显式 `mode=identity` 须填写精确 `expected_source_commit` 和 `release_version`，仅生成两轮标准 `release-identity prepare` 归档并逐字节比较输入、锁及 ZIP。库根无提交锁时只解析一次，封存实际锁，第二独立检出复制该锁并严格 install，不重新解析。identity 结果保存 `php-core-identity-*` artifact；不运行测试或消费者资格、没有完成 scope、不发布，不能用于 tag 发行。CI 不取消已有运行。
 
 `peanut-admin/core` 的 PHP 技术核心源码仓。A1 目标是执行上下文、Scope、授权协议、模块机制、技术存储／安全协议及 ThinkPHP 接入；完整账号组织、设置、文件账本、任务等业务由 Code 官方模块维护。迁移进度与验收见 Project 的 `docs/development/deep-convergence-a1.md`，不能将开发源码当作全项目完成或发布证明。
 
@@ -18,9 +20,44 @@ Composer 包名保持 `peanut-admin/core`，版本从 Git 分支／标签取得�
 
 角色分别保存：producer 是 Git/zlib/归档输入；resolver 是 PHP 实际 patch/执行文件 SHA、Composer 2.10.2 官方 PHAR SHA、原生 platform 清单、manifest/lock/固定 install 参数；verifier 是 Python 实际执行/共享 runtime、ZIP/JSON 代码及 zlib 身份和 Git 对象读取工具。Python zlib 为 extension 时记录实际模块文件，builtin 时明确由实际 Python executable/shared runtime 内容摘要覆盖，并定向记录实际 zlib 库版本/内容或内置覆盖关系；缺失身份拒绝。平台清单只用于解释 Composer 求解，不代表每个扩展都影响主 ZIP。setup-php 选择 minor，不能以写一个 patch 字符串冒充固定 patch；实际 PHP 记录为真实值，不为 ZIP 复制整台 PHP 宿主。安装前缀不写入有效输入，实际内容和逻辑来源必须可核。
 
-正式发行先显式运行 CI 并填写精确 `release_version`（不带 v），通过后将本仓 Actions variable `CORE_QUALIFICATION_RUN_ID` 固定到该成功 run。schema 2 资格用 archive ZIP 原生安装干净消费者，保存 `build-inputs.json` 字节摘要、源码 commit/tree、有效输入、实际根锁、消费者 manifest/lock、ZIP SHA-256 与逐文件身份到 `php-core-qualified`。生产/资格核当前有效 producer/resolver/verifier 没有漂移；发行只读原包时核真实 run/commit/tree、源码政策/供应约束、seal、qualified 和包内容，不要求未执行 producer 的发布宿主二进制全部相同。锁定安装及当前 verifier 的实际输入另存独立角色回执，用原锁 install，不重解析；同树合并可改变发布 commit，不改变原包 seal。旧 schema/缺字段拒绝，旧历史 CI 未记录信息保持未知。
+正式发行先选择已有有效、同源码/版本的成功 production 或 qualification CI run；仅无有效原件时才显式 dispatch CI，填写精确 `release_version`（不带 v）。然后将本仓 Actions variable `CORE_QUALIFICATION_RUN_ID` 固定到所选 run（沿用变量名，不代表完整测试通过）。tag 工作流核 API 的成功结论、原仓库、原 workflow 与 head SHA，下载同一次 `php-core-qualified`，不自动再触发 CI，不重新 prepare 或测试。schema 2 身份保存 seal 字节摘要、源码 commit/tree、有效输入、实际根锁、消费者 manifest/lock、ZIP SHA-256 与逐文件身份；artifact 仅包含 `release-identity.json`、`build-inputs.json`、`core.zip`、`qualification-composer.lock`、`consumer/composer.json` 和 `consumer/composer.lock`，不上传 vendor、缓存或日志。
 
-公开 Packagist dist 与内部候选 ZIP 的容器字节允许不同；正式 Gate 必须核精确 version/source/dist reference，下载实际公开 ZIP，比较规范化路径、文件类型与逐文件摘要，再记录两个 ZIP 各自摘要。随后仅将消费者锁中 Core 的 source/dist 改为已经核验的公开下载包，保留全部依赖版本和其他锁内容，用 Composer install 实际消费该最终 ZIP。原资格锁保留，公开桥接锁单独保存。公开 ZIP 尚不存在、内容不同、下载/消费失败都保持未闭合，不把内部归档资格冒充公开 ZIP 资格；GitHub Release 只能在这一步成功后创建。库根不提交通用解析锁，资格实际锁随不可变 CI artifact 保存；归档缺失或过期必须重新资格。
+生产/资格核当前有效 producer/resolver/verifier 没有漂移；发行只读原包时核真实 run/commit/tree、源码政策/供应约束、seal、明确完成的 scope/检查状态和原包内容，不要求未执行 producer 的发布宿主二进制全部相同。package-consumer 必须诚实保留 unit/storage NOT_RUN，不能仅改 `qualified` 冒充完整资格。锁定安装及当前 verifier 的实际输入另存独立角色回执，用原锁 install，不重解析；同树合并可改变发布 commit，不改变原包 seal。旧 schema/缺少明确 scope 的原件不自动补写资格；包括先前 5.1.6 正式备份在内的既有原件仍按原始来源只读保留，不能重标为新 source 或新增检查已通过。
+
+以下命令供未来获授权的 CI 生产与发行使用；修改这些入口本身不启动 CI、上传或公开发行。示例先选 `main`，其 ref 在排队期间移动会由 production SHA 检查拒绝；也可选择已包含该 workflow 的开发分支来验证 CI，正式 tag 仍必须指向当前 main，原件须满足同树合同。已有有效 run 时跳过 dispatch，直接复核、固定它。
+
+```bash
+REPO=peanut-business/peanut-admin-core-php
+REF=main
+VERSION='<intended-version-without-v>'
+SOURCE_COMMIT="$(gh api "repos/$REPO/commits/$REF" --jq .sha)"
+gh workflow run ci.yml --repo "$REPO" --ref "$REF" \
+  -f mode=production -f expected_source_commit="$SOURCE_COMMIT" \
+  -f release_version="$VERSION"
+gh run list --repo "$REPO" --workflow ci.yml --commit "$SOURCE_COMMIT"
+```
+
+完整测试独立选择 `-f mode=qualification`；非发行字节对比独立选择 `-f mode=identity`，其余精确 SHA/版本参数同上。不要为取得发行 artifact 把 production 换成完整测试，也不要把 identity run 用于发行。
+
+```bash
+RUN_ID='<selected-success-run-id>'
+gh run view "$RUN_ID" --repo "$REPO" \
+  --json databaseId,workflowName,headSha,conclusion,url
+# 在空目录下载并检查明确 scope、源码、版本及六个原文件；不本地重制包。
+OUT='<fresh-absolute-review-directory>'
+gh run download "$RUN_ID" --repo "$REPO" --name php-core-qualified --dir "$OUT"
+python3 - "$OUT/release-identity.json" <<'PYTHON'
+import json, sys
+data = json.load(open(sys.argv[1]))
+print(json.dumps({k: data.get(k) for k in ('sourceCommit', 'version', 'qualification', 'qualified', 'archiveSha256')}, indent=2))
+PYTHON
+# 确认成功 run、精确来源/版本及所选范围后固定原 run。
+gh variable set CORE_QUALIFICATION_RUN_ID --repo "$REPO" --body "$RUN_ID"
+```
+
+后续经独立授权创建/推送当前 main 的注释 `vX.Y.Z`（或 `vX.Y.Z-rc.N`）tag，才启动原 `release.yml`。该工作流仍要求当前 main/tag、同树原件、原生锁和完整性、Packagist 与公开消费者验证。无需 draft 资产、asset ID/SHA 变量或另造凭证流程；不上传本地包。tag 发行失败可修正实际外部原因后重跑同一 tag 的失败 job（`gh run rerun <release-run-id> --failed --repo "$REPO"`），继续读取固定 CI 原件；原件缺失/过期时明确缺失，不能伪造原 run 或用本地包补位。
+
+公开 Packagist dist 与内部候选 ZIP 的容器字节允许不同；正式 Gate 必须核精确 version/source/dist reference，下载实际公开 ZIP，比较规范化路径、文件类型与逐文件摘要，再记录两个 ZIP 各自摘要。随后仅将消费者锁中 Core 的 source/dist 改为已经核验的公开下载包，保留全部依赖版本和其他锁内容，用 Composer install 实际消费该最终 ZIP。原资格锁保留，公开桥接锁单独保存。公开 ZIP 尚不存在、内容不同、下载/消费失败都保持未闭合，不把内部包消费者检查冒充公开 ZIP 验证；GitHub Release 只能在这一步成功后创建。库根不提交通用解析锁，实际锁随不可变 CI artifact 保存；归档缺失或过期须在获授权后由 CI 重新生产所选范围，不能声称复用同一次原件。
 
 Core 提供通用技术能力与可直接使用的默认实现；应用业务规则由应用持有。`PasswordPolicy` 默认允许 6～1024 UTF-8 字节的新密码，构造参数可配置上下限；`PasswordHasher` 独立负责 Argon2id 散列、验证和重算判断，其默认安全参数保持不变，技术输入上限为 4096 字节。策略上限不能超过技术输入上限。应用在创建/改密前调用策略校验，既有凭据验证及认证内部摘要不受新策略影响。两者均可由应用继承公开类并通过宿主原生容器分别绑定，消费者使用注入实例。`Clock` 已有接口，`TokenIssuer` 的公开类也允许应用实现替换；替换者须保持令牌安全、格式与消费者合同。Core 不提供第二套应用容器或万能策略引擎。
 

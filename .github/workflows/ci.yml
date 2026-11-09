@@ -5,16 +5,16 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Full qualification or nonpublishing package identity only
+        description: Production package consumer, optional full qualification, or nonpublishing identity
         type: choice
-        options: [qualification, identity]
-        default: qualification
+        options: [production, qualification, identity]
+        default: production
       expected_source_commit:
-        description: Exact dispatch HEAD required for identity mode
+        description: Exact dispatch HEAD (40 lowercase hex), required for production and identity
         type: string
         default: ''
       release_version:
-        description: Exact Core version for this qualification (without v)
+        description: Exact Core version for this production or qualification (without v)
         required: true
         type: string
 
@@ -95,13 +95,27 @@ jobs:
           echo 'baseline=explicit' >> "$GITHUB_OUTPUT"
 
   core:
-    name: PHP Core qualification
+    name: PHP Core ${{ inputs.mode }}
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      CORE_RELEASE_VERSION: ${{ inputs.release_version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Require the exact production source and intended version
+        env:
+          MODE: ${{ inputs.mode }}
+          EXPECTED_SOURCE: ${{ inputs.expected_source_commit }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$MODE" == production || "$MODE" == qualification ]]
+          [[ "$CORE_RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$ ]]
+          if [[ "$MODE" == production ]]; then
+            [[ "$EXPECTED_SOURCE" =~ ^[a-f0-9]{40}$ && "$EXPECTED_SOURCE" == "$GITHUB_SHA" ]]
+            test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          fi
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
@@ -116,16 +130,22 @@ jobs:
           ./scripts/release-identity inputs
           composer validate --strict
           ./scripts/release-identity resolve
+      - name: Produce once and check the native package consumer (unit/storage NOT_RUN)
+        if: inputs.mode == 'production'
+        run: ./scripts/verify-consumer --production
       - name: Run complete Core and clean-consumer qualification
-        env:
-          CORE_RELEASE_VERSION: ${{ inputs.release_version }}
-        run: |
-          [[ "$CORE_RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]] || exit 1
-          ./scripts/ci-check
+        if: inputs.mode == 'qualification'
+        run: ./scripts/ci-check
       - uses: actions/upload-artifact@v4
         with:
           name: php-core-qualified
-          path: .local/release/
+          path: |
+            .local/release/release-identity.json
+            .local/release/build-inputs.json
+            .local/release/core.zip
+            .local/release/qualification-composer.lock
+            .local/release/consumer/composer.json
+            .local/release/consumer/composer.lock
           if-no-files-found: error
           include-hidden-files: true
 
