@@ -60,8 +60,9 @@ jobs:
           set -Eeuo pipefail
           [[ "$QUALIFICATION_RUN" =~ ^[1-9][0-9]*$ ]] || { echo 'Set CORE_QUALIFICATION_RUN_ID to the approved CI run' >&2; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN" > "$RUNNER_TEMP/qualification-run.json"
-          jq -e --arg repo "$GITHUB_REPOSITORY" '.conclusion == "success" and .path == ".github/workflows/ci.yml" and .head_repository.full_name == $repo' "$RUNNER_TEMP/qualification-run.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '.conclusion == "success" and .path == ".github/workflows/ci.yml" and .head_repository.full_name == $repo and (.run_attempt | tostring | test("^[1-9][0-9]*$"))' "$RUNNER_TEMP/qualification-run.json"
           echo "run_id=$QUALIFICATION_RUN" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$(jq -r .run_attempt "$RUNNER_TEMP/qualification-run.json")" >> "$GITHUB_OUTPUT"
           echo "source_commit=$(jq -r .head_sha "$RUNNER_TEMP/qualification-run.json")" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
@@ -72,6 +73,8 @@ jobs:
       - name: Verify qualified source, dependency lock and tools
         env:
           CORE_QUALIFICATION_COMMIT: ${{ steps.qualification.outputs.source_commit }}
+          CORE_QUALIFICATION_RUN_ID: ${{ steps.qualification.outputs.run_id }}
+          CORE_QUALIFICATION_RUN_ATTEMPT: ${{ steps.qualification.outputs.run_attempt }}
         run: |
           CORE_RELEASE_VERSION="${GITHUB_REF_NAME#v}" ./scripts/release-identity verify
           cp .local/release/qualification-composer.lock composer.lock
