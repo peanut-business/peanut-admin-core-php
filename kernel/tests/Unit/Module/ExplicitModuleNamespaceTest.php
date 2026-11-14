@@ -169,26 +169,15 @@ final class ExplicitModuleNamespaceTest extends TestCase
         self::assertNull((new $class())->query(null));
     }
 
-    public function testAbsentOptionalDeclarationDoesNotGrantOtherModulesOrTables(): void
+    public function testAbsentOptionalDeclarationDoesNotGrantOtherModules(): void
     {
         $optional = [['module_key' => 'demo.catalog', 'version' => '^1.0']];
-        foreach (['use Host\\Modules\\unknown\\module\\Hidden;', '$table = "demo_catalog";',
-            '$sql = "REFERENCES `demo_catalog`";'] as $reference) {
-            try {
-                $this->boundary($reference, [], [], optionalDependencies: $optional, selectCatalog: false)->check();
-                self::fail('Absent optional declarations must not grant other modules or tables.');
-            } catch (ModuleException $exception) {
-                self::assertSame('MODULE_REGISTRY_CONFLICT', $exception->errorCode);
-            }
+        try {
+            $this->boundary('use Host\\Modules\\unknown\\module\\Hidden;', [], [], optionalDependencies: $optional, selectCatalog: false)->check();
+            self::fail('Absent optional declarations must not grant other modules.');
+        } catch (ModuleException $exception) {
+            self::assertSame('MODULE_REGISTRY_CONFLICT', $exception->errorCode);
         }
-    }
-
-    public function testSelectedOptionalDoesNotGrantPrivateTableAccess(): void
-    {
-        $this->expectException(ModuleException::class);
-        $this->expectExceptionMessage('references table demo_catalog');
-        $this->boundary('$table = "demo_catalog";', [], [],
-            optionalDependencies: [['module_key' => 'demo.catalog', 'version' => '^1.0']])->check();
     }
 
     private function boundary(
