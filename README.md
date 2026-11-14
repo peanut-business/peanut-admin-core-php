@@ -10,7 +10,7 @@ CI 默认 `mode=production`：绑定非空、精确的 `expected_source_commit`�
 
 模块清单可声明 `optional_dependencies: [{"module_key": "vendor.module", "version": "^1.0"}]`，条目形状与 `dependencies` 相同。只有显式加入同一编译集合的可选模块才参与版本核验、依赖顺序、循环检查和公开 exports/imports 边界；缺席不会触发安装、迁移或租户启用，也不会变成 `tenant.requires`。原必需依赖仍必须存在，不能用重复的可选声明降低该要求。
 
-缺席可选模块的普通 PHP 参数／返回类型声明可以保留；没有其源码时不能审计该类型是否公开。命名空间沿用宿主验证的映射或 key 派生布局，不推断第三方包归属。宿主必须按已编译模块选择运行贡献，不加载依赖缺席接口／基类的提供者或执行缺席模块调用；声明可选依赖不授予内部服务、数据表或业务权限。模块选中后仍只允许其明确导出的类型，私有表访问继续拒绝。租户启停始终仅由 `tenant.requires` 决定硬依赖。
+缺席可选模块的普通 PHP 参数／返回类型声明可以保留；没有其源码时不能审计该类型是否公开。命名空间沿用宿主验证的映射或 key 派生布局，不推断第三方包归属。宿主必须按已编译模块选择运行贡献，不加载依赖缺席接口／基类的提供者或执行缺席模块调用；声明可选依赖不授予内部服务或业务权限。模块选中后仍只允许其明确导出的类型。租户启停始终仅由 `tenant.requires` 决定硬依赖。
 
 Composer 包名保持 `peanut-admin/core`，版本从 Git 分支／标签取得；开发消费者精确锁定 `dev-dev` 的源码提交，发行消费者使用公共渠道的精确版本。已发布版本及来源以 [GitHub Releases](https://github.com/peanut-business/peanut-admin-core-php/releases)、Packagist 对应标签提交及实际 dist 内容为准，开发提交不表示已发行，既有标签不改写。
 
@@ -65,7 +65,7 @@ Core 提供通用技术能力与可直接使用的默认实现；应用业务规
 
 `tenant.enableable=false` 声明部署级基础能力：安装后不要求租户套餐另行开通。`CompiledModuleRegistry::isRequiredTenantFoundation()` 读取这一声明；`lifecycle.protected` 独立决定是否允许停用或卸载，不能用永久生命周期保护代替部署可用性。是否可卸载仍由应用既有依赖和生命周期服务核对，不改变用户、权限或对象授权。
 
-模块删除自有表时，将历史表名放入 database.retired_tables；它只允许所属模块在正式 database/migrations 原生迁移文件中引用，不授予业务 SQL 访问权。退役表不进入当前 ownedTableOwners 或存在性检查，与当前表及其他模块声明冲突时拒绝编译。
+模块删除自有表时，将历史表名放入 `database.retired_tables`；退役表不进入当前 `ownedTableOwners` 或存在性检查，与当前表及其他模块声明冲突时拒绝编译。
 
 清单以 `ManifestDocument::fromObject(root, decodedObject)` 接收唯一 JSON 对象，内部派生编译数组及确定性摘要，保留 `{}` 与 `[]` 的区别。`ManifestSchemaValidator::assertValid()` 必须落实随包完整 schema（含展开的 catalog）；编译器随后只补模块归属、依赖、权限及关系语义。编译器固定采用 PHP 原生类型反射与 Composer Semver，不接受替代反射／版本匹配 port。`StrictVersionConstraintMatcher` 供宿主共享“非法版本即不兼容”的 Semver 规则。
 

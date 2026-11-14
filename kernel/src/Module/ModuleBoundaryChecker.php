@@ -11,21 +11,17 @@ use SplFileInfo;
 
 final readonly class ModuleBoundaryChecker
 {
-    /** @var non-empty-list<string> */
-    private array $managedTablePrefixes;
-
-    /** @param non-empty-list<string> $managedTablePrefixes */
+    /** @param list<string> $managedTablePrefixes Kept for constructor signature compatibility. */
     public function __construct(
         private CompiledModuleRegistry $registry,
         private ModuleHostLayout $layout,
-        array $managedTablePrefixes,
+        array $managedTablePrefixes = [],
     ) {
         foreach ($managedTablePrefixes as $prefix) {
             if (preg_match('/^[a-z][a-z0-9_]*_$/D', $prefix) !== 1) {
                 throw new InvalidArgumentException('Invalid managed table prefix.');
             }
         }
-        $this->managedTablePrefixes = array_values(array_unique($managedTablePrefixes));
     }
 
     public function check(): void
@@ -102,8 +98,6 @@ final readonly class ModuleBoundaryChecker
                 $absentOptional[$key] = true;
             }
         }
-        $migrationDirectory = rtrim($manifest->root, '/') . '/database/migrations';
-        $retiredTables = array_fill_keys($manifest->data['database']['retired_tables'] ?? [], true);
         $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(
             $manifest->root,
             RecursiveDirectoryIterator::SKIP_DOTS,
@@ -119,10 +113,6 @@ final readonly class ModuleBoundaryChecker
                 $absentOptional,
                 $namespaceOwners,
                 $exportOwners,
-                ($manifest->data['backend']['migrations'] ?? null) === 'database/migrations'
-                    && $file->getPath() === $migrationDirectory
-                    && preg_match('/^[0-9]{14}_[a-z][a-z0-9_]*\.php$/D', $file->getFilename()) === 1
-                        ? $retiredTables : [],
             );
         }
     }
@@ -132,7 +122,6 @@ final readonly class ModuleBoundaryChecker
      * @param array<string, true> $absentOptional
      * @param array<string, string> $namespaceOwners
      * @param array<string, string> $exportOwners
-     * @param array<string, true> $retiredTables Migration-only tables of this owner.
      */
     private function checkPhpFile(
         string $path,
@@ -141,7 +130,6 @@ final readonly class ModuleBoundaryChecker
         array $absentOptional,
         array $namespaceOwners,
         array $exportOwners,
-        array $retiredTables,
     ): void {
         $tokens = token_get_all((string) file_get_contents($path));
         foreach ($tokens as $token) {
@@ -165,27 +153,6 @@ final readonly class ModuleBoundaryChecker
                         $dependencies,
                         $absentOptional,
                         $exportOwners,
-                    );
-                }
-            }
-            if (!in_array($type, [T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true)) {
-                continue;
-            }
-            foreach ($this->tableCandidates($text) as $table) {
-                $owner = $this->registry->ownedTableOwners[$table] ?? null;
-                if ($owner === null && isset($retiredTables[$table])) {
-                    continue;
-                }
-                if ($owner !== $moduleKey && !$this->isDeclaredForeignKeyReference(
-                    $path,
-                    $text,
-                    $table,
-                    $owner,
-                    $dependencies,
-                )) {
-                    throw new ModuleException(
-                        'MODULE_REGISTRY_CONFLICT',
-                        "{$path} references table {$table} owned by " . ($owner ?? 'no registered module') . '.',
                     );
                 }
             }
@@ -264,44 +231,5 @@ final readonly class ModuleBoundaryChecker
     private function isWithinNamespace(string $reference, string $namespace): bool
     {
         return str_starts_with(strtolower($reference) . '\\', strtolower($namespace));
-    }
-
-    /** @param array<string, true> $dependencies */
-    private function isDeclaredForeignKeyReference(
-        string $path,
-        string $literal,
-        string $table,
-        ?string $owner,
-        array $dependencies,
-    ): bool {
-        $normalizedPath = strtolower(str_replace('\\', '/', $path));
-        $referencePattern = '/\bREFERENCES\s+`' . preg_quote($table, '/') . '`/i';
-        $withoutDeclaredReferences = preg_replace($referencePattern, '', $literal);
-
-        return $owner !== null
-            && isset($dependencies[$owner])
-            && str_contains($normalizedPath, '/database/')
-            && is_string($withoutDeclaredReferences)
-            && $withoutDeclaredReferences !== $literal
-            && preg_match(
-                '/(?<![a-z0-9_])' . preg_quote($table, '/') . '(?![a-z0-9_])/i',
-                $withoutDeclaredReferences,
-            ) !== 1;
-    }
-
-    /** @return list<string> */
-    private function tableCandidates(string $literal): array
-    {
-        $prefixPattern = implode('|', array_map(
-            static fn(string $prefix): string => preg_quote($prefix, '/'),
-            $this->managedTablePrefixes,
-        ));
-        preg_match_all(
-            '/(?<![a-z0-9_])(?:' . $prefixPattern . ')[a-z0-9_]*[a-z0-9](?![a-z0-9_])/D',
-            $literal,
-            $matches,
-        );
-
-        return array_values(array_unique($matches[0] ?? []));
     }
 }
