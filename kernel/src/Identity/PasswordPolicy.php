@@ -47,13 +47,19 @@ class PasswordPolicy
                 $this->maximumLength,
             ));
         }
+        // The public requirements shown to clients must be the same effective
+        // requirements enforced here, including subclass overrides.
+        $requirements = $this->requirements();
         foreach ([
-            [$this->requireUppercase, '/[A-Z]/', 'an uppercase ASCII letter (A-Z)'],
-            [$this->requireLowercase, '/[a-z]/', 'a lowercase ASCII letter (a-z)'],
-            [$this->requireDigit, '/[0-9]/', 'an ASCII digit (0-9)'],
-            [$this->requireSpecial, '/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/', 'a printable ASCII punctuation character (excluding space)'],
-        ] as [$required, $pattern, $description]) {
-            if ($required && preg_match($pattern, $plainPassword) !== 1) {
+            ['require_uppercase', '/[A-Z]/', 'an uppercase ASCII letter (A-Z)'],
+            ['require_lowercase', '/[a-z]/', 'a lowercase ASCII letter (a-z)'],
+            ['require_digit', '/[0-9]/', 'an ASCII digit (0-9)'],
+            ['require_special', '/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/', 'a printable ASCII punctuation character (excluding space)'],
+        ] as [$key, $pattern, $description]) {
+            if (!array_key_exists($key, $requirements) || !is_bool($requirements[$key])) {
+                throw new InvalidArgumentException('Invalid password requirement: ' . $key);
+            }
+            if ($requirements[$key] && preg_match($pattern, $plainPassword) !== 1) {
                 throw new RuntimeException('Password must contain ' . $description . '.');
             }
         }

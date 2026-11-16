@@ -74,6 +74,35 @@ final class CredentialSecurityTest extends TestCase
         $restricted->assertValid('Example99');
     }
 
+    public function testOverriddenPublicRequirementsAreEnforcedForNewCredentials(): void
+    {
+        $policy = new class (8, 32) extends PasswordPolicy {
+            public function requirements(): array
+            {
+                return [...parent::requirements(), 'require_digit' => true];
+            }
+        };
+
+        self::assertTrue($policy->requirements()['require_digit']);
+        $policy->assertValid('example9');
+
+        $this->expectException(RuntimeException::class);
+        $policy->assertValid('examples');
+    }
+
+    public function testInvalidRequirementsFromSubclassFailClosed(): void
+    {
+        $policy = new class extends PasswordPolicy {
+            public function requirements(): array
+            {
+                return ['require_uppercase' => true];
+            }
+        };
+
+        $this->expectException(InvalidArgumentException::class);
+        $policy->assertValid('Example9!');
+    }
+
     public function testDefaultLengthBoundAppliesOnlyToNewCredentials(): void
     {
         $policy = new PasswordPolicy();
