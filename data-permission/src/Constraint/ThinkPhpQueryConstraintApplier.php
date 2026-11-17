@@ -14,8 +14,17 @@ final readonly class ThinkPhpQueryConstraintApplier
 
     public function apply(BaseQuery $query, QueryConstraint $constraint): void
     {
+        // A top-level grant adds no filter. Keep the ORM's guard against unqualified writes.
+        if (!$constraint instanceof AlwaysTrue) {
+            $this->appendPredicate($query, $constraint);
+        }
+    }
+
+    private function appendPredicate(BaseQuery $query, QueryConstraint $constraint): void
+    {
         match (true) {
-            $constraint instanceof AlwaysTrue => null,
+            // ThinkPHP discards empty closures, including the true branch of an OR.
+            $constraint instanceof AlwaysTrue => $query->where(true),
             $constraint instanceof AlwaysFalse => $query->whereRaw('1 = 0'),
             $constraint instanceof TenantEquals => $query->where($constraint->column->value, $constraint->tenantId),
             $constraint instanceof ColumnEquals => $query->where($constraint->column->value, $constraint->value),
@@ -38,7 +47,7 @@ final readonly class ThinkPhpQueryConstraintApplier
         $query->where(function (BaseQuery $nested) use ($constraint, $pk): void {
             $nested->pk($pk);
             foreach ($constraint->constraints as $child) {
-                $this->apply($nested, $child);
+                $this->appendPredicate($nested, $child);
             }
         });
     }
@@ -52,7 +61,7 @@ final readonly class ThinkPhpQueryConstraintApplier
                 $method = $index === 0 ? 'where' : 'whereOr';
                 $nested->{$method}(function (BaseQuery $branch) use ($child, $pk): void {
                     $branch->pk($pk);
-                    $this->apply($branch, $child);
+                    $this->appendPredicate($branch, $child);
                 });
             }
         });
@@ -73,16 +82,12 @@ final readonly class ThinkPhpQueryConstraintApplier
     private function jsonArrayContains(BaseQuery $query, JsonArrayContainsColumn $constraint): void
     {
         $query->whereRaw(<<<SQL
-EXISTS (
-    SELECT 1
+CAST({$constraint->column->value} AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci IN (
+    SELECT requested_target.target_id COLLATE utf8mb4_0900_ai_ci
     FROM JSON_TABLE(
         CAST(? AS JSON),
         '$[*]' COLUMNS (target_id VARCHAR(128) PATH '$')
     ) requested_target
-    WHERE requested_target.target_id COLLATE utf8mb4_0900_ai_ci = (
-        CAST({$constraint->column->value} AS CHAR CHARACTER SET utf8mb4)
-        COLLATE utf8mb4_0900_ai_ci
-    )
 )
 SQL, [json_encode($constraint->values, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)]);
     }

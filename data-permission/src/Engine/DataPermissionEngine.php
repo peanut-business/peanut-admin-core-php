@@ -154,15 +154,8 @@ final readonly class DataPermissionEngine
         $context = new AuthorizationContext($tenantContext, $policies->primaryDepartmentId);
         $provider = $this->providers->query($operation->providerKey);
 
-        if ($operation->accessMode === 'system_internal' || $operation->ownership === 'platform_internal') {
-            throw new DataAuthorizationException('AUTHZ_SYSTEM_ACTOR_DENIED', 'Tenant members cannot use a system operation.');
-        }
-        if ($operation->accessMode === 'global_reference_read') {
-            return new AlwaysTrue();
-        }
-
         $dataConstraint = new AlwaysTrue();
-        if ($operation->accessMode !== 'tenant_wide') {
+        if (!in_array($operation->accessMode, ['tenant_wide', 'global_reference_read'], true)) {
             $targetsCoverPolicy = $resolvedTargets->sets !== []
                 && $this->providers->target($operation->providerKey)->assertTargetsAllowed(
                     $context,
@@ -275,6 +268,9 @@ final readonly class DataPermissionEngine
             : in_array(true, $results, true);
         if (!$allowed) {
             throw new DataAuthorizationException('AUTHZ_PERMISSION_DENIED', 'The functional permission is denied.');
+        }
+        if ($operation->accessMode === 'system_internal' || $operation->ownership === 'platform_internal') {
+            throw new DataAuthorizationException('AUTHZ_SYSTEM_ACTOR_DENIED', 'Tenant members cannot use a system operation.');
         }
     }
 
