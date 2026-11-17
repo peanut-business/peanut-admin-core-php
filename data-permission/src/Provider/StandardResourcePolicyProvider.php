@@ -186,7 +186,9 @@ final readonly class StandardResourcePolicyProvider implements
             return new AlwaysFalse();
         }
 
-        return new ColumnIn($this->columns->departmentColumn, $departmentIds);
+        return count($departmentIds) <= 500
+            ? new ColumnIn($this->columns->departmentColumn, $departmentIds)
+            : new JsonArrayContainsColumn($this->columns->departmentColumn, array_map('strval', $departmentIds));
     }
 
     private function selectedTargets(
