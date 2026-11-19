@@ -1,12 +1,6 @@
 parameters:
 	ignoreErrors:
 		-
-			message: '#^Call to an undefined method think\\db\\BaseQuery\:\:getPk\(\)\.$#'
-			identifier: method.notFound
-			count: 2
-			path: data-permission/src/Constraint/ThinkPhpQueryConstraintApplier.php
-
-		-
 			message: '#^Method PeanutAdmin\\DataPermission\\Engine\\DataPermissionEngine\:\:assertCommon\(\) has parameter \$permissions with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1
@@ -407,30 +401,6 @@ parameters:
 			identifier: missingType.iterableValue
 			count: 1
 			path: kernel/src/Persistence/Model/TenantModel.php
-
-		-
-			message: '#^Method think\\db\\BaseQuery\:\:getOptions\(\) invoked with 1 parameter, 0 required\.$#'
-			identifier: arguments.count
-			count: 1
-			path: kernel/src/Persistence/Model/TenantModel.php
-
-		-
-			message: '#^Call to function is_int\(\) with string will always evaluate to false\.$#'
-			identifier: function.impossibleType
-			count: 1
-			path: kernel/src/Protection/SodiumFieldProtector.php
-
-		-
-			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
-			identifier: function.alreadyNarrowedType
-			count: 2
-			path: kernel/src/Protection/SodiumFieldProtector.php
-
-		-
-			message: '#^Result of && is always false\.$#'
-			identifier: booleanAnd.alwaysFalse
-			count: 1
-			path: kernel/src/Protection/SodiumFieldProtector.php
 
 		-
 			message: '#^Call to method middleware\(\) on an unknown class think\\Request\.$#'

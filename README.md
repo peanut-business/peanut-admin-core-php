@@ -71,7 +71,7 @@ Core 提供通用技术能力与可直接使用的默认实现；应用业务规
 
 持久化固定使用 `tenant_id`，Standalone 与 SaaS 使用相同租户列结构。Model 复用 `TenantModel::scopeTenant(query, TenantScope)` 与 `TenantModel::tenantAttributes(TenantScope, attributes)`；幂等服务无模式参数，`IdempotencySchema::tenant()` 生成固定租户列 DDL。旧 tenantless 模式不再是开发 API，不自动转换历史数据库。
 
-授权 AST 的 `JsonArrayContainsColumn` 接收 `TypedResourceTargetSet` 已规范的非空字符串列表，`ColumnNotIn` 接收 `SourceReadScope` 已验证的不超过 500 项非空整数列表；AST 不再重复规范或验证同一输入。首次目标、Scope 与列标识符校验仍由各自输入边界负责。
+授权 AST 的 `ColumnIn` 接收已规范的非空整数或字符串列表（查询应用层对超过 500 项列表自动按 500 项分块 `OR IN`），`ColumnNotIn` 接收 `SourceReadScope` 已验证的不超过 500 项非空整数列表；AST 不再重复规范或验证同一输入。首次目标、Scope 与列标识符校验仍由各自输入边界负责。
 
 服务覆盖 registry 只产出已校验的 `bindings()`，交由原生容器绑定；slot 白名单、版本及实现合同保持校验。租户锁名直接使用 `TenantNamespace::lockName()`。缓存使用框架 Cache，文件存储使用 `StorageDriver`，图片元数据使用 `ImageMetadataInspector`；旧通用 TenantCache/key builders、StorageProvider、上传策略、图片计划器，以及未装配的同步 transport 和迁移辅助登记已退出当前 API。图片变体定义和有实际消费者的授权发行合同继续保留。
 

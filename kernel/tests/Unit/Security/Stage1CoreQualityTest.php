@@ -22,16 +22,80 @@ use PeanutAdmin\Kernel\Async\TrustedEnvelopeCodec;
 use PeanutAdmin\Kernel\Auth\AuthException;
 use PeanutAdmin\Kernel\Auth\TenantContext;
 use PeanutAdmin\Kernel\Auth\ValidatedTenantSession;
+use PeanutAdmin\Kernel\Authorization\EffectivePermissionSet;
+use PeanutAdmin\Kernel\Authorization\RevisionPermissionCache;
 use PeanutAdmin\Kernel\Host\ApplicationHostPolicy;
 use PeanutAdmin\Kernel\Host\ProblemDetailsAdapter;
+use PeanutAdmin\Kernel\Idempotency\IdempotencyService;
 use PeanutAdmin\Kernel\Persistence\Model\TenantModel;
 use PeanutAdmin\Kernel\Tenancy\TenantEntryBindingResolver;
 use PeanutAdmin\Kernel\Tenancy\TenantScope;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\AbstractLogger;
+use ReflectionMethod;
+use think\db\BaseQuery;
+use think\db\ConnectionInterface;
 
 final class Stage1CoreQualityTest extends TestCase
 {
+    public function testTenantModelScopeTenantResolvesQueryAliasViaGetOption(): void
+    {
+        $connection = $this->createStub(ConnectionInterface::class);
+        $query = new class ($connection) extends BaseQuery {
+            /** @var list<array{field: mixed, op: mixed, condition: mixed}> */
+            public array $whereCalls = [];
+
+            public function where(mixed $field, mixed $op = null, mixed $condition = null): static
+            {
+                $this->whereCalls[] = ['field' => $field, 'op' => $op, 'condition' => $condition];
+                return $this;
+            }
+        };
+        $query->table('orders')->alias('o');
+
+        $modelClass = new class extends TenantModel {
+            public function __construct() {}
+        };
+        $scope = TenantScope::fromTrustedContext(42, 'test');
+        $modelClass->scopeTenant($query, $scope);
+
+        self::assertCount(1, $query->whereCalls);
+        self::assertSame('o.tenant_id', $query->whereCalls[0]['field']);
+        self::assertSame(42, $query->whereCalls[0]['op']);
+    }
+
+    public function testRevisionPermissionCacheSupportsInjectedGetterAndSetter(): void
+    {
+        $store = [];
+        $cache = new RevisionPermissionCache(
+            static function (string $key) use (&$store): mixed {
+                return $store[$key] ?? null;
+            },
+            static function (string $key, mixed $value, int $ttl) use (&$store): void {
+                $store[$key] = $value;
+            },
+        );
+
+        self::assertNull($cache->get('tenant', '1:10', '3:5'));
+        $permissions = new EffectivePermissionSet(['order.read', 'order.write']);
+        $cache->put('tenant', '1:10', '3:5', $permissions);
+
+        $cached = $cache->get('tenant', '1:10', '3:5');
+        self::assertInstanceOf(EffectivePermissionSet::class, $cached);
+        self::assertTrue($cached->allows('order.read'));
+        self::assertTrue($cached->allows('order.write'));
+    }
+
+    public function testIdempotencyServiceIsExpiredEvaluatesUtcTimestamp(): void
+    {
+        $method = new ReflectionMethod(IdempotencyService::class, 'isExpired');
+        $now = new DateTimeImmutable('2026-07-16T10:00:00Z');
+
+        self::assertTrue($method->invoke(null, ['expires_at' => '2026-07-16 09:59:59.999'], $now));
+        self::assertTrue($method->invoke(null, ['expires_at' => '2026-07-16 10:00:00.000'], $now));
+        self::assertFalse($method->invoke(null, ['expires_at' => '2026-07-16 10:00:00.001'], $now));
+        self::assertFalse($method->invoke(null, ['expires_at' => ''], $now));
+    }
     public function testTenantModelAttributesRejectWeakTypeAndPreventOverwrite(): void
     {
         $scope = TenantScope::fromTrustedContext(7, 'test');

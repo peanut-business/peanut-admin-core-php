@@ -26,7 +26,7 @@ abstract class TenantModel extends Model
     public function scopeTenant(BaseQuery $query, TenantScope $scope): void
     {
         $table = $query->getTable();
-        $alias = $query->getOptions('alias');
+        $alias = $query->getOption('alias');
         $prefix = is_array($alias) && is_string($table) && isset($alias[$table]) && is_string($alias[$table]) && $alias[$table] !== ''
             ? $alias[$table]
             : (is_string($table) ? $table : '');

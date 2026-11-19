@@ -42,9 +42,8 @@ final readonly class ThinkPhpQueryConstraintApplier
 
     private function and(BaseQuery $query, AndConstraint $constraint): void
     {
-        $pk = $query->getPk();
-        $query->where(function (BaseQuery $nested) use ($constraint, $pk): void {
-            $nested->pk($pk);
+        $query->where(function (BaseQuery $nested) use ($constraint, $query): void {
+            self::copyPk($query, $nested);
             foreach ($constraint->constraints as $child) {
                 $this->appendPredicate($nested, $child);
             }
@@ -53,13 +52,12 @@ final readonly class ThinkPhpQueryConstraintApplier
 
     private function or(BaseQuery $query, OrConstraint $constraint): void
     {
-        $pk = $query->getPk();
-        $query->where(function (BaseQuery $nested) use ($constraint, $pk): void {
-            $nested->pk($pk);
+        $query->where(function (BaseQuery $nested) use ($constraint, $query): void {
+            self::copyPk($query, $nested);
             foreach ($constraint->constraints as $index => $child) {
                 $method = $index === 0 ? 'where' : 'whereOr';
-                $nested->{$method}(function (BaseQuery $branch) use ($child, $pk): void {
-                    $branch->pk($pk);
+                $nested->{$method}(function (BaseQuery $branch) use ($child, $query): void {
+                    self::copyPk($query, $branch);
                     $this->appendPredicate($branch, $child);
                 });
             }
@@ -89,9 +87,8 @@ final readonly class ThinkPhpQueryConstraintApplier
             $query->whereIn($constraint->column->value, $chunks[0]);
             return;
         }
-        $pk = $query->getPk();
-        $query->where(static function (BaseQuery $nested) use ($constraint, $chunks, $pk): void {
-            $nested->pk($pk);
+        $query->where(static function (BaseQuery $nested) use ($constraint, $chunks, $query): void {
+            self::copyPk($query, $nested);
             foreach ($chunks as $index => $chunk) {
                 if ($index === 0) {
                     $nested->whereIn($constraint->column->value, $chunk);
@@ -100,5 +97,12 @@ final readonly class ThinkPhpQueryConstraintApplier
                 }
             }
         });
+    }
+
+    private static function copyPk(BaseQuery $source, BaseQuery $target): void
+    {
+        if (method_exists($source, 'getPk')) {
+            $target->pk($source->getPk());
+        }
     }
 }

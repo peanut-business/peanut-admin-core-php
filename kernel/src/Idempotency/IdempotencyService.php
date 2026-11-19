@@ -33,8 +33,8 @@ final readonly class IdempotencyService
         string $operationKey,
         IdempotencyKey $key,
         string $requestHash,
+        ?DateTimeImmutable $comparisonTime = null,
     ): ?IdempotencyRecord {
-        $this->assertStorageMode();
         $known = $this->tenantQuery($scope)
             ->where('tenant_member_id', $memberId)
             ->where('operation_key', $operationKey)
@@ -44,7 +44,9 @@ final readonly class IdempotencyService
             return null;
         }
         $data = $known->getData();
-        if ((string) ($data['status'] ?? '') !== 'completed') {
+        $now = ($comparisonTime ?? new DateTimeImmutable('now', new DateTimeZone('UTC')))
+            ->setTimezone(new DateTimeZone('UTC'));
+        if ((string) ($data['status'] ?? '') !== 'completed' || self::isExpired($data, $now)) {
             return null;
         }
 
@@ -56,6 +58,7 @@ final readonly class IdempotencyService
         string $operationKey,
         IdempotencyKey $key,
         string $requestHash,
+        ?DateTimeImmutable $comparisonTime = null,
     ): ?IdempotencyRecord {
         $known = PlatformIdempotencyRecord::where('platform_operator_id', $operatorId)
             ->where('operation_key', $operationKey)
@@ -65,7 +68,9 @@ final readonly class IdempotencyService
             return null;
         }
         $data = $known->getData();
-        if ((string) ($data['status'] ?? '') !== 'completed') {
+        $now = ($comparisonTime ?? new DateTimeImmutable('now', new DateTimeZone('UTC')))
+            ->setTimezone(new DateTimeZone('UTC'));
+        if ((string) ($data['status'] ?? '') !== 'completed' || self::isExpired($data, $now)) {
             return null;
         }
 
@@ -81,7 +86,6 @@ final readonly class IdempotencyService
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
-        $this->assertStorageMode();
         return $this->begin(
             $this->tenantQuery($scope)->where('tenant_member_id', $memberId),
             new TenantRecordModel(),
@@ -126,7 +130,6 @@ final readonly class IdempotencyService
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
-        $this->assertStorageMode();
         $this->storeOutcome(
             $this->tenantQuery($scope),
             $id,
@@ -166,7 +169,6 @@ final readonly class IdempotencyService
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
-        $this->assertStorageMode();
         $this->storeOutcome(
             $this->tenantQuery($scope),
             $id,
@@ -220,15 +222,19 @@ final readonly class IdempotencyService
         $known = (clone $query)->find();
         if ($known instanceof Model) {
             $knownData = $known->getData();
-            if ((string) ($knownData['status'] ?? '') === 'completed') {
+            if ((string) ($knownData['status'] ?? '') === 'completed' && !self::isExpired($knownData, $now)) {
                 return $this->existing($knownData, $requestHash);
             }
             $locked = (clone $query)->lock(true)->find();
             if (!$locked instanceof Model) {
                 throw new \RuntimeException('Known idempotency record disappeared before it could be locked.');
             }
+            $lockedData = $locked->getData();
+            if (self::isExpired($lockedData, $now)) {
+                return $this->reclaimExpired($query, $lockedData, $requestHash, $expiresAt, $now);
+            }
 
-            return $this->existing($locked->getData(), $requestHash);
+            return $this->existing($lockedData, $requestHash);
         }
 
         try {
@@ -266,9 +272,61 @@ final readonly class IdempotencyService
             if (!$known instanceof Model) {
                 throw new \RuntimeException('Competing idempotency record could not be loaded.');
             }
+            $lockedData = $known->getData();
+            if (self::isExpired($lockedData, $now)) {
+                return $this->reclaimExpired($query, $lockedData, $requestHash, $expiresAt, $now);
+            }
 
-            return $this->existing($known->getData(), $requestHash);
+            return $this->existing($lockedData, $requestHash);
         }
+    }
+
+    /** @param array<string,mixed> $lockedData */
+    private function reclaimExpired(
+        BaseQuery $query,
+        array $lockedData,
+        string $requestHash,
+        DateTimeImmutable $expiresAt,
+        DateTimeImmutable $now,
+    ): IdempotencyRecord {
+        $id = (int) $lockedData['id'];
+        (clone $query)->where('id', $id)->update([
+            'request_hash' => $requestHash,
+            'status' => 'processing',
+            'response_status' => null,
+            'response_body_json' => null,
+            'resource_type' => null,
+            'resource_id' => null,
+            'expires_at' => self::date($expiresAt),
+            'updated_at' => self::date($now),
+        ]);
+
+        return new IdempotencyRecord(
+            $id,
+            'processing',
+            $requestHash,
+            null,
+            null,
+            null,
+            null,
+            true,
+        );
+    }
+
+    /** @param array<string,mixed> $row */
+    private static function isExpired(array $row, DateTimeImmutable $now): bool
+    {
+        $raw = $row['expires_at'] ?? null;
+        if (!is_string($raw) || trim($raw) === '') {
+            return false;
+        }
+        try {
+            $expiry = new DateTimeImmutable($raw, new DateTimeZone('UTC'));
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $expiry <= $now;
     }
 
     /** @param array<string,mixed> $responseBody */
@@ -342,11 +400,6 @@ final readonly class IdempotencyService
             'tenant',
             $scope,
         );
-    }
-
-    private function assertStorageMode(): void
-    {
-        $this->tenantScope->assertStorageMode(['pa_tenant_idempotency_record']);
     }
 
     private static function date(DateTimeImmutable $date): string
