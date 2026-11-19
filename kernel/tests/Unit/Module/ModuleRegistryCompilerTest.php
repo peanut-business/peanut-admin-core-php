@@ -549,12 +549,12 @@ abstract class ProjectCatalogProvider implements \PeanutAdmin\DataPermission\Tar
 namespace Example\Modules\Other;
 
 abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
-abstract class ForeignPolicyProvider implements \PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider {}
+abstract class ForeignPolicyProvider implements \PeanutAdmin\DataPermission\Provider\ResourcePolicyProvider {}
 
 namespace Example\Modules\Reference;
 
 abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
-abstract class ReferenceQueryProvider implements \PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider {}
+abstract class ReferenceQueryProvider implements \PeanutAdmin\DataPermission\Provider\ResourcePolicyProvider {}
 
 namespace Example\Modules\Target;
 
@@ -571,7 +571,7 @@ abstract class ProjectCatalogProvider implements \PeanutAdmin\DataPermission\Tar
 namespace Example\Modules\WorkItem;
 
 abstract class ModuleProvider implements \PeanutAdmin\Kernel\Module\ModuleProvider {}
-abstract class WorkItemQueryProvider implements \PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider {}
+abstract class WorkItemQueryProvider implements \PeanutAdmin\DataPermission\Provider\ResourcePolicyProvider {}
 
 namespace Dcs\Modules\Store;
 

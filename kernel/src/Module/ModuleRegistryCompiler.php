@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Module;
 
-use PeanutAdmin\DataPermission\Provider\ResourceQueryPolicyProvider;
+use PeanutAdmin\DataPermission\Provider\ResourcePolicyProvider;
 use PeanutAdmin\DataPermission\Provider\SharedMasterScopeProvider;
 use PeanutAdmin\DataPermission\Target\ResourceTargetCatalogProvider;
 use PeanutAdmin\DataPermission\Target\ResourceTargetResolver;
@@ -14,7 +14,7 @@ final readonly class ModuleRegistryCompiler
     private const CONTRACTS = [
         'TargetResolver' => ResourceTargetResolver::class,
         'TargetCatalogProvider' => ResourceTargetCatalogProvider::class,
-        'ResourceQueryPolicyProvider' => ResourceQueryPolicyProvider::class,
+        'ResourcePolicyProvider' => ResourcePolicyProvider::class,
         'SharedMasterScopeProvider' => SharedMasterScopeProvider::class,
     ];
 
@@ -262,7 +262,7 @@ final readonly class ModuleRegistryCompiler
         $ownership = $this->arrayString($resource, 'ownership', $moduleKey);
         $this->assertOwnedContract(
             $this->arrayString($resource, 'provider', $moduleKey),
-            'ResourceQueryPolicyProvider',
+            'ResourcePolicyProvider',
             $moduleKey,
         );
         if ($ownership === 'shared_master') {

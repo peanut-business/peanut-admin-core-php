@@ -8,47 +8,34 @@ use PeanutAdmin\DataPermission\Exception\DataAuthorizationException;
 
 final class ResourceProviderRegistry
 {
-    /** @var array<string, ResourceQueryPolicyProvider> */
-    private array $queryProviders = [];
+    /** @var array<string, ResourcePolicyProvider> */
+    private array $providers = [];
 
-    /** @var array<string, ResourceTargetPolicyProvider> */
-    private array $targetProviders = [];
-
-    /** @var array<string, ResourceCreatePolicyProvider> */
-    private array $createProviders = [];
-
-    public function registerQuery(string $key, ResourceQueryPolicyProvider $provider): void
+    public function register(string $key, ResourcePolicyProvider $provider): void
     {
-        $this->queryProviders[$key] = $provider;
+        $this->providers[$key] = $provider;
     }
 
-    public function registerTarget(string $key, ResourceTargetPolicyProvider $provider): void
+    public function get(string $key): ResourcePolicyProvider
     {
-        $this->targetProviders[$key] = $provider;
+        return $this->providers[$key] ?? throw new DataAuthorizationException(
+            'AUTHZ_PROVIDER_MISSING',
+            "Resource provider {$key} is not registered.",
+        );
     }
 
-    public function registerCreate(string $key, ResourceCreatePolicyProvider $provider): void
+    public function query(string $key): ResourcePolicyProvider
     {
-        $this->createProviders[$key] = $provider;
+        return $this->get($key);
     }
 
-    public function query(string $key): ResourceQueryPolicyProvider
+    public function target(string $key): ResourcePolicyProvider
     {
-        return $this->queryProviders[$key] ?? throw $this->missing($key);
+        return $this->get($key);
     }
 
-    public function target(string $key): ResourceTargetPolicyProvider
+    public function create(string $key): ResourcePolicyProvider
     {
-        return $this->targetProviders[$key] ?? throw $this->missing($key);
-    }
-
-    public function create(string $key): ResourceCreatePolicyProvider
-    {
-        return $this->createProviders[$key] ?? throw $this->missing($key);
-    }
-
-    private function missing(string $key): DataAuthorizationException
-    {
-        return new DataAuthorizationException('AUTHZ_PROVIDER_MISSING', "Resource provider {$key} is not registered.");
+        return $this->get($key);
     }
 }
