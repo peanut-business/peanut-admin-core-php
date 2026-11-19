@@ -28,9 +28,8 @@ final readonly class ThinkPhpQueryConstraintApplier
             $constraint instanceof AlwaysFalse => $query->whereRaw('1 = 0'),
             $constraint instanceof TenantEquals => $query->where($constraint->column->value, $constraint->tenantId),
             $constraint instanceof ColumnEquals => $query->where($constraint->column->value, $constraint->value),
-            $constraint instanceof ColumnIn => $query->whereIn($constraint->column->value, $constraint->values),
+            $constraint instanceof ColumnIn => $this->columnIn($query, $constraint),
             $constraint instanceof ColumnNotIn => $query->whereNotIn($constraint->column->value, $constraint->values),
-            $constraint instanceof JsonArrayContainsColumn => $this->jsonArrayContains($query, $constraint),
             $constraint instanceof AndConstraint => $this->and($query, $constraint),
             $constraint instanceof OrConstraint => $this->or($query, $constraint),
             $constraint instanceof ExistsByContract => $this->exists($query, $constraint),
@@ -78,8 +77,8 @@ final readonly class ThinkPhpQueryConstraintApplier
         $this->targetSets->apply($query, $constraint);
     }
 
-    /** Chunk large target sets into standard indexed OR(IN ...) predicates without MySQL-only JSON_TABLE SQL. */
-    private function jsonArrayContains(BaseQuery $query, JsonArrayContainsColumn $constraint): void
+    /** Chunk large IN sets into standard indexed OR(IN ...) predicates. */
+    private function columnIn(BaseQuery $query, ColumnIn $constraint): void
     {
         if ($constraint->values === []) {
             $query->whereRaw('1 = 0');

@@ -11,7 +11,6 @@ use PeanutAdmin\DataPermission\Constraint\AndConstraint;
 use PeanutAdmin\DataPermission\Constraint\ColumnEquals;
 use PeanutAdmin\DataPermission\Constraint\ColumnIn;
 use PeanutAdmin\DataPermission\Constraint\ExistsByContract;
-use PeanutAdmin\DataPermission\Constraint\JsonArrayContainsColumn;
 use PeanutAdmin\DataPermission\Constraint\OrConstraint;
 use PeanutAdmin\DataPermission\Constraint\QueryConstraint;
 use PeanutAdmin\DataPermission\Context\AuthorizationContext;
@@ -59,9 +58,7 @@ final readonly class StandardResourcePolicyProvider implements ResourcePolicyPro
                     'Requested target filters must use a registered column and non-empty IDs.',
                 );
             }
-            $constraints[] = count($targetSet->targetIds) <= 500
-                ? new ColumnIn($column, $targetSet->targetIds)
-                : new JsonArrayContainsColumn($column, $targetSet->targetIds);
+            $constraints[] = new ColumnIn($column, $targetSet->targetIds);
         }
 
         return count($constraints) === 1 ? $constraints[0] : new AndConstraint($constraints);
@@ -201,9 +198,7 @@ final readonly class StandardResourcePolicyProvider implements ResourcePolicyPro
             return new AlwaysFalse();
         }
 
-        return count($departmentIds) <= 500
-            ? new ColumnIn($this->columns->departmentColumn, $departmentIds)
-            : new JsonArrayContainsColumn($this->columns->departmentColumn, array_map('strval', $departmentIds));
+        return new ColumnIn($this->columns->departmentColumn, $departmentIds);
     }
 
     private function selectedTargets(
