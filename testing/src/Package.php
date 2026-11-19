@@ -7,7 +7,13 @@ namespace PeanutAdmin\Testing;
 final class Package
 {
     public const NAME = 'peanut-admin/core';
-    public const VERSION = '0.1.0';
+
+    public static function version(): string
+    {
+        return \Composer\InstalledVersions::isInstalled(self::NAME)
+            ? ((string) (\Composer\InstalledVersions::getPrettyVersion(self::NAME) ?? 'dev'))
+            : 'dev';
+    }
 
     private function __construct() {}
 }

@@ -23,10 +23,7 @@ use PeanutAdmin\DataPermission\Policy\EffectivePolicySet;
 use PeanutAdmin\DataPermission\Target\TypedResourceTargetCollection;
 use PeanutAdmin\DataPermission\Target\TypedResourceTargetSet;
 
-final readonly class StandardResourcePolicyProvider implements
-    ResourceQueryPolicyProvider,
-    ResourceTargetPolicyProvider,
-    ResourceCreatePolicyProvider
+final readonly class StandardResourcePolicyProvider implements ResourcePolicyProvider
 {
     public function __construct(
         private ProviderColumnMap $columns,
