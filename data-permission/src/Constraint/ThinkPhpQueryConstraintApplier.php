@@ -81,12 +81,35 @@ final readonly class ThinkPhpQueryConstraintApplier
     /** MySQL JSON_TABLE keeps very large caller-authorized target sets to one bound value. */
     private function jsonArrayContains(BaseQuery $query, JsonArrayContainsColumn $constraint): void
     {
-        $query->whereRaw(<<<SQL
-CAST({$constraint->column->value} AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci IN (
-    SELECT requested_target.target_id COLLATE utf8mb4_0900_ai_ci
+        $allIntegers = $constraint->values !== [];
+        foreach ($constraint->values as $value) {
+            if (is_int($value)) {
+                continue;
+            }
+            if (!is_string($value) || preg_match('/^-?(?:0|[1-9][0-9]*)$/D', $value) !== 1) {
+                $allIntegers = false;
+                break;
+            }
+        }
+        if ($allIntegers) {
+            $intValues = array_map(static fn (int|string $v): int => (int) $v, $constraint->values);
+            $query->whereRaw(<<<SQL
+{$constraint->column->value} IN (
+    SELECT requested_target.target_id
     FROM JSON_TABLE(
         CAST(? AS JSON),
-        '$[*]' COLUMNS (target_id VARCHAR(128) PATH '$')
+        '$[*]' COLUMNS (target_id BIGINT PATH '$')
+    ) requested_target
+)
+SQL, [json_encode($intValues, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)]);
+            return;
+        }
+        $query->whereRaw(<<<SQL
+{$constraint->column->value} IN (
+    SELECT requested_target.target_id
+    FROM JSON_TABLE(
+        CAST(? AS JSON),
+        '$[*]' COLUMNS (target_id VARCHAR(255) PATH '$')
     ) requested_target
 )
 SQL, [json_encode($constraint->values, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)]);
