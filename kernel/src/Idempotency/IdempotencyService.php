@@ -22,9 +22,54 @@ final readonly class IdempotencyService
 {
     private TenantColumnScope $tenantScope;
 
-    public function __construct()
+    public function __construct(?TenantColumnScope $tenantScope = null)
     {
-        $this->tenantScope = new TenantColumnScope();
+        $this->tenantScope = $tenantScope ?? TenantColumnScope::shared();
+    }
+
+    public function findCompletedTenant(
+        TenantScope $scope,
+        int $memberId,
+        string $operationKey,
+        IdempotencyKey $key,
+        string $requestHash,
+    ): ?IdempotencyRecord {
+        $this->assertStorageMode();
+        $known = $this->tenantQuery($scope)
+            ->where('tenant_member_id', $memberId)
+            ->where('operation_key', $operationKey)
+            ->where('idempotency_key_hash', $key->hash)
+            ->find();
+        if (!$known instanceof Model) {
+            return null;
+        }
+        $data = $known->getData();
+        if ((string) ($data['status'] ?? '') !== 'completed') {
+            return null;
+        }
+
+        return $this->existing($data, $requestHash);
+    }
+
+    public function findCompletedPlatform(
+        int $operatorId,
+        string $operationKey,
+        IdempotencyKey $key,
+        string $requestHash,
+    ): ?IdempotencyRecord {
+        $known = PlatformIdempotencyRecord::where('platform_operator_id', $operatorId)
+            ->where('operation_key', $operationKey)
+            ->where('idempotency_key_hash', $key->hash)
+            ->find();
+        if (!$known instanceof Model) {
+            return null;
+        }
+        $data = $known->getData();
+        if ((string) ($data['status'] ?? '') !== 'completed') {
+            return null;
+        }
+
+        return $this->existing($data, $requestHash);
     }
 
     public function beginTenant(
@@ -60,7 +105,6 @@ final readonly class IdempotencyService
         DateTimeImmutable $expiresAt,
         ?DateTimeImmutable $comparisonTime = null,
     ): IdempotencyRecord {
-        $this->assertStorageMode();
         return $this->begin(
             PlatformIdempotencyRecord::where('platform_operator_id', $operatorId),
             new PlatformIdempotencyRecord(),
@@ -102,7 +146,6 @@ final readonly class IdempotencyService
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
-        $this->assertStorageMode();
         $this->storeOutcome(
             PlatformIdempotencyRecord::where([]),
             $id,
@@ -143,7 +186,6 @@ final readonly class IdempotencyService
         ?string $resourceType = null,
         ?string $resourceId = null,
     ): void {
-        $this->assertStorageMode();
         $this->storeOutcome(
             PlatformIdempotencyRecord::where([]),
             $id,
@@ -177,6 +219,10 @@ final readonly class IdempotencyService
         $query->where('operation_key', $operationKey)->where('idempotency_key_hash', $key->hash);
         $known = (clone $query)->find();
         if ($known instanceof Model) {
+            $knownData = $known->getData();
+            if ((string) ($knownData['status'] ?? '') === 'completed') {
+                return $this->existing($knownData, $requestHash);
+            }
             $locked = (clone $query)->lock(true)->find();
             if (!$locked instanceof Model) {
                 throw new \RuntimeException('Known idempotency record disappeared before it could be locked.');

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PeanutAdmin\Kernel\Tenancy;
 
+use Psr\Log\LoggerInterface;
 use think\facade\Db;
 use think\db\PDOConnection;
 use RuntimeException;
@@ -11,6 +12,8 @@ use RuntimeException;
 /** Driver-level advisory locks have no portable Model or query-builder equivalent. */
 final readonly class ThinkPhpTenantLockStore implements TenantLockStore
 {
+    public function __construct(private ?LoggerInterface $logger = null) {}
+
     public function acquire(TenantScope $scope, string $resourceKey): bool
     {
         $name = TenantNamespace::lockName($scope, $resourceKey);
@@ -21,10 +24,15 @@ final readonly class ThinkPhpTenantLockStore implements TenantLockStore
 
     public function release(TenantScope $scope, string $resourceKey): void
     {
+        $name = TenantNamespace::lockName($scope, $resourceKey);
         try {
-            $name = TenantNamespace::lockName($scope, $resourceKey);
             $this->connection()->query('SELECT RELEASE_LOCK(:lock_name)', ['lock_name' => $name]);
-        } catch (\Throwable) {
+        } catch (\Throwable $exception) {
+            $this->logger?->warning('TENANT_LOCK_RELEASE_FAILED', [
+                'lock_name' => $name,
+                'exception' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
         }
     }
 

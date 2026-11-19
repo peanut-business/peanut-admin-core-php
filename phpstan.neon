@@ -1,0 +1,13 @@
+includes:
+    - phpstan-baseline.neon
+
+parameters:
+    level: 6
+    paths:
+        - data-permission/src
+        - file-media/src
+        - integration-security/src
+        - kernel/src
+        - settings/src
+        - testing/src
+    reportUnmatchedIgnoredErrors: false

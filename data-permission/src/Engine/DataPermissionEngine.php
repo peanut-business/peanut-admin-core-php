@@ -54,12 +54,13 @@ final readonly class DataPermissionEngine
             $query->targetResourceKey,
         );
         if ($query->mode === 'policy-config') {
-            $required = array_filter([
+            $required = array_values(array_filter([
                 'core.role.data-policy.manage',
                 $targetType->policySelectionPermissionKey,
-            ]);
+            ]));
+            $granted = $this->permissions->allowsMany($tenantContext, $required);
             foreach ($required as $permission) {
-                if (!$this->permissions->allows($tenantContext, $permission)) {
+                if (!($granted[$permission] ?? false)) {
                     throw new DataAuthorizationException(
                         'AUTHZ_PERMISSION_DENIED',
                         'The policy target selection permission is denied.',
@@ -259,8 +260,18 @@ final readonly class DataPermissionEngine
         if ($operation->permissionKeys === []) {
             throw new DataAuthorizationException('AUTHZ_PERMISSION_DENIED', 'The operation has no permission binding.');
         }
+        $resolvedPermissions = $permissions ?? [];
+        $missing = [];
+        foreach ($operation->permissionKeys as $permission) {
+            if (!array_key_exists($permission, $resolvedPermissions)) {
+                $missing[] = $permission;
+            }
+        }
+        if ($missing !== []) {
+            $resolvedPermissions += $this->permissions->allowsMany($context, array_values(array_unique($missing)));
+        }
         $results = array_map(
-            fn(string $permission): bool => $permissions[$permission] ?? $this->permissions->allows($context, $permission),
+            static fn(string $permission): bool => (bool) ($resolvedPermissions[$permission] ?? false),
             $operation->permissionKeys,
         );
         $allowed = $operation->permissionMatch === 'all'

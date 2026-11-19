@@ -8,14 +8,26 @@ use PeanutAdmin\Kernel\Tenancy\TenantEntryBindingResolver;
 
 final readonly class ApplicationHostPolicy
 {
+    /** @var list<string> */
+    private array $platformHosts;
+
     /**
      * @param list<string> $platformHosts
      */
     public function __construct(
         private string $deploymentMode,
-        private array $platformHosts,
+        array $platformHosts,
         private TenantEntryBindingResolver $bindings,
-    ) {}
+    ) {
+        $normalized = [];
+        foreach ($platformHosts as $host) {
+            $trimmed = trim($host);
+            if ($trimmed !== '') {
+                $normalized[] = TenantEntryBindingResolver::normalizeHost($trimmed);
+            }
+        }
+        $this->platformHosts = array_values(array_unique($normalized));
+    }
 
     public function assertPlatform(object $request): void
     {

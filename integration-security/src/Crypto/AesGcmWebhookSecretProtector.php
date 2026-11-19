@@ -12,7 +12,7 @@ final readonly class AesGcmWebhookSecretProtector implements WebhookSecretProtec
 
     private string $key;
 
-    public function __construct(private string $keyId, string $base64Key)
+    public function __construct(private string $keyId, #[\SensitiveParameter] string $base64Key)
     {
         $key = base64_decode($base64Key, true);
         if (preg_match('/^[a-zA-Z0-9._-]{1,64}$/D', $keyId) !== 1 || !is_string($key) || strlen($key) !== 32) {
@@ -21,7 +21,7 @@ final readonly class AesGcmWebhookSecretProtector implements WebhookSecretProtec
         $this->key = $key;
     }
 
-    public function seal(string $secret, string $binding): array
+    public function seal(#[\SensitiveParameter] string $secret, string $binding): array
     {
         if (strlen($secret) < 32 || strlen($secret) > 128) {
             throw IntegrationSecurityException::secretInvalid();
@@ -38,7 +38,7 @@ final readonly class AesGcmWebhookSecretProtector implements WebhookSecretProtec
         ];
     }
 
-    public function open(string $ciphertext, string $keyId, string $binding): string
+    public function open(#[\SensitiveParameter] string $ciphertext, string $keyId, string $binding): string
     {
         if (!hash_equals($this->keyId, $keyId)) {
             throw IntegrationSecurityException::secretInvalid();

@@ -12,8 +12,15 @@ use think\facade\Db;
  */
 final class TenantColumnScope
 {
+    private static ?self $sharedInstance = null;
+
     /** @var array<string, true> */
     private array $validatedStorageModes = [];
+
+    public static function shared(): self
+    {
+        return self::$sharedInstance ??= new self();
+    }
 
     /** @param array<string, mixed> $row */
     public function tenantId(array $row, int $logicalTenantId): int
@@ -50,7 +57,9 @@ final class TenantColumnScope
             throw new RuntimeException('TENANT_PERSISTENCE_CONFIGURATION_INVALID');
         }
 
-        $validationKey = implode("\0", $tables);
+        $sortedTables = $tables;
+        sort($sortedTables, SORT_STRING);
+        $validationKey = implode("\0", $sortedTables);
         if (isset($this->validatedStorageModes[$validationKey])) {
             return;
         }

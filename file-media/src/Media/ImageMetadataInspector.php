@@ -21,18 +21,18 @@ final readonly class ImageMetadataInspector
 
     public function inspect(string $sourcePath): ImageMetadata
     {
-        return $this->readImage($sourcePath)[0];
+        return $this->scanImage($sourcePath, false)[0];
     }
 
     public function inspectWithEvidence(string $sourcePath): ImageInspection
     {
-        [$metadata, $bytes] = $this->readImage($sourcePath);
+        [$metadata, $byteLength, $sha256] = $this->scanImage($sourcePath, true);
 
-        return new ImageInspection($metadata, strlen($bytes), hash('sha256', $bytes));
+        return new ImageInspection($metadata, $byteLength, $sha256);
     }
 
-    /** @return array{ImageMetadata, string} Metadata and the exact bytes read from the bounded stream. */
-    private function readImage(string $sourcePath): array
+    /** @return array{ImageMetadata, int, string} */
+    private function scanImage(string $sourcePath, bool $computeHash): array
     {
         if ($sourcePath === '' || is_link($sourcePath) || !is_file($sourcePath) || !is_readable($sourcePath)) {
             throw FileMediaException::imageInvalid();
@@ -46,30 +46,38 @@ final readonly class ImageMetadataInspector
             if ($initial === false || $initial['size'] < 1 || $initial['size'] > $this->maxBytes) {
                 throw FileMediaException::imageInvalid();
             }
-            $bytes = '';
-            while (!feof($stream)) {
-                $chunk = fread($stream, 8192);
-                if (!is_string($chunk)) {
+            $byteLength = (int) $initial['size'];
+            $sha256 = '';
+            if ($computeHash) {
+                $hasher = hash_init('sha256');
+                $readBytes = 0;
+                while (!feof($stream)) {
+                    $chunk = fread($stream, 8192);
+                    if (!is_string($chunk)) {
+                        throw FileMediaException::imageInvalid();
+                    }
+                    $readBytes += strlen($chunk);
+                    if ($readBytes > $this->maxBytes) {
+                        throw FileMediaException::imageInvalid();
+                    }
+                    hash_update($hasher, $chunk);
+                }
+                $final = fstat($stream);
+                if ($final === false || $final['size'] !== $initial['size'] || $readBytes !== $initial['size']) {
                     throw FileMediaException::imageInvalid();
                 }
-                $bytes .= $chunk;
-                if (strlen($bytes) > $this->maxBytes) {
-                    throw FileMediaException::imageInvalid();
-                }
+                $sha256 = hash_final($hasher);
             }
-            $final = fstat($stream);
-            if ($final === false || $final['size'] !== $initial['size'] || strlen($bytes) !== $initial['size']) {
-                throw FileMediaException::imageInvalid();
-            }
-            $size = @getimagesizefromstring($bytes);
-            if (!is_array($size)) {
+            $size = @getimagesize($sourcePath);
+            if (!is_array($size) || !isset($size[0], $size[1], $size['mime']) || !is_string($size['mime'])) {
                 throw FileMediaException::imageInvalid();
             }
 
-            return [new ImageMetadata($size[0], $size[1], $size['mime']), $bytes];
-        } catch (FileMediaException $exception) {
-            throw $exception;
-        } catch (Throwable) {
+            return [new ImageMetadata((int) $size[0], (int) $size[1], $size['mime']), $byteLength, $sha256];
+        } catch (Throwable $exception) {
+            if ($exception instanceof FileMediaException) {
+                throw $exception;
+            }
             throw FileMediaException::imageInvalid();
         } finally {
             fclose($stream);

@@ -18,7 +18,8 @@
     "topthink/think-orm": "^4.0.51"
   },
   "require-dev": {
-    "phpunit/phpunit": "^12.5.31"
+    "phpunit/phpunit": "^12.5.31",
+    "phpstan/phpstan": "^2.1"
   },
   "suggest": {
     "aliyuncs/oss-sdk-php": "Required by hosts that construct AliyunStorageDriver.",
@@ -38,10 +39,15 @@
     "psr-4": {
       "PeanutAdmin\\DataPermission\\Tests\\": "data-permission/tests/",
       "PeanutAdmin\\FileMedia\\Tests\\": "file-media/tests/",
+      "PeanutAdmin\\IntegrationSecurity\\Tests\\": "integration-security/tests/",
       "PeanutAdmin\\Kernel\\Tests\\": "kernel/tests/",
       "PeanutAdmin\\Settings\\Tests\\": "settings/tests/",
       "PeanutAdmin\\Testing\\": "testing/src/",
       "PeanutAdmin\\Testing\\Tests\\": "testing/tests/"
     }
+  },
+  "scripts": {
+    "analyse": "phpstan analyse --no-progress",
+    "test": "phpunit --no-configuration --bootstrap vendor/autoload.php --fail-on-empty-test-suite --fail-on-risky data-permission/tests file-media/tests integration-security/tests kernel/tests settings/tests testing/tests"
   }
 }

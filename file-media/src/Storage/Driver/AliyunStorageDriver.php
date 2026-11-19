@@ -63,10 +63,19 @@ final readonly class AliyunStorageDriver implements StorageDriver
         $this->assertUnversioned($versionId);
         $result = $this->client->deleteObject($this->bucket, $objectKey);
         // The locked OSS SDK returns HTTP headers for deleteObject.
-        if (!is_array($result) || !isset($result['x-oss-request-id']) || !is_string($result['x-oss-request-id']) || $result['x-oss-request-id'] === '') {
+        $requestId = null;
+        if (is_array($result)) {
+            foreach ($result as $header => $value) {
+                if (is_string($header) && strtolower($header) === 'x-oss-request-id' && is_string($value) && $value !== '') {
+                    $requestId = $value;
+                    break;
+                }
+            }
+        }
+        if ($requestId === null) {
             throw new \UnexpectedValueException('STORAGE_DELETE_ACKNOWLEDGEMENT_UNKNOWN');
         }
-        return new StorageOperationReceipt('delete', 'acknowledged', $result['x-oss-request-id']);
+        return new StorageOperationReceipt('delete', 'acknowledged', $requestId);
     }
 
     /** @inheritDoc */

@@ -11,13 +11,16 @@ use PeanutAdmin\Kernel\Api\RequestId;
 use PeanutAdmin\Kernel\Auth\AuthException;
 use PeanutAdmin\Kernel\Authorization\AuthorizationException;
 use PeanutAdmin\Kernel\Module\ModuleException;
+use Psr\Log\LoggerInterface;
 use Throwable;
 
 final readonly class ProblemDetailsAdapter
 {
+    public function __construct(private ?LoggerInterface $logger = null) {}
+
     public function respond(Throwable $throwable, RequestId $requestId): ExternalOperationResponse
     {
-        $exception = $this->apiException($throwable);
+        $exception = $this->apiException($throwable, $requestId);
         $problem = ProblemDetails::fromException($exception, $requestId);
 
         return new ExternalOperationResponse(
@@ -27,7 +30,7 @@ final readonly class ProblemDetailsAdapter
         );
     }
 
-    private function apiException(Throwable $throwable): ApiException
+    private function apiException(Throwable $throwable, RequestId $requestId): ApiException
     {
         if ($throwable instanceof ApiException) {
             return $throwable;
@@ -51,6 +54,12 @@ final readonly class ProblemDetailsAdapter
         if (is_string($code) && str_starts_with($code, 'AUTHZ_')) {
             return new ApiException('AUTHZ_DATA_DENIED', 404, 'The requested resource is unavailable.');
         }
+
+        $this->logger?->error('EXTERNAL_OPERATION_INTERNAL_ERROR', [
+            'request_id' => $requestId->value,
+            'exception' => $throwable::class,
+            'message' => $throwable->getMessage(),
+        ]);
 
         return new ApiException('INTERNAL_ERROR', 500, 'An internal error occurred.');
     }

@@ -25,7 +25,13 @@ abstract class TenantModel extends Model
 
     public function scopeTenant(BaseQuery $query, TenantScope $scope): void
     {
-        $query->where($query->getTable() . '.tenant_id', $scope->tenantId());
+        $table = $query->getTable();
+        $alias = $query->getOptions('alias');
+        $prefix = is_array($alias) && is_string($table) && isset($alias[$table]) && is_string($alias[$table]) && $alias[$table] !== ''
+            ? $alias[$table]
+            : (is_string($table) ? $table : '');
+        $column = $prefix !== '' ? $prefix . '.tenant_id' : 'tenant_id';
+        $query->where($column, $scope->tenantId());
     }
 
     /**
@@ -34,11 +40,14 @@ abstract class TenantModel extends Model
      */
     final public static function tenantAttributes(TenantScope $scope, array $attributes): array
     {
-        if (array_key_exists('tenant_id', $attributes)
-            && (int) $attributes['tenant_id'] !== $scope->tenantId()) {
-            throw new \DomainException('TENANT_WRITE_OWNERSHIP_MISMATCH');
+        if (array_key_exists('tenant_id', $attributes)) {
+            $provided = $attributes['tenant_id'];
+            if ((!is_int($provided) && !(is_string($provided) && ctype_digit($provided)))
+                || (int) $provided !== $scope->tenantId()) {
+                throw new \DomainException('TENANT_WRITE_OWNERSHIP_MISMATCH');
+            }
         }
 
-        return ['tenant_id' => $scope->tenantId(), ...$attributes];
+        return [...$attributes, 'tenant_id' => $scope->tenantId()];
     }
 }

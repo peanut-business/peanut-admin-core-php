@@ -11,7 +11,7 @@ use PeanutAdmin\Kernel\Context\RequestedTargetSet;
 
 final readonly class TrustedEnvelopeCodec
 {
-    public function __construct(private string $signingKey)
+    public function __construct(#[\SensitiveParameter] private string $signingKey)
     {
         if (strlen($signingKey) < 32) {
             throw new AuthException('CONTEXT_SYSTEM_ACTOR_INVALID', 403);
@@ -62,6 +62,9 @@ final readonly class TrustedEnvelopeCodec
         }
         $expected = hash_hmac('sha256', $this->json($payload), $this->signingKey);
         if (!hash_equals($expected, $signature)) {
+            throw new AuthException('CONTEXT_SYSTEM_ACTOR_INVALID', 403);
+        }
+        if (($payload['version'] ?? null) !== 1) {
             throw new AuthException('CONTEXT_SYSTEM_ACTOR_INVALID', 403);
         }
 

@@ -49,7 +49,7 @@ final readonly class LocalStorageDriver implements StorageDriver
         }
         $this->assertRegularFile($path);
         $size = filesize($path);
-        $mime = (new \finfo(FILEINFO_MIME_TYPE))->file($path);
+        $mime = self::mimeDetector()->file($path);
         if (!is_int($size) || !is_string($mime)) {
             throw new \RuntimeException('STORAGE_OBJECT_OBSERVATION_FAILED');
         }
@@ -300,6 +300,16 @@ final readonly class LocalStorageDriver implements StorageDriver
     {
         return $this->pathCase(rtrim($left, DIRECTORY_SEPARATOR))
             === $this->pathCase(rtrim($right, DIRECTORY_SEPARATOR));
+    }
+
+    private static function mimeDetector(): \finfo
+    {
+        static $detector = null;
+        if (!$detector instanceof \finfo) {
+            $detector = new \finfo(FILEINFO_MIME_TYPE);
+        }
+
+        return $detector;
     }
 
     private function pathCase(string $path): string

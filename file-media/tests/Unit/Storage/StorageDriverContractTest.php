@@ -329,6 +329,7 @@ namespace PeanutAdmin\FileMedia\Tests\Unit\Storage {
                 'url' => 'https://private.example.test/tenant/object.txt?signed=60',
                 'retrySafe' => true,
                 'sink' => '/host/download.txt',
+                'timeout' => 60,
             ], $transport->requests[2]);
             self::assertSame([
                 ['method' => 'uploadToken', 'arguments' => ['bucket-7']],

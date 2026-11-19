@@ -131,7 +131,11 @@ final readonly class ModuleBoundaryChecker
         array $namespaceOwners,
         array $exportOwners,
     ): void {
-        $tokens = token_get_all((string) file_get_contents($path));
+        $source = file_get_contents($path);
+        if (!is_string($source)) {
+            throw new ModuleException('MODULE_BOUNDARY_SOURCE_UNREADABLE', "Unable to read module source: {$path}");
+        }
+        $tokens = token_get_all($source);
         foreach ($tokens as $token) {
             if (!is_array($token)) {
                 continue;

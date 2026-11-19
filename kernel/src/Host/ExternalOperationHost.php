@@ -95,6 +95,13 @@ final readonly class ExternalOperationHost
         ?callable $outbox,
         ?callable $guard,
     ): ExternalOperationResponse {
+        if ($guard === null) {
+            $replayed = $this->findReplayableIdempotency($operation, $context, $request);
+            if ($replayed !== null) {
+                return new ExternalOperationResponse((int) $replayed->responseStatus, (array) $replayed->responseBody);
+            }
+        }
+
         return Db::transaction(function () use ($operation, $context, $request, $domain, $outbox, $guard): ExternalOperationResponse {
             if ($guard !== null) {
                 $guard();
@@ -122,6 +129,33 @@ final readonly class ExternalOperationHost
 
             return $result->response();
         });
+    }
+
+    private function findReplayableIdempotency(
+        ExternalOperationDefinition $operation,
+        TenantContext|PlatformContext $context,
+        ExternalOperationRequest $request,
+    ): ?IdempotencyRecord {
+        if (!$operation->idempotencyRequired && $request->idempotencyKey === null) {
+            return null;
+        }
+        $key = IdempotencyKey::fromString($request->idempotencyKey);
+        $record = $context instanceof TenantContext
+            ? $this->idempotency->findCompletedTenant(
+                $this->tenantScope($context),
+                $context->memberId,
+                $operation->operationId,
+                $key,
+                $request->requestHash(),
+            )
+            : $this->idempotency->findCompletedPlatform(
+                $context->operatorId,
+                $operation->operationId,
+                $key,
+                $request->requestHash(),
+            );
+
+        return $record?->replayable() ? $record : null;
     }
 
     private function acquireIdempotency(

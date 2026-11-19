@@ -41,35 +41,70 @@ final class MenuRegistry
         callable $tenantAvailable,
         callable $permissionGranted,
     ): array {
+        $deploymentCache = [];
+        $tenantCache = [];
+        $permissionCache = [];
         $visible = [];
         foreach ($this->byKey as $key => $definition) {
             if (!in_array($clientKey, $definition->clientKeys, true)) {
                 continue;
             }
-            if ($definition->moduleKey !== 'core' && (!$deploymentAvailable($definition->moduleKey) || !$tenantAvailable($definition->moduleKey))) {
-                continue;
+            if ($definition->moduleKey !== 'core') {
+                $moduleKey = $definition->moduleKey;
+                $deploymentCache[$moduleKey] ??= (bool) $deploymentAvailable($moduleKey);
+                if (!$deploymentCache[$moduleKey]) {
+                    continue;
+                }
+                $tenantCache[$moduleKey] ??= (bool) $tenantAvailable($moduleKey);
+                if (!$tenantCache[$moduleKey]) {
+                    continue;
+                }
             }
-            if ($definition->requiredPermission !== null && !$permissionGranted($definition->requiredPermission)) {
-                continue;
+            if ($definition->requiredPermission !== null) {
+                $perm = $definition->requiredPermission;
+                $permissionCache[$perm] ??= (bool) $permissionGranted($perm);
+                if (!$permissionCache[$perm]) {
+                    continue;
+                }
             }
             $visible[$key] = $definition;
         }
 
-        do {
-            $changed = false;
-            foreach ($visible as $key => $definition) {
-                if ($definition->parentKey !== null && !isset($visible[$definition->parentKey])) {
-                    unset($visible[$key]);
-                    $changed = true;
+        // First prune nodes whose ancestor is not visible (top-down memoized).
+        $ancestorVisible = [];
+        foreach ($visible as $key => $_) {
+            if (!$this->isAncestorChainVisible($key, $visible, $ancestorVisible)) {
+                unset($visible[$key]);
+            }
+        }
+
+        // Then prune empty groups bottom-up using child reference counts in O(N).
+        $childCount = [];
+        foreach ($visible as $definition) {
+            if ($definition->parentKey !== null && isset($visible[$definition->parentKey])) {
+                $childCount[$definition->parentKey] = ($childCount[$definition->parentKey] ?? 0) + 1;
+            }
+        }
+        $queue = [];
+        foreach ($visible as $key => $definition) {
+            if ($definition->type === 'group' && ($childCount[$key] ?? 0) === 0) {
+                $queue[] = $key;
+            }
+        }
+        while ($queue !== []) {
+            $key = array_pop($queue);
+            if (!isset($visible[$key])) {
+                continue;
+            }
+            $parentKey = $visible[$key]->parentKey;
+            unset($visible[$key]);
+            if ($parentKey !== null && isset($visible[$parentKey])) {
+                $childCount[$parentKey] = ($childCount[$parentKey] ?? 1) - 1;
+                if ($visible[$parentKey]->type === 'group' && $childCount[$parentKey] <= 0) {
+                    $queue[] = $parentKey;
                 }
             }
-            foreach ($visible as $key => $definition) {
-                if ($definition->type === 'group' && !$this->hasVisibleChild($key, $visible)) {
-                    unset($visible[$key]);
-                    $changed = true;
-                }
-            }
-        } while ($changed);
+        }
 
         $result = array_values($visible);
         usort($result, static fn(MenuDefinition $left, MenuDefinition $right): int => [$left->sortOrder, $left->key] <=> [$right->sortOrder, $right->key]);
@@ -118,14 +153,23 @@ final class MenuRegistry
         }
     }
 
-    /** @param array<string, MenuDefinition> $visible */
-    private function hasVisibleChild(string $key, array $visible): bool
+    /**
+     * @param array<string, MenuDefinition> $visible
+     * @param array<string, bool> $memo
+     */
+    private function isAncestorChainVisible(string $key, array $visible, array &$memo): bool
     {
-        foreach ($visible as $definition) {
-            if ($definition->parentKey === $key) {
-                return true;
-            }
+        if (array_key_exists($key, $memo)) {
+            return $memo[$key];
         }
-        return false;
+        if (!isset($visible[$key])) {
+            return $memo[$key] = false;
+        }
+        $parentKey = $visible[$key]->parentKey;
+        if ($parentKey === null) {
+            return $memo[$key] = true;
+        }
+
+        return $memo[$key] = $this->isAncestorChainVisible($parentKey, $visible, $memo);
     }
 }

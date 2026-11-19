@@ -80,10 +80,18 @@ final readonly class StandardResourcePolicyProvider implements
         }
 
         $groups = [];
+        /** @var array<string, list<int>> $departmentTreeCache */
+        $departmentTreeCache = [];
         foreach ($policies->groups as $group) {
             $constraints = [];
             foreach ($group->conditions as $condition) {
-                $constraints[] = $this->compileCondition($context, $operation, $policies, $condition);
+                $constraints[] = $this->compileCondition(
+                    $context,
+                    $operation,
+                    $policies,
+                    $condition,
+                    $departmentTreeCache,
+                );
             }
             if (count($constraints) > 1 && $this->containsTenantAll($group)) {
                 throw new DataAuthorizationException(
@@ -108,8 +116,10 @@ final readonly class StandardResourcePolicyProvider implements
         if ($policies->groups === []) {
             return AuthorizationDecision::deny();
         }
+        /** @var array<string, bool> $containsAllCache */
+        $containsAllCache = [];
         foreach ($policies->groups as $group) {
-            if ($this->groupAllowsTargets($context, $group, $targets)) {
+            if ($this->groupAllowsTargets($context, $group, $targets, $containsAllCache)) {
                 return AuthorizationDecision::allow([$group->policyId]);
             }
         }
@@ -126,11 +136,13 @@ final readonly class StandardResourcePolicyProvider implements
         return $this->assertTargetsAllowed($context, $operation, $targets, $policies);
     }
 
+    /** @param array<string, list<int>> $departmentTreeCache */
     private function compileCondition(
         AuthorizationContext $context,
         ResourceOperation $operation,
         EffectivePolicySet $policies,
         EffectiveCondition $condition,
+        array &$departmentTreeCache,
     ): QueryConstraint {
         return match ($condition->key) {
             'core.tenant_all' => new AlwaysTrue(),
@@ -138,7 +150,7 @@ final readonly class StandardResourcePolicyProvider implements
                 ? new AlwaysFalse()
                 : new ColumnEquals($this->columns->selfColumn, $context->tenant->memberId),
             'core.own_department' => $this->departmentEquals($policies->primaryDepartmentId),
-            'core.department_tree' => $this->departmentTree($context, $policies->primaryDepartmentId),
+            'core.department_tree' => $this->departmentTree($context, $policies->primaryDepartmentId, $departmentTreeCache),
             'core.specified_departments' => $this->selectedTargets(
                 $context,
                 $condition,
@@ -171,17 +183,23 @@ final readonly class StandardResourcePolicyProvider implements
         return new ColumnEquals($this->columns->departmentColumn, $departmentId);
     }
 
+    /** @param array<string, list<int>> $departmentTreeCache */
     private function departmentTree(
         AuthorizationContext $context,
         ?int $departmentId,
+        array &$departmentTreeCache,
     ): QueryConstraint {
         if ($departmentId === null || $this->columns->departmentColumn === null) {
             return new AlwaysFalse();
         }
-        $departmentIds = $this->departments->descendantsIncludingSelf(
-            $context->tenant->tenantId,
-            $departmentId,
-        );
+        $cacheKey = $context->tenant->tenantId . ':' . $departmentId;
+        if (!array_key_exists($cacheKey, $departmentTreeCache)) {
+            $departmentTreeCache[$cacheKey] = $this->departments->descendantsIncludingSelf(
+                $context->tenant->tenantId,
+                $departmentId,
+            );
+        }
+        $departmentIds = $departmentTreeCache[$cacheKey];
         if ($departmentIds === []) {
             return new AlwaysFalse();
         }
@@ -231,10 +249,12 @@ final readonly class StandardResourcePolicyProvider implements
         return false;
     }
 
+    /** @param array<string, bool> $containsAllCache */
     private function groupAllowsTargets(
         AuthorizationContext $context,
         EffectiveConditionGroup $group,
         TypedResourceTargetCollection $targets,
+        array &$containsAllCache,
     ): bool {
         $uncovered = [];
         foreach ($targets->sets as $targetSet) {
@@ -247,7 +267,7 @@ final readonly class StandardResourcePolicyProvider implements
             if (!in_array($condition->key, ['core.specified_departments', 'core.specified_objects'], true)) {
                 return false;
             }
-            if (!$this->conditionContainsTargets($context, $condition, $targets)) {
+            if (!$this->conditionContainsTargets($context, $condition, $targets, $containsAllCache)) {
                 return false;
             }
             foreach ($targets->sets as $targetSet) {
@@ -260,10 +280,12 @@ final readonly class StandardResourcePolicyProvider implements
         return $uncovered === [];
     }
 
+    /** @param array<string, bool> $containsAllCache */
     private function conditionContainsTargets(
         AuthorizationContext $context,
         EffectiveCondition $condition,
         TypedResourceTargetCollection $targets,
+        array &$containsAllCache,
     ): bool {
         if ($condition->targetSetId === null || $condition->targetResourceKey === null) {
             return false;
@@ -274,7 +296,7 @@ final readonly class StandardResourcePolicyProvider implements
                 continue;
             }
             $matched = true;
-            if (!$this->targetSetContains($context, $condition, $targetSet)) {
+            if (!$this->targetSetContains($context, $condition, $targetSet, $containsAllCache)) {
                 return false;
             }
         }
@@ -282,17 +304,28 @@ final readonly class StandardResourcePolicyProvider implements
         return $matched;
     }
 
+    /** @param array<string, bool> $containsAllCache */
     private function targetSetContains(
         AuthorizationContext $context,
         EffectiveCondition $condition,
         TypedResourceTargetSet $targets,
+        array &$containsAllCache,
     ): bool {
         if ($condition->targetCount > 500) {
-            return $this->targetSets->containsAll(
-                $context->tenant->tenantId,
-                (int) $condition->targetSetId,
-                $targets->targetIds,
-            );
+            $sortedIds = $targets->targetIds;
+            sort($sortedIds, SORT_STRING);
+            $cacheKey = $context->tenant->tenantId
+                . ':' . (int) $condition->targetSetId
+                . ':' . hash('sha256', implode("\0", $sortedIds));
+            if (!array_key_exists($cacheKey, $containsAllCache)) {
+                $containsAllCache[$cacheKey] = $this->targetSets->containsAll(
+                    $context->tenant->tenantId,
+                    (int) $condition->targetSetId,
+                    $targets->targetIds,
+                );
+            }
+
+            return $containsAllCache[$cacheKey];
         }
 
         return array_diff($targets->targetIds, $condition->targetIds) === [];

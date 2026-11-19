@@ -99,10 +99,9 @@ final readonly class WebhookDestinationPolicy
         if (!is_string($packed)) {
             throw IntegrationSecurityException::destinationDenied();
         }
-        $ranges = strlen($packed) === 4 ? self::DENIED_V4 : self::DENIED_V6;
-        foreach ($ranges as [$network, $prefix]) {
-            $networkPacked = inet_pton($network);
-            if (is_string($networkPacked) && $this->matchesPrefix($packed, $networkPacked, $prefix)) {
+        $ranges = strlen($packed) === 4 ? self::packedRangesV4() : self::packedRangesV6();
+        foreach ($ranges as [$networkPacked, $prefix]) {
+            if ($this->matchesPrefix($packed, $networkPacked, $prefix)) {
                 throw IntegrationSecurityException::destinationDenied();
             }
         }
@@ -128,5 +127,44 @@ final readonly class WebhookDestinationPolicy
         }
         $mask = (0xff << (8 - $remaining)) & 0xff;
         return (ord($address[$wholeBytes]) & $mask) === (ord($network[$wholeBytes]) & $mask);
+    }
+
+    /** @return list<array{string,int}> */
+    private static function packedRangesV4(): array
+    {
+        static $packed = null;
+        if ($packed === null) {
+            $packed = self::packRanges(self::DENIED_V4);
+        }
+
+        return $packed;
+    }
+
+    /** @return list<array{string,int}> */
+    private static function packedRangesV6(): array
+    {
+        static $packed = null;
+        if ($packed === null) {
+            $packed = self::packRanges(self::DENIED_V6);
+        }
+
+        return $packed;
+    }
+
+    /**
+     * @param list<array{string,int}> $ranges
+     * @return list<array{string,int}>
+     */
+    private static function packRanges(array $ranges): array
+    {
+        $packed = [];
+        foreach ($ranges as [$network, $prefix]) {
+            $binary = inet_pton($network);
+            if (is_string($binary)) {
+                $packed[] = [$binary, $prefix];
+            }
+        }
+
+        return $packed;
     }
 }

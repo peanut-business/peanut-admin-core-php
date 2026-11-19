@@ -32,7 +32,7 @@ final class MenuGovernance
         try {
             new MenuRegistry($menus);
         } catch (ModuleException $exception) {
-            throw new GovernanceException('GOVERNANCE_MENU_INVALID', 'The menu catalog is structurally invalid.');
+            throw new GovernanceException('GOVERNANCE_MENU_INVALID', 'The menu catalog is structurally invalid.', $exception);
         }
         foreach ($routes as $route) {
             if (isset($this->routes[$route->name]) || isset($this->routePaths[$route->path])) {
@@ -99,6 +99,9 @@ final class MenuGovernance
         if (!in_array($audience, ['tenant', 'platform'], true)) {
             throw new GovernanceException('GOVERNANCE_AUDIENCE_INVALID', 'The governance audience is invalid.');
         }
+        $deploymentSet = array_flip($deploymentModules);
+        $tenantSet = array_flip($tenantModules);
+        $grantedSet = array_flip($grantedPermissions);
         $result = [];
         foreach ($this->menus as $key => $menu) {
             $reason = 'visible';
@@ -106,11 +109,11 @@ final class MenuGovernance
                 $reason = 'audience_mismatch';
             } elseif (!in_array($clientKey, $menu->clientKeys, true)) {
                 $reason = 'client_unavailable';
-            } elseif ($menu->moduleKey !== 'core' && !in_array($menu->moduleKey, $deploymentModules, true)) {
+            } elseif ($menu->moduleKey !== 'core' && !isset($deploymentSet[$menu->moduleKey])) {
                 $reason = 'deployment_module_unavailable';
-            } elseif ($menu->moduleKey !== 'core' && $audience === 'tenant' && !in_array($menu->moduleKey, $tenantModules, true)) {
+            } elseif ($menu->moduleKey !== 'core' && $audience === 'tenant' && !isset($tenantSet[$menu->moduleKey])) {
                 $reason = 'tenant_module_disabled';
-            } elseif ($menu->requiredPermission !== null && !in_array($menu->requiredPermission, $grantedPermissions, true)) {
+            } elseif ($menu->requiredPermission !== null && !isset($grantedSet[$menu->requiredPermission])) {
                 $reason = 'permission_not_granted';
             }
             $route = $menu->routeName === null ? null : $this->routes[$menu->routeName];

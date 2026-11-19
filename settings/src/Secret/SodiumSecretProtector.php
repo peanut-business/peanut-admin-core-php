@@ -11,7 +11,7 @@ final readonly class SodiumSecretProtector implements SecretProtector
 {
     /** @param array<string, string> $keys */
     public function __construct(
-        private array $keys,
+        #[\SensitiveParameter] private array $keys,
         private string $activeKeyId,
     ) {
         if ($keys === [] || !isset($keys[$activeKeyId])) {
@@ -25,7 +25,7 @@ final readonly class SodiumSecretProtector implements SecretProtector
         }
     }
 
-    public static function fromJson(string $json, string $activeKeyId): self
+    public static function fromJson(#[\SensitiveParameter] string $json, string $activeKeyId): self
     {
         if ($json === '' || $activeKeyId === '' || self::hasDuplicateKeys($json)) {
             throw self::unavailable();
@@ -53,7 +53,7 @@ final readonly class SodiumSecretProtector implements SecretProtector
         return new self($keys, $activeKeyId);
     }
 
-    public function protect(string $plaintext, SecretStorageContext $context): array
+    public function protect(#[\SensitiveParameter] string $plaintext, SecretStorageContext $context): array
     {
         if ($plaintext === '' || strlen($plaintext) > 4096) {
             throw SecretProtectionException::invalidValue();
@@ -77,8 +77,8 @@ final readonly class SodiumSecretProtector implements SecretProtector
     }
 
     public function reveal(
-        string $ciphertext,
-        string $nonce,
+        #[\SensitiveParameter] string $ciphertext,
+        #[\SensitiveParameter] string $nonce,
         string $keyId,
         SecretStorageContext $context,
     ): string {

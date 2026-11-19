@@ -130,6 +130,9 @@ final readonly class QiniuStorageDriver implements StorageDriver
             'headers' => $this->auth->authorization($url, null, 'application/x-www-form-urlencoded'),
             'timeout' => 30,
         ]);
+        if ($response['status'] === 612) {
+            return new StorageOperationReceipt('delete', 'already-absent', $this->optionalRequestId($response));
+        }
         if ($response['status'] < 200 || $response['status'] >= 300) {
             throw new \RuntimeException('七牛对象删除失败');
         }
@@ -147,6 +150,7 @@ final readonly class QiniuStorageDriver implements StorageDriver
             'url' => $url,
             'retrySafe' => true,
             'sink' => $targetPath,
+            'timeout' => 60,
         ]);
         if ($response['status'] < 200 || $response['status'] >= 300) {
             throw new \RuntimeException('七牛对象下载失败');
@@ -161,13 +165,23 @@ final readonly class QiniuStorageDriver implements StorageDriver
     }
 
     /** @param array{status: int, body: string, headers?: array<string, string>} $response */
-    private function requestId(array $response): string
+    private function optionalRequestId(array $response): ?string
     {
         foreach ($response['headers'] ?? [] as $name => $value) {
             if (strtolower($name) === 'x-reqid' && is_string($value) && $value !== ''
                 && strlen($value) <= 1024 && preg_match('/[\x00-\x1f\x7f]/', $value) !== 1) {
                 return $value;
             }
+        }
+        return null;
+    }
+
+    /** @param array{status: int, body: string, headers?: array<string, string>} $response */
+    private function requestId(array $response): string
+    {
+        $requestId = $this->optionalRequestId($response);
+        if ($requestId !== null) {
+            return $requestId;
         }
         throw new \UnexpectedValueException('STORAGE_PROVIDER_RESPONSE_UNKNOWN');
     }
