@@ -9,11 +9,11 @@ final class CreatePaMenuDefinition extends Migrator
 {
     public function up(): void
     {
-        $this->execute(ModuleSchema::createSql('pa_menu_definition'));
+        $this->execute(ModuleSchema::createSql('pa_system_menu'));
     }
 
     public function down(): void
     {
-        $this->execute(ModuleSchema::dropSql('pa_menu_definition'));
+        $this->execute(ModuleSchema::dropSql('pa_system_menu'));
     }
 }

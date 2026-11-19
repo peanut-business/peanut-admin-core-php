@@ -49,11 +49,12 @@ CREATE TABLE `pa_module_migration` (
   CONSTRAINT `chk_module_migration_status` CHECK (`status` IN ('applying','applied','rolled_back','failed'))
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 SQL,
-        'pa_menu_definition' => <<<'SQL'
-CREATE TABLE `pa_menu_definition` (
+        'pa_system_menu' => <<<'SQL'
+CREATE TABLE `pa_system_menu` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `key` VARCHAR(160) NOT NULL,
   `module_key` VARCHAR(96) NOT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'module',
   `scope` VARCHAR(16) NOT NULL,
   `parent_key` VARCHAR(160) NULL,
   `type` VARCHAR(16) NOT NULL,
@@ -70,12 +71,13 @@ CREATE TABLE `pa_menu_definition` (
   `created_at` DATETIME(3) NOT NULL,
   `updated_at` DATETIME(3) NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_menu_definition_key` (`key`),
+  UNIQUE KEY `uk_system_menu_key` (`key`),
   UNIQUE KEY `uk_menu_route_name` (`scope`, `route_name`),
   KEY `idx_menu_module` (`module_key`, `scope`, `status`, `sort_order`),
   CONSTRAINT `fk_menu_permission` FOREIGN KEY (`required_permission_id`) REFERENCES `pa_permission` (`id`) ON DELETE RESTRICT,
   CONSTRAINT `chk_menu_scope` CHECK (`scope` IN ('platform','tenant')),
-  CONSTRAINT `chk_menu_type` CHECK (`type` IN ('group','page','link')),
+  CONSTRAINT `chk_menu_source` CHECK (`source` IN ('system','module','custom')),
+  CONSTRAINT `chk_menu_type` CHECK (`type` IN ('group','page','link','action')),
   CONSTRAINT `chk_menu_status` CHECK (`status` IN ('active','retired')),
   CONSTRAINT `chk_menu_page` CHECK (`type` <> 'page' OR (`route_name` IS NOT NULL AND `component_key` IS NOT NULL AND `required_permission_id` IS NOT NULL))
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
