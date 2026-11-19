@@ -78,40 +78,28 @@ final readonly class ThinkPhpQueryConstraintApplier
         $this->targetSets->apply($query, $constraint);
     }
 
-    /** MySQL JSON_TABLE keeps very large caller-authorized target sets to one bound value. */
+    /** Chunk large target sets into standard indexed OR(IN ...) predicates without MySQL-only JSON_TABLE SQL. */
     private function jsonArrayContains(BaseQuery $query, JsonArrayContainsColumn $constraint): void
     {
-        $allIntegers = $constraint->values !== [];
-        foreach ($constraint->values as $value) {
-            if (is_int($value)) {
-                continue;
-            }
-            if (!is_string($value) || preg_match('/^-?(?:0|[1-9][0-9]*)$/D', $value) !== 1) {
-                $allIntegers = false;
-                break;
-            }
-        }
-        if ($allIntegers) {
-            $intValues = array_map(static fn (int|string $v): int => (int) $v, $constraint->values);
-            $query->whereRaw(<<<SQL
-{$constraint->column->value} IN (
-    SELECT requested_target.target_id
-    FROM JSON_TABLE(
-        CAST(? AS JSON),
-        '$[*]' COLUMNS (target_id BIGINT PATH '$')
-    ) requested_target
-)
-SQL, [json_encode($intValues, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)]);
+        if ($constraint->values === []) {
+            $query->whereRaw('1 = 0');
             return;
         }
-        $query->whereRaw(<<<SQL
-{$constraint->column->value} IN (
-    SELECT requested_target.target_id
-    FROM JSON_TABLE(
-        CAST(? AS JSON),
-        '$[*]' COLUMNS (target_id VARCHAR(255) PATH '$')
-    ) requested_target
-)
-SQL, [json_encode($constraint->values, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)]);
+        $chunks = array_chunk(array_values($constraint->values), 500);
+        if (count($chunks) === 1) {
+            $query->whereIn($constraint->column->value, $chunks[0]);
+            return;
+        }
+        $pk = $query->getPk();
+        $query->where(static function (BaseQuery $nested) use ($constraint, $chunks, $pk): void {
+            $nested->pk($pk);
+            foreach ($chunks as $index => $chunk) {
+                if ($index === 0) {
+                    $nested->whereIn($constraint->column->value, $chunk);
+                } else {
+                    $nested->whereOr($constraint->column->value, 'in', $chunk);
+                }
+            }
+        });
     }
 }

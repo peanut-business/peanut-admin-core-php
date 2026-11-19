@@ -352,10 +352,11 @@ final readonly class ModuleRegistryCompiler
 
     private function assertOwnedContract(string $class, string $contract, string $moduleKey): void
     {
-        if (!str_starts_with($class, $this->layout->backendNamespace(ModuleKey::fromString($moduleKey)))) {
+        $moduleNamespace = $this->layout->backendNamespace(ModuleKey::fromString($moduleKey));
+        if (!str_starts_with($class, $moduleNamespace) && !str_starts_with($class, 'PeanutAdmin\\')) {
             throw new ModuleException(
                 'MODULE_CONTRACT_MISSING',
-                "{$class} must be implemented inside its owning module {$moduleKey}.",
+                "{$class} must be implemented inside its owning module {$moduleKey} or a shared PeanutAdmin core provider.",
             );
         }
         $this->assertContract($class, $contract);
