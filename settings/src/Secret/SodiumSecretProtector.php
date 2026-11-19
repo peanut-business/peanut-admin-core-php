@@ -5,47 +5,44 @@ declare(strict_types=1);
 namespace PeanutAdmin\Settings\Secret;
 
 use JsonException;
-use Throwable;
+use PeanutAdmin\Kernel\Protection\XChaCha20Keyring;
+use RuntimeException;
 
 final readonly class SodiumSecretProtector implements SecretProtector
 {
+    private XChaCha20Keyring $keyring;
+
     /** @param array<string, string> $keys */
-    public function __construct(
-        #[\SensitiveParameter] private array $keys,
-        private string $activeKeyId,
-    ) {
-        if ($keys === [] || !isset($keys[$activeKeyId])) {
-            throw self::unavailable();
-        }
-        foreach ($keys as $keyId => $key) {
-            if (preg_match('/^[A-Za-z0-9._-]{1,64}$/D', $keyId) !== 1
-                || strlen($key) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES) {
-                throw self::unavailable();
-            }
+    public function __construct(#[\SensitiveParameter] array $keys, string $activeKeyId)
+    {
+        try {
+            $this->keyring = new XChaCha20Keyring($keys, $activeKeyId);
+        } catch (RuntimeException) {
+            throw SecretProtectionException::unavailable();
         }
     }
 
     public static function fromJson(#[\SensitiveParameter] string $json, string $activeKeyId): self
     {
         if ($json === '' || $activeKeyId === '' || self::hasDuplicateKeys($json)) {
-            throw self::unavailable();
+            throw SecretProtectionException::unavailable();
         }
         try {
             $encoded = json_decode($json, true, 32, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
-            throw self::unavailable();
+            throw SecretProtectionException::unavailable();
         }
         if (!is_array($encoded) || array_is_list($encoded)) {
-            throw self::unavailable();
+            throw SecretProtectionException::unavailable();
         }
         $keys = [];
         foreach ($encoded as $keyId => $value) {
             if (!is_string($keyId) || !is_string($value)) {
-                throw self::unavailable();
+                throw SecretProtectionException::unavailable();
             }
             $decoded = base64_decode($value, true);
             if (!is_string($decoded)) {
-                throw self::unavailable();
+                throw SecretProtectionException::unavailable();
             }
             $keys[$keyId] = $decoded;
         }
@@ -55,25 +52,14 @@ final readonly class SodiumSecretProtector implements SecretProtector
 
     public function protect(#[\SensitiveParameter] string $plaintext, SecretStorageContext $context): array
     {
-        if ($plaintext === '' || strlen($plaintext) > 4096) {
+        if ($plaintext === '' || strlen($plaintext) > XChaCha20Keyring::MAX_PLAINTEXT_BYTES) {
             throw SecretProtectionException::invalidValue();
         }
         try {
-            $nonce = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES);
-            $ciphertext = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt(
-                $plaintext,
-                $context->additionalAuthenticatedData($this->activeKeyId),
-                $nonce,
-                $this->keys[$this->activeKeyId],
-            );
-        } catch (Throwable) {
-            throw self::unavailable();
+            return $this->keyring->encrypt($plaintext, $context->additionalAuthenticatedData($this->keyring->activeKeyId));
+        } catch (RuntimeException) {
+            throw SecretProtectionException::unavailable();
         }
-        if ($ciphertext === '' || strlen($ciphertext) > 8192) {
-            throw self::unavailable();
-        }
-
-        return ['ciphertext' => $ciphertext, 'nonce' => $nonce, 'key_id' => $this->activeKeyId];
     }
 
     public function reveal(
@@ -82,33 +68,11 @@ final readonly class SodiumSecretProtector implements SecretProtector
         string $keyId,
         SecretStorageContext $context,
     ): string {
-        $key = $this->keys[$keyId] ?? null;
-        if (!is_string($key)
-            || $ciphertext === ''
-            || strlen($ciphertext) > 8192
-            || strlen($nonce) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES) {
-            throw self::unavailable();
-        }
         try {
-            $plaintext = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt(
-                $ciphertext,
-                $context->additionalAuthenticatedData($keyId),
-                $nonce,
-                $key,
-            );
-        } catch (Throwable) {
-            throw self::unavailable();
+            return $this->keyring->decrypt($ciphertext, $nonce, $keyId, $context->additionalAuthenticatedData($keyId));
+        } catch (RuntimeException) {
+            throw SecretProtectionException::unavailable();
         }
-        if (!is_string($plaintext) || $plaintext === '' || strlen($plaintext) > 4096) {
-            throw self::unavailable();
-        }
-
-        return $plaintext;
-    }
-
-    private static function unavailable(): SecretProtectionException
-    {
-        return SecretProtectionException::unavailable();
     }
 
     private static function hasDuplicateKeys(string $json): bool

@@ -5,54 +5,41 @@ declare(strict_types=1);
 namespace PeanutAdmin\Kernel\Protection;
 
 use PeanutAdmin\Kernel\Context\AuthorizedOperationContext;
-use Throwable;
+use RuntimeException;
 
 /** Host-supplied deployment keys; no separate key store, permissions or persistence. */
 final readonly class SodiumFieldProtector implements FieldProtector
 {
     private const ALGORITHM = 'XCHACHA20-POLY1305-IETF';
-    private const MAX_PLAINTEXT_BYTES = 4096;
+    private XChaCha20Keyring $keyring;
 
     /** @param array<string, string> $keys key ID => raw 32-byte sodium key */
-    public function __construct(#[\SensitiveParameter] private array $keys, private string $activeKeyId)
+    public function __construct(#[\SensitiveParameter] array $keys, string $activeKeyId)
     {
-        if ($keys === [] || !array_key_exists($activeKeyId, $keys)) {
+        try {
+            $this->keyring = new XChaCha20Keyring($keys, $activeKeyId);
+        } catch (RuntimeException) {
             throw FieldProtectionException::unavailable();
-        }
-        foreach ($keys as $keyId => $key) {
-            if (!is_int($keyId) && !is_string($keyId)) {
-                throw FieldProtectionException::unavailable();
-            }
-            if (preg_match('/^[A-Za-z0-9._-]{1,64}$/D', (string) $keyId) !== 1
-                || !is_string($key) || strlen($key) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES) {
-                throw FieldProtectionException::unavailable();
-            }
         }
     }
 
     public function protect(#[\SensitiveParameter] string $plaintext, FieldProtectionContext $field): array
     {
-        if ($plaintext === '' || strlen($plaintext) > self::MAX_PLAINTEXT_BYTES) {
+        if ($plaintext === '' || strlen($plaintext) > XChaCha20Keyring::MAX_PLAINTEXT_BYTES) {
             throw FieldProtectionException::invalidValue();
         }
         try {
-            $nonce = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES);
-            $ciphertext = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt(
-                $plaintext,
-                $field->authenticatedData($this->activeKeyId),
-                $nonce,
-                $this->keys[$this->activeKeyId],
-            );
-        } catch (Throwable) {
+            $sealed = $this->keyring->encrypt($plaintext, $field->authenticatedData($this->keyring->activeKeyId));
+        } catch (RuntimeException) {
             throw FieldProtectionException::unavailable();
         }
 
         return [
             'version' => 1,
             'algorithm' => self::ALGORITHM,
-            'key_id' => $this->activeKeyId,
-            'nonce' => base64_encode($nonce),
-            'ciphertext' => base64_encode($ciphertext),
+            'key_id' => $sealed['key_id'],
+            'nonce' => base64_encode($sealed['nonce']),
+            'ciphertext' => base64_encode($sealed['ciphertext']),
         ];
     }
 
@@ -67,25 +54,17 @@ final readonly class SodiumFieldProtector implements FieldProtector
             || $authorized->operation !== $revealOperation) {
             throw FieldProtectionException::denied();
         }
-
-        $permitted = false;
         foreach ($authorized->targets as $target) {
             if ($target->targetResourceKey === $field->resourceKey
                 && in_array($field->resourceId, $target->targetIds, true)) {
-                $permitted = true;
-                break;
+                return $this->decrypt($envelope, $field);
             }
         }
-        if (!$permitted) {
-            throw FieldProtectionException::denied();
-        }
-
-        return $this->decrypt($envelope, $field);
+        throw FieldProtectionException::denied();
     }
 
     public function rotate(#[\SensitiveParameter] array $envelope, FieldProtectionContext $field): array
     {
-        // Decrypt before producing a replacement. No writes happen inside Core.
         return $this->protect($this->decrypt($envelope, $field), $field);
     }
 
@@ -102,34 +81,20 @@ final readonly class SodiumFieldProtector implements FieldProtector
             || strlen($envelope['ciphertext']) > 5484) {
             throw FieldProtectionException::unavailable();
         }
-
-        $keyId = $envelope['key_id'];
-        $key = $this->keys[$keyId] ?? null;
         $nonce = base64_decode($envelope['nonce'], true);
         $ciphertext = base64_decode($envelope['ciphertext'], true);
-        if (!is_string($key)
-            || !is_string($nonce) || strlen($nonce) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES
-            || !is_string($ciphertext)
-            || strlen($ciphertext) < SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_ABYTES
-            || strlen($ciphertext) > 8192) {
+        if (!is_string($nonce) || !is_string($ciphertext)) {
             throw FieldProtectionException::unavailable();
         }
-
         try {
-            $plaintext = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt(
+            return $this->keyring->decrypt(
                 $ciphertext,
-                $field->authenticatedData($keyId),
                 $nonce,
-                $key,
+                $envelope['key_id'],
+                $field->authenticatedData($envelope['key_id']),
             );
-        } catch (Throwable) {
+        } catch (RuntimeException) {
             throw FieldProtectionException::unavailable();
         }
-
-        if (!is_string($plaintext) || $plaintext === '' || strlen($plaintext) > self::MAX_PLAINTEXT_BYTES) {
-            throw FieldProtectionException::unavailable();
-        }
-
-        return $plaintext;
     }
 }
