@@ -51,7 +51,37 @@ final class FoundationTest extends TestCase
         self::assertStringContainsString('tenant_id', var_export($options['where'], true));
         self::assertStringContainsString('owner_id', var_export($options['where'], true));
         self::assertSame('10,10', $options['limit']);
-        self::assertTrue($builder->hasWhere([['field' => 'name', 'operator' => '=']], 'name'));
+        self::assertFalse($builder->hasWhere([['field' => 'name', 'operator' => '=']], 'name'));
+        self::assertTrue($builder->hasWhere([['field' => 'owner', 'operator' => 'hasWhere']], 'owner'));
+    }
+
+    public function testInvalidQueryValuesAndMissingTreeNodeAreRejected(): void
+    {
+        $connection = $this->createStub(ConnectionInterface::class);
+        $query = new Query($connection);
+        $query->pk('id');
+        $builder = new DeclarativeQueryBuilder(['name' => 'name']);
+        foreach ([
+            ['field' => 'name', 'operator' => '=', 'value' => []],
+            ['field' => 'name', 'operator' => 'like', 'value' => 12],
+            ['field' => 'name', 'operator' => 'in', 'value' => [['nested']]],
+            ['field' => 'name', 'operator' => 'between', 'value' => [1, []]],
+        ] as $filter) {
+            try {
+                $builder->apply($query, [$filter]);
+                self::fail('Invalid filter was accepted.');
+            } catch (\InvalidArgumentException) {
+                self::assertTrue(true);
+            }
+        }
+        try {
+            (new PageRequest(PHP_INT_MAX, 100))->offset();
+            self::fail('Overflowing page was accepted.');
+        } catch (\PeanutAdmin\Kernel\Authorization\Application\AdminAccessException) {
+            self::assertTrue(true);
+        }
+        $this->expectException(\InvalidArgumentException::class);
+        (new TreeBuilder())->assertCanDelete([['id' => 1, 'parent_id' => 99]], 99);
     }
 
     public function testTraceSequenceAndNativeLock(): void

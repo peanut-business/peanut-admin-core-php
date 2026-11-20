@@ -14,6 +14,9 @@ final readonly class PageRequest
         if ($pageSize < 1 || $pageSize > 100) {
             throw AdminAccessException::invalid('PAGE_SIZE_INVALID', 'Page size must be between 1 and 100.');
         }
+        if ($page - 1 > intdiv(PHP_INT_MAX, $pageSize)) {
+            throw AdminAccessException::invalid('PAGE_INVALID', 'Page offset exceeds the supported range.');
+        }
     }
 
     public function offset(): int

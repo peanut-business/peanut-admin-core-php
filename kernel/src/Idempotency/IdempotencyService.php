@@ -20,11 +20,10 @@ use think\model\type\Json;
 
 final readonly class IdempotencyService
 {
-    private TenantColumnScope $tenantScope;
-
     public function __construct(?TenantColumnScope $tenantScope = null)
     {
-        $this->tenantScope = $tenantScope ?? TenantColumnScope::shared();
+        // Kept for callers using the existing constructor; tenantQuery uses TenantModel scope.
+        unset($tenantScope);
     }
 
     public function findCompletedTenant(

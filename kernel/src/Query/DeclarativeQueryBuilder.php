@@ -31,20 +31,29 @@ final readonly class DeclarativeQueryBuilder
             $column = $this->fields[$filter['field']] ?? throw new \InvalidArgumentException('Filter field is not allowed.');
             $value = $filter['value'] ?? null;
             switch ($filter['operator']) {
-                case '=': case 'like':
+                case '=':
+                    if (!is_scalar($value)) {
+                        throw new \InvalidArgumentException('Equality requires a scalar value.');
+                    }
+                    $query->where($column, '=', $value);
+                    break;
+                case 'like':
+                    if (!is_string($value)) {
+                        throw new \InvalidArgumentException('LIKE requires a string.');
+                    }
                     $query->where($column, $filter['operator'], $value);
                     break;
                 case 'in':
-                    if (!is_array($value) || $value === []) {
+                    if (!is_array($value) || !array_is_list($value) || $value === [] || count(array_filter($value, 'is_scalar')) !== count($value)) {
                         throw new \InvalidArgumentException('IN requires values.');
                     }
                     $query->whereIn($column, $value);
                     break;
                 case 'between': case 'date_range':
-                    if (!is_array($value) || count($value) !== 2) {
+                    if (!is_array($value) || !array_is_list($value) || count($value) !== 2 || count(array_filter($value, 'is_scalar')) !== 2) {
                         throw new \InvalidArgumentException('Range requires two values.');
                     }
-                    $query->whereBetween($column, array_values($value));
+                    $query->whereBetween($column, $value);
                     break;
                 case 'null':
                     if (!is_bool($value)) {
@@ -73,7 +82,7 @@ final readonly class DeclarativeQueryBuilder
     public function hasWhere(array $filters, string $field): bool
     {
         foreach ($filters as $filter) {
-            if ($filter['field'] === $field) {
+            if ($filter['field'] === $field && $filter['operator'] === 'hasWhere') {
                 return true;
             }
         }

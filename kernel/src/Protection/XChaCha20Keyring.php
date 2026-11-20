@@ -13,22 +13,27 @@ final readonly class XChaCha20Keyring
     public const MAX_PLAINTEXT_BYTES = 4096;
     public const MAX_CIPHERTEXT_BYTES = 8192;
 
-    /** @param array<string, string> $keys */
+    /** @var array<array-key, string> */
+    private array $keys;
+
+    /** @param array<array-key, mixed> $keys */
     public function __construct(
-        #[\SensitiveParameter] private array $keys,
+        #[\SensitiveParameter] array $keys,
         public string $activeKeyId,
     ) {
         if ($keys === [] || !array_key_exists($activeKeyId, $keys)) {
             throw new RuntimeException('KEYRING_UNAVAILABLE');
         }
+        $validated = [];
         foreach ($keys as $keyId => $key) {
-            if ((!is_int($keyId) && !is_string($keyId))
-                || preg_match('/^[A-Za-z0-9._-]{1,64}$/D', (string) $keyId) !== 1
+            if (preg_match('/^[A-Za-z0-9._-]{1,64}$/D', (string) $keyId) !== 1
                 || !is_string($key)
                 || strlen($key) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES) {
                 throw new RuntimeException('KEYRING_UNAVAILABLE');
             }
+            $validated[$keyId] = $key;
         }
+        $this->keys = $validated;
     }
 
     /** @return array{ciphertext:string,nonce:string,key_id:string} */
