@@ -77,6 +77,30 @@ final readonly class IdempotencyService
         return $this->existing($data, $requestHash);
     }
 
+    /**
+     * Read a retained completion for a caller that has independently proved a
+     * prior business effect. The temporary expiry still governs normal execution.
+     */
+    public function findRetainedCompletedTenant(
+        TenantScope $scope,
+        int $memberId,
+        string $operationKey,
+        IdempotencyKey $key,
+        string $requestHash,
+    ): ?IdempotencyRecord {
+        $known = $this->tenantQuery($scope)
+            ->where('tenant_member_id', $memberId)
+            ->where('operation_key', $operationKey)
+            ->where('idempotency_key_hash', $key->hash)
+            ->lock(true)
+            ->find();
+        if (!$known instanceof Model || (string) $known->getAttr('status') !== 'completed') {
+            return null;
+        }
+
+        return $this->existing($known->getData(), $requestHash);
+    }
+
     public function beginTenant(
         TenantScope $scope,
         int $memberId,
