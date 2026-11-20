@@ -15,16 +15,23 @@
     "ext-sodium": "*",
     "opis/json-schema": "^2.6.0",
     "php": "^8.3",
-    "topthink/think-orm": "^4.0.51"
+    "topthink/think-orm": "^4.0.51",
+    "openspout/openspout": "4.33.0",
+    "symfony/lock": "^7",
+    "symfony/rate-limiter": "^7"
   },
   "require-dev": {
     "phpunit/phpunit": "^12.5.31",
-    "phpstan/phpstan": "^2.1"
+    "phpstan/phpstan": "^2.1",
+    "endroid/qr-code": "^6",
+    "intervention/image": "^3"
   },
   "suggest": {
     "aliyuncs/oss-sdk-php": "Required by hosts that construct AliyunStorageDriver.",
     "qcloud/cos-sdk-v5": "Required by hosts that construct QcloudStorageDriver.",
-    "qiniu/php-sdk": "Required by hosts that construct QiniuStorageDriver."
+    "qiniu/php-sdk": "Required by hosts that construct QiniuStorageDriver.",
+    "endroid/qr-code": "Required by hosts that generate QR codes.",
+    "intervention/image": "Required by hosts that transform images."
   },
   "autoload": {
     "psr-4": {
@@ -32,7 +39,8 @@
       "PeanutAdmin\\FileMedia\\": "file-media/src/",
       "PeanutAdmin\\IntegrationSecurity\\": "integration-security/src/",
       "PeanutAdmin\\Kernel\\": "kernel/src/",
-      "PeanutAdmin\\Settings\\": "settings/src/"
+      "PeanutAdmin\\Settings\\": "settings/src/",
+      "PeanutAdmin\\ImportExport\\": "import-export/src/"
     }
   },
   "autoload-dev": {
@@ -43,11 +51,12 @@
       "PeanutAdmin\\Kernel\\Tests\\": "kernel/tests/",
       "PeanutAdmin\\Settings\\Tests\\": "settings/tests/",
       "PeanutAdmin\\Testing\\": "testing/src/",
-      "PeanutAdmin\\Testing\\Tests\\": "testing/tests/"
+      "PeanutAdmin\\Testing\\Tests\\": "testing/tests/",
+      "PeanutAdmin\\ImportExport\\Tests\\": "import-export/tests/"
     }
   },
   "scripts": {
     "analyse": "phpstan analyse --no-progress",
-    "test": "phpunit --no-configuration --bootstrap vendor/autoload.php --fail-on-empty-test-suite --fail-on-risky data-permission/tests file-media/tests integration-security/tests kernel/tests settings/tests testing/tests"
+    "test": "phpunit --no-configuration --bootstrap vendor/autoload.php --fail-on-empty-test-suite --fail-on-risky data-permission/tests file-media/tests integration-security/tests kernel/tests settings/tests testing/tests import-export/tests"
   }
 }

@@ -12,7 +12,7 @@ while IFS= read -r -d '' source; do
 done < <(git ls-files -z '*.php')
 [[ "$php_files" -gt 0 ]] || { echo 'ci-check: zero PHP source files discovered' >&2; exit 1; }
 
-test_roots=(data-permission/tests file-media/tests integration-security/tests kernel/tests settings/tests testing/tests)
+test_roots=(data-permission/tests file-media/tests integration-security/tests kernel/tests settings/tests testing/tests import-export/tests)
 for root in "${test_roots[@]}"; do
   [[ -d "$root" ]] || { echo "ci-check: missing test root: $root" >&2; exit 1; }
 done
