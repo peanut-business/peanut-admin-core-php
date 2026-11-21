@@ -12,10 +12,12 @@ final readonly class StorageVersionPage
         public ?StorageVersionCursor $nextCursor = null,
         public ?string $requestId = null,
     ) {
+        /** @phpstan-ignore function.alreadyNarrowedType */
         if (!array_is_list($versions) || count($versions) > 1000) {
             throw new \UnexpectedValueException('STORAGE_VERSION_PAGE_INVALID');
         }
         foreach ($versions as $version) {
+            /** @phpstan-ignore instanceof.alwaysTrue */
             if (!$version instanceof StorageObjectVersion) {
                 throw new \UnexpectedValueException('STORAGE_VERSION_PAGE_INVALID');
             }

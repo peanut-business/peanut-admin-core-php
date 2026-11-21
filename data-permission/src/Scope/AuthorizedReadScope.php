@@ -31,14 +31,17 @@ final readonly class AuthorizedReadScope
     ) {
         if (preg_match('/^[a-z][a-z0-9.-]{2,159}$/D', $capability) !== 1
             || preg_match('/^[a-z][a-z0-9.-]{1,63}$/D', $action) !== 1
+            /** @phpstan-ignore identical.alwaysFalse, function.alreadyNarrowedType */
             || $sources === [] || !array_is_list($sources) || $revision === '') {
             throw new \InvalidArgumentException('READ_SCOPE_INVALID');
         }
+        /** @phpstan-ignore function.alreadyNarrowedType */
         if (!array_is_list($requestedFields)) {
             throw new \InvalidArgumentException('READ_SCOPE_INVALID');
         }
         $requested = [];
         foreach ($requestedFields as $field) {
+            /** @phpstan-ignore function.alreadyNarrowedType */
             if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $field) !== 1
                 || isset($requested[$field])) {
                 throw new \InvalidArgumentException('READ_SCOPE_INVALID');
@@ -47,6 +50,7 @@ final readonly class AuthorizedReadScope
         }
         $seen = [];
         foreach ($sources as $source) {
+            /** @phpstan-ignore instanceof.alwaysTrue */
             if (!$source instanceof SourceReadScope || isset($seen[$source->tenantId])) {
                 throw new \InvalidArgumentException('READ_SCOPE_INVALID');
             }
@@ -84,11 +88,13 @@ final readonly class AuthorizedReadScope
     /** @param non-empty-list<string> $fields */
     public function assertFields(array $fields): void
     {
+        /** @phpstan-ignore identical.alwaysFalse, function.alreadyNarrowedType, booleanOr.alwaysFalse */
         if ($fields === [] || !array_is_list($fields)) {
             throw new DataAuthorizationException('AUTHZ_READ_FIELDS_DENIED', 'An explicit output projection is required.');
         }
         foreach ($this->sources as $source) {
             foreach ($fields as $field) {
+                /** @phpstan-ignore function.alreadyNarrowedType */
                 if (!is_string($field) || !in_array($field, $source->fields, true)) {
                     throw new DataAuthorizationException(
                         'AUTHZ_READ_FIELDS_DENIED',

@@ -32,6 +32,7 @@ final readonly class ModuleHostLayout
         $this->backendNamespaceRoot = $this->namespaceRoot($backendNamespaceRoot);
         $normalized = [];
         foreach ($backendNamespaces as $moduleKey => $namespace) {
+            /** @phpstan-ignore function.alreadyNarrowedType, function.alreadyNarrowedType, booleanOr.alwaysFalse */
             if (!is_string($moduleKey) || !is_string($namespace)) {
                 throw new InvalidArgumentException('Invalid explicit Module namespace declaration.');
             }

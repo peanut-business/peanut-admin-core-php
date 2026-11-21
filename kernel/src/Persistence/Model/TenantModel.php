@@ -31,9 +31,9 @@ abstract class TenantModel extends Model
     {
         $table = $query->getTable();
         $alias = $query->getOption('alias');
-        $prefix = is_array($alias) && is_string($table) && isset($alias[$table]) && is_string($alias[$table]) && $alias[$table] !== ''
+        $prefix = is_array($alias) && isset($alias[$table]) && is_string($alias[$table]) && $alias[$table] !== ''
             ? $alias[$table]
-            : (is_string($table) ? $table : '');
+            : $table;
         $column = $prefix !== '' ? $prefix . '.tenant_id' : 'tenant_id';
         $query->where($column, $scope->tenantId());
     }

@@ -99,9 +99,9 @@ final readonly class TenantEntryBindingResolver
 
         // Keep results on the actual HTTP request, never on a reusable service/process.
         // Lookup object identity also isolates different instance-owned binding sources.
-        /** @var \WeakMap<TenantEntryBindingLookup,array<string,array{tenant_id:int,tenant_code:string}|null>> $cache */
         $cache = $request->middleware(self::class);
         if (!$cache instanceof \WeakMap) {
+            /** @var \WeakMap<TenantEntryBindingLookup,array<string,array{tenant_id:int,tenant_code:string}|null>> $cache */
             $cache = new \WeakMap();
             $request->withMiddleware([self::class => $cache]);
         }

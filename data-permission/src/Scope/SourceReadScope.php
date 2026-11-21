@@ -19,14 +19,18 @@ final readonly class SourceReadScope
         public array $fields,
         public string $revision,
     ) {
+        /** @phpstan-ignore identical.alwaysFalse, identical.alwaysFalse */
         if ($tenantId < 1 || $objectIds === [] || $fields === [] || $revision === ''
             || ($objectIds !== null && count($objectIds) > 500) || count($deniedObjectIds) > 500
+            /** @phpstan-ignore function.alreadyNarrowedType, function.alreadyNarrowedType */
             || !array_is_list($fields) || !array_is_list($deniedObjectIds)
+            /** @phpstan-ignore function.alreadyNarrowedType, booleanAnd.alwaysFalse */
             || ($objectIds !== null && !array_is_list($objectIds))) {
             throw new \InvalidArgumentException('READ_SCOPE_INVALID');
         }
         $allowed = [];
         foreach ($objectIds ?? [] as $id) {
+            /** @phpstan-ignore function.alreadyNarrowedType */
             if (!is_int($id) || $id < 1 || isset($allowed[$id])) {
                 throw new \InvalidArgumentException('READ_SCOPE_INVALID');
             }
@@ -34,6 +38,7 @@ final readonly class SourceReadScope
         }
         $denied = [];
         foreach ($deniedObjectIds as $id) {
+            /** @phpstan-ignore function.alreadyNarrowedType */
             if (!is_int($id) || $id < 1 || isset($denied[$id])) {
                 throw new \InvalidArgumentException('READ_SCOPE_INVALID');
             }
@@ -41,6 +46,7 @@ final readonly class SourceReadScope
         }
         $knownFields = [];
         foreach ($fields as $field) {
+            /** @phpstan-ignore function.alreadyNarrowedType */
             if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $field) !== 1
                 || isset($knownFields[$field])) {
                 throw new \InvalidArgumentException('READ_SCOPE_INVALID');

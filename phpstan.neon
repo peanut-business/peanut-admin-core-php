@@ -1,6 +1,5 @@
 parameters:
     level: 6
-    treatPhpDocTypesAsCertain: false
     scanFiles:
         - stubs/optional-integrations.php
     paths:

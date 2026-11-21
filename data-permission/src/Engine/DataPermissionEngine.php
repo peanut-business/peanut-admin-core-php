@@ -54,10 +54,10 @@ final readonly class DataPermissionEngine
             $query->targetResourceKey,
         );
         if ($query->mode === 'policy-config') {
-            $required = array_values(array_filter([
-                'core.role.data-policy.manage',
-                $targetType->policySelectionPermissionKey,
-            ]));
+            $required = ['core.role.data-policy.manage'];
+            if ($targetType->policySelectionPermissionKey !== null && $targetType->policySelectionPermissionKey !== '') {
+                $required[] = $targetType->policySelectionPermissionKey;
+            }
             $granted = $this->permissions->allowsMany($tenantContext, $required);
             foreach ($required as $permission) {
                 if (!($granted[$permission] ?? false)) {

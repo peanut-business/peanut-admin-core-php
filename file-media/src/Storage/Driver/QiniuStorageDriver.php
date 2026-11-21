@@ -169,7 +169,7 @@ final readonly class QiniuStorageDriver implements StorageDriver
     private function optionalRequestId(array $response): ?string
     {
         foreach ($response['headers'] ?? [] as $name => $value) {
-            if (strtolower($name) === 'x-reqid' && is_string($value) && $value !== ''
+            if (strtolower($name) === 'x-reqid' && $value !== ''
                 && strlen($value) <= 1024 && preg_match('/[\x00-\x1f\x7f]/', $value) !== 1) {
                 return $value;
             }

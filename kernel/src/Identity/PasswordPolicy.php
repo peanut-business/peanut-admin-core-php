@@ -56,6 +56,7 @@ class PasswordPolicy
             ['require_digit', '/[0-9]/', 'an ASCII digit (0-9)'],
             ['require_special', '/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/', 'a printable ASCII punctuation character (excluding space)'],
         ] as [$key, $pattern, $description]) {
+            /** @phpstan-ignore booleanNot.alwaysFalse */
             if (!array_key_exists($key, $requirements) || !is_bool($requirements[$key])) {
                 throw new InvalidArgumentException('Invalid password requirement: ' . $key);
             }
