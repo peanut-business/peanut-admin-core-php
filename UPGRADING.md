@@ -1,14 +1,14 @@
-# 升级到 5.0
+# Core PHP 升级说明
 
 ## 5.0.1：请求内租户入口查询
 
 `TenantEntryBindingResolver` 在真实 ThinkPHP `Request` 的 middleware 数据中缓存同一 host/client 的绑定命中和未命中；不同请求与不同 lookup 实例隔离，lookup 异常不缓存。普通提供 `host()` 的对象仍直接查询。租户冲突、输入校验、禁用绑定和默认上下文合同保持不变。长驻宿主必须为每次 HTTP 请求使用独立 Request，不能跨请求复用该对象。
 
-该修正没有数据库迁移或 Composer 依赖变化；`composer.json` 不嵌入版本，发行版本仍从精确 Git 标签取得。5.0.0 的公开记录与标签保持原样。
+该修正没有数据库迁移或 Composer 依赖变化；`composer.json` 不嵌入版本，发行版本仍从精确 Git 标签取得。此节对应 5.0.1。
 
 5.0 将新密码输入策略与密码散列职责分离。该公开 API 变化不能作为 4.x 的兼容更新；实际公开版本以 GitHub/Packagist 对应标签为准。
 
-## 密码策略与散列
+## 5.0：密码策略与散列
 
 4.x 在 `PasswordHasher` 上设置上下限，并通过 `assertValid()`、`minimumLength()`、`maximumLength()` 访问策略。5.0 把这些构造参数与方法移到 `PasswordPolicy`：
 
@@ -19,7 +19,7 @@ $policy->assertValid($newPassword);
 $hash = $hasher->hash($newPassword);
 ```
 
-默认新密码策略为 6～1024 UTF-8 字节，配置上限不能超过散列技术输入上限 4096 字节。应用创建/修改/重置凭据时先校验策略；登录和既有摘要重算只使用散列服务，不用新的最小长度要求拒绝旧凭据。
+5.0 的默认策略为 6～1024 UTF-8 字节。当前源码的默认策略为 6～32 UTF-8 字节，并支持配置大写、小写、数字和特殊 ASCII 字符要求。散列技术上限为 4096 字节。应用创建、修改或重置凭据时先校验当前策略，登录和既有摘要重算使用散列服务。
 
 Argon2id 参数与既有摘要验证合同保持。技术输入超过 4096 字节时 hash 拒绝、verify 返回 false。应用分别注入策略与散列服务，可通过宿主原生容器替换；不再向 PasswordHasher 传策略参数，也不自行创建默认对象绕过绑定。
 

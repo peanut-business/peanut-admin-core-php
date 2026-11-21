@@ -1,18 +1,20 @@
 # Peanut Admin Core PHP
 
-CI 默认 `mode=production`：绑定非空、精确的 `expected_source_commit`（40 位小写 SHA，必须同时等于 dispatch 的 `GITHUB_SHA` 与实际 HEAD），执行 `inputs` → `resolve` → `verify-consumer --production`。消费者入口内只 `prepare` 一次，使用原 ZIP 进行原生 Composer 干净安装、完整 payload 与五个公开命名空间检查。production 不调用 `ci-check`、PHPUnit 或完整 storage SDK 套件；身份记录 `qualification.scope=package-consumer`、`packageConsumer=PASS`、`unit/storage=NOT_RUN`、`qualified=false`，允许作为 tag 发行原件，但不表示完整测试通过。CI 制包与本地开发验证独立，本地包不上传 GitHub draft。
+`peanut-admin/core` 提供技术上下文、Scope、授权与模块机制，以及 ThinkPHP 接入。生产命名空间由 [composer.json](composer.json) 声明。测试辅助 `PeanutAdmin\Testing` 通过 `autoload-dev` 提供。账号组织、文件账本、应用设置和任务等完整业务由官方模块维护，宿主负责装配。
 
-显式 `mode=qualification` 保留 `ci-check` 的 PHP lint、完整 PHPUnit、storage SDK 与同一消费者检查；仅全部完成后记录 `scope=qualification`、三项 `PASS`、`qualified=true`。显式 `mode=identity` 须填写精确 `expected_source_commit` 和 `release_version`，仅生成两轮标准 `release-identity prepare` 归档并逐字节比较输入、锁及 ZIP。库根无提交锁时只解析一次，封存实际锁，第二独立检出复制该锁并严格 install，不重新解析。identity 结果保存 `php-core-identity-*` artifact；不运行测试或消费者资格、没有完成 scope、不发布，不能用于 tag 发行。CI 不取消已有运行。
-
-`peanut-admin/core` 的 PHP 技术核心源码仓。A1 目标是执行上下文、Scope、授权协议、模块机制、技术存储／安全协议及 ThinkPHP 接入；完整账号组织、设置、文件账本、任务等业务由 Code 官方模块维护。迁移进度与验收见 Project 的 `docs/development/deep-convergence-a1.md`，不能将开发源码当作全项目完成或发布证明。
-
-日常开发使用 `dev`；`main` 只承载已批准的发布版本。该仓在 2026-09-17 从原 Core 单体仓的 `packages/php` 拆出，初始开发提交为 `d1c25fdd3bc27cc8bd56fcaa2d4cbdc33c906bbe`。
+本地使用 PHP 8.3 或更高的 8.x 和 Composer，按需运行 `composer analyse` 或 `composer test`。开发分支为 `dev`，`main` 对应获准发行的源码。
 
 模块清单可声明 `optional_dependencies: [{"module_key": "vendor.module", "version": "^1.0"}]`，条目形状与 `dependencies` 相同。只有显式加入同一编译集合的可选模块才参与版本核验、依赖顺序、循环检查和公开 exports/imports 边界；缺席不会触发安装、迁移或租户启用，也不会变成 `tenant.requires`。原必需依赖仍必须存在，不能用重复的可选声明降低该要求。
 
 缺席可选模块的普通 PHP 参数／返回类型声明可以保留；没有其源码时不能审计该类型是否公开。命名空间沿用宿主验证的映射或 key 派生布局，不推断第三方包归属。宿主必须按已编译模块选择运行贡献，不加载依赖缺席接口／基类的提供者或执行缺席模块调用；声明可选依赖不授予内部服务或业务权限。模块选中后仍只允许其明确导出的类型。租户启停始终仅由 `tenant.requires` 决定硬依赖。
 
 Composer 包名保持 `peanut-admin/core`，版本从 Git 分支／标签取得；开发消费者精确锁定 `dev-dev` 的源码提交，发行消费者使用公共渠道的精确版本。已发布版本及来源以 [GitHub Releases](https://github.com/peanut-business/peanut-admin-core-php/releases)、Packagist 对应标签提交及实际 dist 内容为准，开发提交不表示已发行，既有标签不改写。
+
+## Core 包生产与验证
+
+CI 默认 `mode=production`：绑定非空、精确的 `expected_source_commit`（40 位小写 SHA，必须同时等于 dispatch 的 `GITHUB_SHA` 与实际 HEAD），执行 `inputs` → `resolve` → `verify-consumer --production`。消费者入口内只 `prepare` 一次，使用原 ZIP 进行原生 Composer 干净安装、完整 payload 与五个公开命名空间检查。production 不调用 `ci-check`、PHPUnit 或完整 storage SDK 套件；身份记录 `qualification.scope=package-consumer`、`packageConsumer=PASS`、`unit/storage=NOT_RUN`、`qualified=false`，允许作为 tag 发行原件，但不表示完整测试通过。CI 制包与本地开发验证独立，本地包不上传 GitHub draft。
+
+显式 `mode=qualification` 保留 `ci-check` 的 PHP lint、完整 PHPUnit、storage SDK 与同一消费者检查；仅全部完成后记录 `scope=qualification`、三项 `PASS`、`qualified=true`。显式 `mode=identity` 须填写精确 `expected_source_commit` 和 `release_version`，仅生成两轮标准 `release-identity prepare` 归档并逐字节比较输入、锁及 ZIP。库根无提交锁时只解析一次，封存实际锁，第二独立检出复制该锁并严格 install，不重新解析。identity 结果保存 `php-core-identity-*` artifact；不运行测试或消费者资格、没有完成 scope、不发布，不能用于 tag 发行。CI 不取消已有运行。
 
 生产输入政策为 `tools/build-inputs.json`。主 ZIP 直接由固定 source commit 的 Git blob archive 生成，保留现有 ZIP 默认压缩语义，不新增压缩等级；记录实际 Git 可执行文件 SHA/build options/原生供应包身份、动态 zlib 实际版本与内容 SHA（静态内置时由经封存 Git binary 完整覆盖）、准确 archive args、source commit 时间和 producer 脚本/配置摘要。禁用系统/全局 attributes，保留受 source 绑定的 `.gitattributes`，非空 `info/attributes` 拒绝；不把无关 checkout 配置、所有 ldd 库或整机包表收成主 ZIP 门禁。
 
