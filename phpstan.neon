@@ -1,8 +1,8 @@
-includes:
-    - phpstan-baseline.neon
-
 parameters:
     level: 6
+    treatPhpDocTypesAsCertain: false
+    scanFiles:
+        - stubs/optional-integrations.php
     paths:
         - data-permission/src
         - file-media/src

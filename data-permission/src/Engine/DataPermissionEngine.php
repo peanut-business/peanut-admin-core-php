@@ -251,7 +251,10 @@ final readonly class DataPermissionEngine
             );
     }
 
-    /** @param array<string, bool>|null $modules @param array<string, bool>|null $permissions */
+    /**
+     * @param array<string, bool>|null $modules
+     * @param array<string, bool>|null $permissions
+     */
     private function assertCommon(TenantContext $context, ResourceOperation $operation, ?array $modules = null, ?array $permissions = null): void
     {
         if (!($modules[$operation->moduleKey] ?? $this->catalog->moduleAvailable($context->tenantId, $operation->moduleKey))) {

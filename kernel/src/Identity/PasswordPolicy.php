@@ -65,7 +65,11 @@ class PasswordPolicy
         }
     }
 
-    /** Public requirements shared with clients; subclasses may override their effective requirements. */
+    /**
+     * Public requirements shared with clients; subclasses may override their effective requirements.
+     *
+     * @return array{require_uppercase: bool, require_lowercase: bool, require_digit: bool, require_special: bool}
+     */
     public function requirements(): array
     {
         return [

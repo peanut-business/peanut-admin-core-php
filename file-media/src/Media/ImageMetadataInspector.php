@@ -69,7 +69,7 @@ final readonly class ImageMetadataInspector
                 $sha256 = hash_final($hasher);
             }
             $size = @getimagesize($sourcePath);
-            if (!is_array($size) || !isset($size[0], $size[1], $size['mime']) || !is_string($size['mime'])) {
+            if ($size === false) {
                 throw FileMediaException::imageInvalid();
             }
 

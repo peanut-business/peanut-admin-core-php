@@ -226,7 +226,10 @@ final readonly class ModuleRegistryCompiler
         return $dependencies;
     }
 
-    /** @param array<string, ManifestDocument> $byKey @return array<string, true> */
+    /**
+     * @param array<string, ManifestDocument> $byKey
+     * @return array<string, true>
+     */
     private function dependencyKeys(ManifestDocument $document, array $byKey): array
     {
         $keys = [];

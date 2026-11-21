@@ -101,6 +101,7 @@ final readonly class QiniuStorageDriver implements StorageDriver
             ]);
         } finally {
             // The Host transport may consume and close multipart streams.
+            /** @phpstan-ignore function.alreadyNarrowedType */
             if (is_resource($stream)) {
                 fclose($stream);
             }

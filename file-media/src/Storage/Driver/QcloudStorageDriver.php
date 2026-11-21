@@ -148,6 +148,7 @@ final readonly class QcloudStorageDriver implements StorageDriver
             ]);
         } finally {
             // The SDK may consume and close the source stream before returning.
+            /** @phpstan-ignore function.alreadyNarrowedType */
             if (is_resource($stream)) {
                 fclose($stream);
             }

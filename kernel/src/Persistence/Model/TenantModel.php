@@ -13,12 +13,16 @@ abstract class TenantModel extends Model
 {
     /** @var bool */ protected $autoWriteTimestamp = false;
 
+    /** @return array<int, mixed> */
     protected function validateAndFilterData(bool $isUpdate): array
     {
         $result = parent::validateAndFilterData($isUpdate);
         if (!$isUpdate && $result[0] !== []) {
             // Explicit schema skips discovery; load it before INSERT so SHOW cannot reset the PDO insert ID.
-            $this->getQuery()->getAutoInc();
+            $query = $this->getQuery();
+            if (method_exists($query, 'getAutoInc')) {
+                $query->getAutoInc();
+            }
         }
         return $result;
     }

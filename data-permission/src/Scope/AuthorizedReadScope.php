@@ -17,7 +17,10 @@ use PeanutAdmin\Kernel\Auth\TenantContext;
 /** Server-issued read authority. There is deliberately no request/array deserializer. */
 final readonly class AuthorizedReadScope
 {
-    /** @param non-empty-list<SourceReadScope> $sources */
+    /**
+     * @param non-empty-list<SourceReadScope> $sources
+     * @param list<string> $requestedFields
+     */
     public function __construct(
         public TenantContext $actor,
         public string $capability,
