@@ -201,6 +201,19 @@ final class ModuleRegistryCompilerTest extends TestCase
         ];
 
         $this->assertInvalidOperation($resource(['example.project'])['operations'][0]);
+        $relation = [
+            'target_resource_key' => 'example.project',
+            'target_role' => 'destination',
+            'input_mode' => 'explicit',
+        ];
+        foreach ([[$relation], [$relation, $relation]] as $index => $relations) {
+            $this->expectModuleCode('MODULE_REGISTRY_CONFLICT', function () use ($index, $target, $resource, $relations): void {
+                $this->compiler()->compile([
+                    $this->manifest('example.target', targetTypes: $index === 0 ? [] : $target),
+                    $this->manifest('example.work-item', ['example.target'], protectedResources: [$resource($relations)]),
+                ]);
+            });
+        }
 
         $registry = $this->compiler()->compile([
             $this->manifest(
